@@ -47,6 +47,7 @@ run_one() {
   local generated_root="$2"
   python -m physical_consistency.cli.run_videophy2 \
     --config "${CONFIG_PATH}" \
+    --env_file "${ENV_FILE}" \
     --experiment_name "${experiment_name}" \
     --manifest_csv "${MANIFEST}" \
     --generated_root "${generated_root}"

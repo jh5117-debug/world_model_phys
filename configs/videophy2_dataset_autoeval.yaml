@@ -1,0 +1,11 @@
+model_name: videophy2_dataset_autoeval
+task_modes:
+  - SA
+  - PC
+seed_list:
+  - 0
+batch_size: 4
+max_samples: 0
+repo_dir: third_party/videophy
+checkpoint_dir: links/videophy2_checkpoint
+output_root: .

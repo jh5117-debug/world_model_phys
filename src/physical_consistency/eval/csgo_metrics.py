@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,6 +75,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=-1)
     parser.add_argument("--ft_ckpt_dir", type=str, default="")
     parser.add_argument("--experiment_name", type=str, default="")
+    parser.add_argument("--base_model_dir", type=str, default="")
+    parser.add_argument("--stage1_ckpt_dir", type=str, default="")
+    parser.add_argument("--dataset_dir", type=str, default="")
+    parser.add_argument("--lingbot_code_dir", type=str, default="")
+    parser.add_argument("--finetune_code_dir", type=str, default="")
+    parser.add_argument("--output_root", type=str, default="")
+    parser.add_argument("--manifest_path", type=str, default="")
+    parser.add_argument("--num_gpus", type=int, default=0)
+    parser.add_argument("--ulysses_size", type=int, default=0)
     return parser.parse_args()
 
 
@@ -89,6 +99,11 @@ def run_single_seed_eval(
     ft_ckpt_dir: str = "",
 ) -> dict[str, str]:
     """Run batch eval, FID/FVD, and action-control for one seed."""
+    _require_existing_path("finetune_code_dir", finetune_code_dir)
+    _require_existing_path("dataset_dir", dataset_dir)
+    _require_existing_path("base_model_dir", base_model_dir)
+    _require_existing_path("lingbot_code_dir", lingbot_code_dir)
+
     manifest_hash = hash_manifest(cfg.manifest_path)
     view_dir = Path(output_root) / "cache" / "dataset_views" / f"{cfg.experiment_name}_{manifest_hash}"
     materialize_dataset_view(dataset_dir, cfg.manifest_path, view_dir)
@@ -114,10 +129,13 @@ def run_single_seed_eval(
     ensure_dir(action_dir)
     ensure_dir(logs_dir)
 
-    common_env = {
-        "TOKENIZERS_PARALLELISM": "false",
-        "CUDA_VISIBLE_DEVICES": ",".join(str(idx) for idx in range(cfg.num_gpus)),
-    }
+    visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    common_env = {"TOKENIZERS_PARALLELISM": "false"}
+    common_env["CUDA_VISIBLE_DEVICES"] = (
+        visible_devices
+        if visible_devices
+        else ",".join(str(idx) for idx in range(cfg.num_gpus))
+    )
 
     batch_cmd = [
         "torchrun",
@@ -209,6 +227,14 @@ def run_single_seed_eval(
     }
 
 
+def _require_existing_path(label: str, value: str) -> None:
+    if not value:
+        raise ValueError(f"{label} is empty. Pass --{label} or set it in the env file.")
+    path = Path(value)
+    if not path.exists():
+        raise FileNotFoundError(f"{label} does not exist: {path}")
+
+
 def summarize_eval_suite(run_root: str | Path) -> dict:
     """Aggregate metrics across seed runs."""
     root = Path(run_root)
@@ -275,11 +301,28 @@ def main() -> None:
         cfg.ft_ckpt_dir = resolve_project_path(args.ft_ckpt_dir)
     if args.experiment_name:
         cfg.experiment_name = args.experiment_name
+    if args.base_model_dir:
+        cfg.base_model_dir = resolve_project_path(args.base_model_dir)
+    if args.stage1_ckpt_dir:
+        cfg.stage1_ckpt_dir = resolve_project_path(args.stage1_ckpt_dir)
+    if args.output_root:
+        cfg.output_root = resolve_project_path(args.output_root)
+    if args.manifest_path:
+        cfg.manifest_path = resolve_project_path(args.manifest_path)
+    if args.num_gpus > 0:
+        cfg.num_gpus = args.num_gpus
+    if args.ulysses_size > 0:
+        cfg.ulysses_size = args.ulysses_size
 
     path_cfg = resolve_path_config(args, env_file=args.env_file or None)
     cfg.base_model_dir = cfg.base_model_dir or path_cfg.base_model_dir
     cfg.output_root = cfg.output_root or path_cfg.output_root
     cfg.stage1_ckpt_dir = cfg.stage1_ckpt_dir or path_cfg.stage1_ckpt_dir
+    _require_existing_path("manifest_path", cfg.manifest_path)
+    if cfg.ft_ckpt_dir:
+        _require_existing_path("ft_ckpt_dir", cfg.ft_ckpt_dir)
+    if cfg.stage1_ckpt_dir:
+        _require_existing_path("stage1_ckpt_dir", cfg.stage1_ckpt_dir)
     for seed in cfg.seed_list:
         run_single_seed_eval(
             cfg,

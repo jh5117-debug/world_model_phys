@@ -12,6 +12,7 @@ __pycache__/
 venv/
 .env
 *.env
+!configs/path_config_cluster.env
 
 # OS files
 .DS_Store

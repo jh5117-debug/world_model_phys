@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
+
+ENV_FILE="${ENV_FILE:-${PROJECT_ROOT}/configs/path_config_cluster.env}"
+if [[ -f "${ENV_FILE}" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${ENV_FILE}"
+  set +a
+fi
+
+CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/configs/videophy2_dataset_autoeval.yaml}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-exp_dataset_val_autoeval}"
+MANIFEST="${MANIFEST:-${DATASET_DIR}/metadata_val.csv}"
+VIDEO_SOURCE_ROOT="${VIDEO_SOURCE_ROOT:-${DATASET_DIR}}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}}"
+VIDEOPHY_REPO_DIR="${VIDEOPHY_REPO_DIR:-${PROJECT_ROOT}/third_party/videophy}"
+VIDEOPHY2_CKPT_DIR="${VIDEOPHY2_CKPT_DIR:-${PROJECT_ROOT}/links/videophy2_checkpoint}"
+GPU_ID="${GPU_ID:-4}"
+VIDEO_FILENAME="${VIDEO_FILENAME:-video.mp4}"
+
+CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m physical_consistency.cli.run_videophy2 \
+  --config "${CONFIG_PATH}" \
+  --env_file "${ENV_FILE}" \
+  --experiment_name "${EXPERIMENT_NAME}" \
+  --manifest_csv "${MANIFEST}" \
+  --video_source_mode dataset_clip \
+  --video_source_root "${VIDEO_SOURCE_ROOT}" \
+  --video_filename "${VIDEO_FILENAME}" \
+  --videophy_repo_dir "${VIDEOPHY_REPO_DIR}" \
+  --checkpoint_dir "${VIDEOPHY2_CKPT_DIR}" \
+  --output_root "${OUTPUT_ROOT}" \
+  "$@"

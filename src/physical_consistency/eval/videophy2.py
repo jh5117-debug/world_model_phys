@@ -51,19 +51,29 @@ class VideoPhy2Config:
 def build_videophy2_input_csv(
     *,
     manifest_csv: str | Path,
-    generated_video_dir: str | Path,
+    video_source_root: str | Path,
     output_csv: str | Path,
     task: str,
+    source_mode: str = "generated",
+    video_filename: str = "video.mp4",
+    video_suffix: str = "_gen.mp4",
 ) -> Path:
     """Build the CSV format expected by official VideoPhy-2 inference."""
     rows = read_csv_rows(manifest_csv)
-    generated_dir = Path(generated_video_dir)
+    source_root = Path(video_source_root)
 
     output_rows: list[dict[str, str]] = []
     for row in rows:
         clip_path = row.get("clip_path", "")
         clip_name = Path(clip_path).name
-        video_path = generated_dir / f"{clip_name}_gen.mp4"
+        if source_mode == "generated":
+            video_path = source_root / f"{clip_name}{video_suffix}"
+        elif source_mode == "dataset_clip":
+            video_path = source_root / clip_path / video_filename
+        elif source_mode == "manifest_videopath":
+            video_path = Path(row.get("videopath", ""))
+        else:
+            raise ValueError(f"Unsupported VideoPhy-2 source mode: {source_mode}")
         if not video_path.exists():
             continue
         payload = {"videopath": str(video_path)}
@@ -84,11 +94,14 @@ def run_videophy2_for_seed(
     repo_dir: str,
     checkpoint_dir: str,
     manifest_csv: str,
-    generated_video_dir: str,
+    video_source_root: str,
     output_dir: str,
     batch_size: int,
     seed: int,
     task_modes: list[str],
+    source_mode: str = "generated",
+    video_filename: str = "video.mp4",
+    video_suffix: str = "_gen.mp4",
 ) -> dict[str, str]:
     """Run official VideoPhy-2 inference.py for selected tasks."""
     output_root = ensure_dir(output_dir)
@@ -98,9 +111,12 @@ def run_videophy2_for_seed(
     for task in task_modes:
         input_csv = build_videophy2_input_csv(
             manifest_csv=manifest_csv,
-            generated_video_dir=generated_video_dir,
+            video_source_root=video_source_root,
             output_csv=csv_dir / f"seed_{seed}_{task}.csv",
             task=task.lower(),
+            source_mode=source_mode,
+            video_filename=video_filename,
+            video_suffix=video_suffix,
         )
         output_csv = output_root / f"output_{task.lower()}.csv"
         cmd = [
@@ -184,6 +200,15 @@ def main() -> None:
     parser.add_argument("--experiment_name", type=str, required=True)
     parser.add_argument("--manifest_csv", type=str, default="")
     parser.add_argument("--generated_root", type=str, default="")
+    parser.add_argument(
+        "--video_source_mode",
+        type=str,
+        default="generated",
+        choices=["generated", "dataset_clip", "manifest_videopath"],
+    )
+    parser.add_argument("--video_source_root", type=str, default="")
+    parser.add_argument("--video_filename", type=str, default="video.mp4")
+    parser.add_argument("--video_suffix", type=str, default="_gen.mp4")
     parser.add_argument("--seed", type=int, default=-1)
     parser.add_argument("--summary_only", action="store_true")
     parser.add_argument("--checkpoint_dir", type=str, default="")
@@ -219,24 +244,47 @@ def main() -> None:
         print(json.dumps(read_json(summary_path), indent=2))
         return
 
-    if not args.manifest_csv or not args.generated_root:
-        parser.error("--manifest_csv and --generated_root are required unless --summary_only is set")
+    if not args.manifest_csv:
+        parser.error("--manifest_csv is required unless --summary_only is set")
     if not checkpoint_dir:
         parser.error("VideoPhy-2 checkpoint dir is empty. Pass --checkpoint_dir or set VIDEOPHY2_CKPT_DIR")
 
     manifest_csv = resolve_project_path(args.manifest_csv)
-    generated_root = resolve_project_path(args.generated_root)
+    if not Path(manifest_csv).exists():
+        parser.error(f"Manifest CSV does not exist: {manifest_csv}")
+    repo_entry = Path(repo_dir) / "VIDEOPHY2" / "inference.py"
+    if not repo_entry.exists():
+        parser.error(f"VideoPhy-2 repo not found under: {Path(repo_dir) / 'VIDEOPHY2'}")
+    if not Path(checkpoint_dir).exists():
+        parser.error(f"VideoPhy-2 checkpoint dir does not exist: {checkpoint_dir}")
+    if args.video_source_root:
+        video_source_root = resolve_project_path(args.video_source_root)
+    elif args.generated_root:
+        video_source_root = resolve_project_path(args.generated_root)
+    else:
+        parser.error("--generated_root or --video_source_root is required unless --summary_only is set")
+    if args.video_source_mode != "generated" and not Path(video_source_root).exists():
+        parser.error(f"Video source root does not exist: {video_source_root}")
+
     for seed in cfg.seed_list:
-        generated_dir = Path(generated_root) / f"seed_{seed}" / "csgo_metrics" / "videos"
+        if args.video_source_mode == "generated":
+            source_root = str(
+                Path(video_source_root) / f"seed_{seed}" / "csgo_metrics" / "videos"
+            )
+        else:
+            source_root = video_source_root
         run_videophy2_for_seed(
             repo_dir=repo_dir,
             checkpoint_dir=checkpoint_dir,
             manifest_csv=manifest_csv,
-            generated_video_dir=str(generated_dir),
+            video_source_root=source_root,
             output_dir=str(base_output / f"seed_{seed}"),
             batch_size=cfg.batch_size,
             seed=seed,
             task_modes=cfg.task_modes,
+            source_mode=args.video_source_mode,
+            video_filename=args.video_filename,
+            video_suffix=args.video_suffix,
         )
 
     summary_path = write_videophy2_summary(base_output)

@@ -722,6 +722,14 @@ def _coerce_bool(value: bool | str) -> bool:
     raise ValueError(f"Cannot coerce to bool: {value}")
 
 
+def _require_existing_path(label: str, value: str) -> None:
+    if not value:
+        raise ValueError(f"{label} is empty. Pass --{label} or set it in the env file.")
+    path = Path(value)
+    if not path.exists():
+        raise FileNotFoundError(f"{label} does not exist: {path}")
+
+
 def parse_args() -> argparse.Namespace:
     """CLI args for train entry."""
     parser = argparse.ArgumentParser(description="Train TRD-v1 in isolation.")
@@ -735,6 +743,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lingbot_code_dir", type=str, default="")
     parser.add_argument("--output_root", type=str, default="")
     parser.add_argument("--wandb_dir", type=str, default="")
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--num_gpus", type=int, default=None)
+    parser.add_argument("--ulysses_size", type=int, default=None)
+    parser.add_argument("--learning_rate", type=float, default=None)
+    parser.add_argument("--num_epochs", type=int, default=None)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=None)
     parser.add_argument("--teacher_repo_dir", type=str, default="")
     parser.add_argument("--teacher_checkpoint_dir", type=str, default="")
     parser.add_argument("--teacher_checkpoint_path", type=str, default="")
@@ -747,6 +761,15 @@ def main() -> None:
     """CLI main entry."""
     cli_args = parse_args()
     args = build_args(cli_args)
+    _require_existing_path("base_model_dir", args.base_model_dir)
+    _require_existing_path("stage1_ckpt_dir", args.stage1_ckpt_dir)
+    _require_existing_path("dataset_dir", args.dataset_dir)
+    _require_existing_path("lingbot_code_dir", args.lingbot_code_dir)
+    _require_existing_path("teacher_repo_dir", args.teacher_repo_dir)
+    if args.teacher_checkpoint_path:
+        _require_existing_path("teacher_checkpoint_path", args.teacher_checkpoint_path)
+    else:
+        _require_existing_path("teacher_checkpoint_dir", args.teacher_checkpoint_dir)
     configure_logging(Path(args.output_root) / "logs" / f"train_{args.experiment_name}_{args.model_type}.log")
     set_seed(args.seed)
 

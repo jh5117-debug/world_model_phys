@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
 
-ENV_FILE="${ENV_FILE:-${PROJECT_ROOT}/configs/path_config_nvme03.env}"
+ENV_FILE="${ENV_FILE:-${PROJECT_ROOT}/configs/path_config_cluster.env}"
 if [[ -f "${ENV_FILE}" ]]; then
   set -a
   # shellcheck disable=SC1090
@@ -14,7 +14,7 @@ fi
 
 CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/configs/videophy2_eval.yaml}"
 MANIFEST="${MANIFEST:-${PROJECT_ROOT}/data/manifests/csgo_phys_val50.csv}"
-DATASET_DIR="${DATASET_DIR:-${PROJECT_ROOT}/Dataset/processed_csgo_v3}"
+DATASET_DIR="${DATASET_DIR:-${PROJECT_ROOT}/links/processed_csgo_v3}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}}"
 VIDEOPHY_REPO_DIR="${VIDEOPHY_REPO_DIR:-${PROJECT_ROOT}/third_party/videophy}"
 VIDEOPHY2_CKPT_DIR="${VIDEOPHY2_CKPT_DIR:-${PROJECT_ROOT}/links/videophy2_checkpoint}"
@@ -67,6 +67,7 @@ run_one_seed() {
   echo "[RUN][GPU ${gpu}] ${experiment_name} seed=${seed}"
   CUDA_VISIBLE_DEVICES="${gpu}" python -m physical_consistency.cli.run_videophy2 \
     --config "${CONFIG_PATH}" \
+    --env_file "${ENV_FILE}" \
     --experiment_name "${experiment_name}" \
     --manifest_csv "${MANIFEST}" \
     --generated_root "${generated_root}" \
@@ -100,6 +101,7 @@ wait
 for experiment_name in exp_base_zeroshot exp_stage1_epoch2; do
   python -m physical_consistency.cli.run_videophy2 \
     --config "${CONFIG_PATH}" \
+    --env_file "${ENV_FILE}" \
     --experiment_name "${experiment_name}" \
     --summary_only \
     --output_root "${OUTPUT_ROOT}"

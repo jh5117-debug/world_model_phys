@@ -11,12 +11,11 @@ SCRIPT_DIR = PROJECT_ROOT / "scripts"
 DATA_DIR = PROJECT_ROOT / "data"
 LOG_DIR = PROJECT_ROOT / "logs"
 LINKS_DIR = PROJECT_ROOT / "links"
-DATASET_ROOT = PROJECT_ROOT / "Dataset"
 
 DEFAULT_BASE_MODEL_DIR = str(LINKS_DIR / "base_model")
 DEFAULT_STAGE1_CKPT_DIR = str(LINKS_DIR / "stage1_epoch2")
 DEFAULT_STAGE1_FINAL_DIR = str(LINKS_DIR / "stage1_final")
-DEFAULT_DATASET_DIR = str(DATASET_ROOT / "processed_csgo_v3")
+DEFAULT_DATASET_DIR = str(LINKS_DIR / "processed_csgo_v3")
 DEFAULT_RAW_DATA_DIR = str(LINKS_DIR / "raw_csgo_v3_train")
 DEFAULT_LINGBOT_CODE_DIR = str(LINKS_DIR / "lingbot_code")
 DEFAULT_FINETUNE_CODE_DIR = str(LINKS_DIR / "finetune_code")

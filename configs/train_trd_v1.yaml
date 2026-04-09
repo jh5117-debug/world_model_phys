@@ -5,7 +5,7 @@ seed: 42
 model_type: low
 base_model_dir: links/base_model
 stage1_ckpt_dir: links/stage1_epoch2
-dataset_dir: Dataset/processed_csgo_v3
+dataset_dir: links/processed_csgo_v3
 lingbot_code_dir: links/lingbot_code
 output_root: .
 wandb_dir: runs/wandb
