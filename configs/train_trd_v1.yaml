@@ -1,0 +1,53 @@
+experiment_name: exp_stage1_epoch2_trd_v1
+project_name: physical_consistency
+run_group: trd_v1
+seed: 42
+model_type: low
+base_model_dir: links/base_model
+stage1_ckpt_dir: links/stage1_epoch2
+dataset_dir: Dataset/processed_csgo_v3
+lingbot_code_dir: links/lingbot_code
+output_root: .
+wandb_dir: runs/wandb
+manifest_mini_val: data/manifests/csgo_phys_val50.csv
+manifest_full_val: data/manifests/csgo_phys_val50.csv
+teacher_backend: external
+teacher_repo_dir: third_party/VideoREPA
+teacher_checkpoint_dir: links/teacher_ckpt
+teacher_checkpoint_path: ""
+teacher_pretrained_frames: 16
+teacher_input_frames: 49
+teacher_drop_first_frame: true
+teacher_image_size: 224
+teacher_feature_dim: 768
+student_target_block: 20
+relation_tokens: 64
+lambda_trd: 0.1
+lambda_spatial: 1.0
+lambda_temporal: 1.0
+learning_rate: 1.0e-5
+weight_decay: 0.01
+num_epochs: 5
+gradient_accumulation_steps: 4
+save_every_n_epochs: 1
+max_grad_norm: 1.0
+gradient_checkpointing: true
+num_frames: 81
+height: 480
+width: 832
+dataset_repeat: 1
+validation_every_steps: 300
+mini_val_max_samples: 8
+full_val_max_samples: 50
+validation_seed_list:
+  - 42
+  - 123
+  - 3407
+wandb_mode: online
+distributed_timeout_hours: 8
+validation_runtime_mode: snapshot_only
+allow_deepspeed_feature_hook_experimental: false
+sample_steps: 70
+guide_scale: 5.0
+num_gpus: 8
+ulysses_size: 8

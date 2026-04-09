@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+.env
+*.env
+
+# OS files
+.DS_Store
+
+# Local outputs
+logs/*
+!logs/.gitkeep
+runs/*
+!runs/.gitkeep
+data/cache/*
+!data/cache/.gitkeep
+links/*
+!links/.gitkeep
+
+# Checkpoints and artifacts
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+!data/audit/csgo_human_eval_template.csv
+!data/manifests/.gitkeep
+
+# Demo/documentation assets not needed for source control
+*.pdf
+third_party/VideoREPA/assets/
+third_party/VideoREPA/inference/gradio_composite_demo/example_images/
+third_party/VideoREPA/inference/gradio_composite_demo/example_videos/
+third_party/VideoREPA/finetune/diffusers/examples/research_projects/gligen/generated-images-100000-00.png
+third_party/videophy/asset/
+third_party/videophy/examples/
+third_party/videophy/VIDEOPHY2/examples/
+third_party/videophy/VIDEOPHY2/*.png
+
+# W&B
+wandb/

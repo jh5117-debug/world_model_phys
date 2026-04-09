@@ -1,0 +1,33 @@
+*__pycache__/
+samples*/
+runs/
+checkpoints/
+master_ip
+logs/
+*.DS_Store
+.idea
+output*/
+# test*
+venv
+**/.swp
+**/*.log
+log*.txt
+**/*.debug
+**/.vscode
+*.safetensors
+
+**/output_dir*/
+**/*debug*
+**/wandb
+
+
+# data
+**/checkpoint-*/
+**/openvid/videos/
+ckpt/*
+!ckpt/checkpoint.txt
+**/imgs/
+**/imgs*/
+**/.cache/
+**/cache/
+*.zip

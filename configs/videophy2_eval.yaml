@@ -1,0 +1,13 @@
+model_name: videophy2
+task_modes:
+  - SA
+  - PC
+seed_list:
+  - 42
+  - 123
+  - 3407
+batch_size: 4
+max_samples: 0
+repo_dir: third_party/videophy
+checkpoint_dir: links/videophy2_checkpoint
+output_root: .

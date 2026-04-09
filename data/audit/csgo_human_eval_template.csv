@@ -1,0 +1,4 @@
+experiment_name,seed,clip_name,frame_start,frame_end,label,severity,note,reviewer
+exp_base_zeroshot,42,,,,,,,
+exp_stage1_epoch2,42,,,,,,,
+exp_stage1_epoch2_trd_v1,42,,,,,,,

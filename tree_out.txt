@@ -1,0 +1,801 @@
+.
+├── .empty
+├── Dataset
+│   └── processed_csgo_v3
+│       ├── train
+│       │   └── clips
+│       ├── val
+│       │   └── clips
+│       ├── metadata_train.csv
+│       └── metadata_val.csv
+├── configs
+│   ├── accelerate_trd_v1.yaml
+│   ├── accelerate_trd_v1_deepspeed_experimental.yaml
+│   ├── assets.todo.env
+│   ├── deepspeed_zero3.json
+│   ├── eval_base.yaml
+│   ├── eval_stage1_epoch2.yaml
+│   ├── eval_trd_v1.yaml
+│   ├── path_code.local.env
+│   ├── path_config_cluster.env
+│   ├── train_trd_v1.yaml
+│   └── videophy2_eval.yaml
+├── data
+│   ├── audit
+│   │   ├── csgo_human_eval_template.csv
+│   │   └── csgo_physics_taxonomy_v1.md
+│   ├── cache
+│   │   └── .gitkeep
+│   └── manifests
+│       └── .gitkeep
+├── links
+│   └── .gitkeep
+├── logs
+│   └── .gitkeep
+├── runs
+│   ├── checkpoints
+│   ├── eval
+│   ├── generated_videos
+│   ├── reports
+│   ├── wandb
+│   └── .gitkeep
+├── scripts
+│   ├── __pycache__
+│   │   └── generate_pre_ppt.cpython-313.pyc
+│   ├── build_fixed_val_sets.py
+│   ├── extend_7896_with_benchmark.py
+│   ├── generate_pre_ppt.py
+│   ├── run_compare_all.sh
+│   ├── run_csgo_metrics_all.sh
+│   ├── run_eval_base.sh
+│   ├── run_eval_stage1_epoch2.sh
+│   ├── run_eval_trd_v1.sh
+│   ├── run_train_trd_v1_high.sh
+│   ├── run_train_trd_v1_low.sh
+│   ├── run_videophy2_all.sh
+│   ├── setup_symlinks.sh
+│   ├── setup_videophy2.sh
+│   ├── setup_videorepa.sh
+│   └── verify_stage1_lineage.py
+├── src
+│   ├── physical_consistency
+│   │   ├── cli
+│   │   │   ├── __init__.py
+│   │   │   ├── build_manifests.py
+│   │   │   ├── compare_reports.py
+│   │   │   ├── run_csgo_metrics.py
+│   │   │   ├── run_videophy2.py
+│   │   │   ├── train_trd_v1.py
+│   │   │   └── verify_stage1_lineage.py
+│   │   ├── common
+│   │   │   ├── __init__.py
+│   │   │   ├── defaults.py
+│   │   │   ├── git_utils.py
+│   │   │   ├── io.py
+│   │   │   ├── logging_utils.py
+│   │   │   ├── path_config.py
+│   │   │   ├── seed.py
+│   │   │   └── subprocess_utils.py
+│   │   ├── datasets
+│   │   │   ├── __init__.py
+│   │   │   └── manifest_builder.py
+│   │   ├── eval
+│   │   │   ├── __init__.py
+│   │   │   ├── aggregate.py
+│   │   │   ├── checkpoint_bundle.py
+│   │   │   ├── csgo_metrics.py
+│   │   │   └── videophy2.py
+│   │   ├── lineage
+│   │   │   ├── __init__.py
+│   │   │   └── contract.py
+│   │   ├── losses
+│   │   │   ├── __init__.py
+│   │   │   └── trd.py
+│   │   ├── teachers
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py
+│   │   │   └── videomaev2.py
+│   │   ├── trainers
+│   │   │   ├── __init__.py
+│   │   │   ├── hooks.py
+│   │   │   ├── stage1_components.py
+│   │   │   └── trd_v1.py
+│   │   ├── wandb_utils
+│   │   │   ├── __init__.py
+│   │   │   ├── media.py
+│   │   │   └── session.py
+│   │   └── __init__.py
+│   └── physical_consistency.egg-info
+│       ├── PKG-INFO
+│       ├── SOURCES.txt
+│       ├── dependency_links.txt
+│       ├── entry_points.txt
+│       ├── requires.txt
+│       └── top_level.txt
+├── tests
+│   ├── test_eval_checkpoint_bundle.py
+│   ├── test_lineage_contract.py
+│   ├── test_manifest_builder.py
+│   ├── test_path_resolution.py
+│   └── test_train_args.py
+├── third_party
+│   ├── VideoREPA
+│   │   ├── .git
+│   │   │   ├── branches
+│   │   │   ├── hooks
+│   │   │   ├── info
+│   │   │   ├── logs
+│   │   │   ├── objects
+│   │   │   ├── refs
+│   │   │   ├── HEAD
+│   │   │   ├── config
+│   │   │   ├── description
+│   │   │   └── ... 2 more files
+│   │   ├── assets
+│   │   │   ├── videos
+│   │   │   │   ├── main_results
+│   │   │   │   │   ├── concat.py
+│   │   │   │   │   ├── mn_cogvideox_1.mp4
+│   │   │   │   │   ├── mn_cogvideox_2.mp4
+│   │   │   │   │   ├── mn_cogvideox_3.mp4
+│   │   │   │   │   ├── mn_cogvideox_4.mp4
+│   │   │   │   │   └── ... 14 more files
+│   │   │   │   ├── separate results
+│   │   │   │   │   ├── videorepa_01.mp4
+│   │   │   │   │   ├── videorepa_02.mp4
+│   │   │   │   │   ├── videorepa_03.mp4
+│   │   │   │   │   ├── videorepa_04.mp4
+│   │   │   │   │   ├── videorepa_05.mp4
+│   │   │   │   │   └── ... 7 more files
+│   │   │   │   ├── supple_comparison
+│   │   │   │   │   ├── concat.py
+│   │   │   │   │   ├── supp_cogvideox_01.mp4
+│   │   │   │   │   ├── supp_cogvideox_02.mp4
+│   │   │   │   │   ├── supp_cogvideox_03.mp4
+│   │   │   │   │   ├── supp_cogvideox_04.mp4
+│   │   │   │   │   └── ... 26 more files
+│   │   │   │   └── teaser
+│   │   │   │       ├── concat.py
+│   │   │   │       ├── ts_cogvideox_1.mp4
+│   │   │   │       ├── ts_cogvideox_2.mp4
+│   │   │   │       ├── ts_cogvideox_3.mp4
+│   │   │   │       ├── ts_cogvideox_4.mp4
+│   │   │   │       └── ... 8 more files
+│   │   │   ├── compare_1.png
+│   │   │   ├── compare_2.png
+│   │   │   └── overview.png
+│   │   ├── ckpt
+│   │   │   └── checkpoint.txt
+│   │   ├── evaluation
+│   │   │   ├── VIDEOPHY2
+│   │   │   │   ├── csv_file
+│   │   │   │   │   └── placeholder
+│   │   │   │   ├── data_utils
+│   │   │   │   │   ├── processors
+│   │   │   │   │   │   ├── __init__.py
+│   │   │   │   │   │   ├── builder.py
+│   │   │   │   │   │   ├── caption_processor.py
+│   │   │   │   │   │   └── default_processor.py
+│   │   │   │   │   ├── __init__.py
+│   │   │   │   │   ├── randaugment.py
+│   │   │   │   │   ├── registry.py
+│   │   │   │   │   └── xgpt3_dataset.py
+│   │   │   │   ├── mplug_owl_video
+│   │   │   │   │   ├── __init__.py
+│   │   │   │   │   ├── configuration_mplug_owl.py
+│   │   │   │   │   ├── modeling_mplug_owl.py
+│   │   │   │   │   ├── processing_mplug_owl.py
+│   │   │   │   │   └── tokenization_mplug_owl.py
+│   │   │   │   ├── README.md
+│   │   │   │   ├── calculate_mean.py
+│   │   │   │   ├── eval_pipeline.sh
+│   │   │   │   ├── generate_csv.py
+│   │   │   │   ├── inference.py
+│   │   │   │   └── ... 5 more files
+│   │   │   └── videophy
+│   │   │       ├── csv_file
+│   │   │       │   └── placeholder
+│   │   │       ├── utils
+│   │   │       │   ├── constants.py
+│   │   │       │   ├── prepare_data.py
+│   │   │       │   └── prepare_train_data.py
+│   │   │       ├── videocon
+│   │   │       │   └── training
+│   │   │       │       ├── configs
+│   │   │       │       ├── pipeline_video
+│   │   │       │       └── scripts
+│   │   │       ├── .gitignore
+│   │   │       ├── LICENSE
+│   │   │       ├── README.md
+│   │   │       ├── all.txt
+│   │   │       ├── calculate_mean.py
+│   │   │       └── ... 5 more files
+│   │   ├── finetune
+│   │   │   ├── configs
+│   │   │   │   ├── zero2.yaml
+│   │   │   │   ├── zero2_offload.yaml
+│   │   │   │   ├── zero3.yaml
+│   │   │   │   └── zero3_offload.yaml
+│   │   │   ├── datasets
+│   │   │   │   ├── __init__.py
+│   │   │   │   ├── bucket_sampler.py
+│   │   │   │   ├── data_transform.py
+│   │   │   │   ├── i2v_dataset.py
+│   │   │   │   ├── t2v_dataset.py
+│   │   │   │   └── ... 1 more files
+│   │   │   ├── diffusers
+│   │   │   │   ├── .github
+│   │   │   │   │   ├── ISSUE_TEMPLATE
+│   │   │   │   │   │   ├── bug-report.yml
+│   │   │   │   │   │   ├── config.yml
+│   │   │   │   │   │   ├── feature_request.md
+│   │   │   │   │   │   ├── feedback.md
+│   │   │   │   │   │   ├── new-model-addition.yml
+│   │   │   │   │   │   └── ... 1 more files
+│   │   │   │   │   ├── actions
+│   │   │   │   │   │   └── setup-miniconda
+│   │   │   │   │   ├── workflows
+│   │   │   │   │   │   ├── benchmark.yml
+│   │   │   │   │   │   ├── build_docker_images.yml
+│   │   │   │   │   │   ├── build_documentation.yml
+│   │   │   │   │   │   ├── build_pr_documentation.yml
+│   │   │   │   │   │   ├── mirror_community_pipeline.yml
+│   │   │   │   │   │   └── ... 20 more files
+│   │   │   │   │   └── PULL_REQUEST_TEMPLATE.md
+│   │   │   │   ├── benchmarks
+│   │   │   │   │   ├── base_classes.py
+│   │   │   │   │   ├── benchmark_controlnet.py
+│   │   │   │   │   ├── benchmark_ip_adapters.py
+│   │   │   │   │   ├── benchmark_sd_img.py
+│   │   │   │   │   ├── benchmark_sd_inpainting.py
+│   │   │   │   │   └── ... 6 more files
+│   │   │   │   ├── docker
+│   │   │   │   │   ├── diffusers-doc-builder
+│   │   │   │   │   │   └── Dockerfile
+│   │   │   │   │   ├── diffusers-flax-cpu
+│   │   │   │   │   │   └── Dockerfile
+│   │   │   │   │   ├── diffusers-flax-tpu
+│   │   │   │   │   │   └── Dockerfile
+│   │   │   │   │   ├── diffusers-onnxruntime-cpu
+│   │   │   │   │   │   └── Dockerfile
+│   │   │   │   │   ├── diffusers-onnxruntime-cuda
+│   │   │   │   │   │   └── Dockerfile
+│   │   │   │   │   ├── diffusers-pytorch-compile-cuda
+│   │   │   │   │   │   └── Dockerfile
+│   │   │   │   │   ├── diffusers-pytorch-cpu
+│   │   │   │   │   │   └── Dockerfile
+│   │   │   │   │   ├── diffusers-pytorch-cuda
+│   │   │   │   │   │   └── Dockerfile
+│   │   │   │   │   ├── diffusers-pytorch-minimum-cuda
+│   │   │   │   │   │   └── Dockerfile
+│   │   │   │   │   └── diffusers-pytorch-xformers-cuda
+│   │   │   │   │       └── Dockerfile
+│   │   │   │   ├── docs
+│   │   │   │   │   ├── source
+│   │   │   │   │   │   ├── en
+│   │   │   │   │   │   ├── ja
+│   │   │   │   │   │   ├── ko
+│   │   │   │   │   │   ├── pt
+│   │   │   │   │   │   ├── zh
+│   │   │   │   │   │   └── _config.py
+│   │   │   │   │   ├── README.md
+│   │   │   │   │   └── TRANSLATING.md
+│   │   │   │   ├── examples
+│   │   │   │   │   ├── advanced_diffusion_training
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── README_flux.md
+│   │   │   │   │   │   ├── requirements.txt
+│   │   │   │   │   │   ├── requirements_flux.txt
+│   │   │   │   │   │   ├── test_dreambooth_lora_flux_advanced.py
+│   │   │   │   │   │   └── ... 3 more files
+│   │   │   │   │   ├── amused
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   └── train_amused.py
+│   │   │   │   │   ├── cogvideo
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── requirements.txt
+│   │   │   │   │   │   ├── train_cogvideox_image_to_video_lora.py
+│   │   │   │   │   │   └── train_cogvideox_lora.py
+│   │   │   │   │   ├── community
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── README_community_scripts.md
+│   │   │   │   │   │   ├── adaptive_mask_inpainting.py
+│   │   │   │   │   │   ├── bit_diffusion.py
+│   │   │   │   │   │   ├── checkpoint_merger.py
+│   │   │   │   │   │   └── ... 88 more files
+│   │   │   │   │   ├── consistency_distillation
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── README_sdxl.md
+│   │   │   │   │   │   ├── requirements.txt
+│   │   │   │   │   │   ├── test_lcm_lora.py
+│   │   │   │   │   │   ├── train_lcm_distill_lora_sd_wds.py
+│   │   │   │   │   │   └── ... 4 more files
+│   │   │   │   │   ├── controlnet
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── README_flux.md
+│   │   │   │   │   │   ├── README_sd3.md
+│   │   │   │   │   │   ├── README_sdxl.md
+│   │   │   │   │   │   ├── requirements.txt
+│   │   │   │   │   │   └── ... 10 more files
+│   │   │   │   │   ├── custom_diffusion
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── requirements.txt
+│   │   │   │   │   │   ├── retrieve.py
+│   │   │   │   │   │   ├── test_custom_diffusion.py
+│   │   │   │   │   │   └── train_custom_diffusion.py
+│   │   │   │   │   ├── dreambooth
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── README_flux.md
+│   │   │   │   │   │   ├── README_sana.md
+│   │   │   │   │   │   ├── README_sd3.md
+│   │   │   │   │   │   ├── README_sdxl.md
+│   │   │   │   │   │   └── ... 24 more files
+│   │   │   │   │   ├── flux-control
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── requirements.txt
+│   │   │   │   │   │   ├── train_control_flux.py
+│   │   │   │   │   │   └── train_control_lora_flux.py
+│   │   │   │   │   ├── inference
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── image_to_image.py
+│   │   │   │   │   │   └── inpainting.py
+│   │   │   │   │   ├── instruct_pix2pix
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── README_sdxl.md
+│   │   │   │   │   │   ├── requirements.txt
+│   │   │   │   │   │   ├── test_instruct_pix2pix.py
+│   │   │   │   │   │   ├── train_instruct_pix2pix.py
+│   │   │   │   │   │   └── ... 1 more files
+│   │   │   │   │   ├── kandinsky2_2
+│   │   │   │   │   │   └── text_to_image
+│   │   │   │   │   ├── model_search
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── pipeline_easy.py
+│   │   │   │   │   │   └── requirements.txt
+│   │   │   │   │   ├── reinforcement_learning
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── diffusion_policy.py
+│   │   │   │   │   │   └── run_diffuser_locomotion.py
+│   │   │   │   │   ├── research_projects
+│   │   │   │   │   │   ├── autoencoderkl
+│   │   │   │   │   │   ├── colossalai
+│   │   │   │   │   │   ├── consistency_training
+│   │   │   │   │   │   ├── controlnet
+│   │   │   │   │   │   ├── diffusion_dpo
+│   │   │   │   │   │   ├── diffusion_orpo
+│   │   │   │   │   │   ├── dreambooth_inpaint
+│   │   │   │   │   │   ├── flux_lora_quantization
+│   │   │   │   │   │   ├── geodiff
+│   │   │   │   │   │   ├── gligen
+│   │   │   │   │   │   ├── instructpix2pix_lora
+│   │   │   │   │   │   ├── intel_opts
+│   │   │   │   │   │   ├── ip_adapter
+│   │   │   │   │   │   ├── lora
+│   │   │   │   │   │   ├── multi_subject_dreambooth
+│   │   │   │   │   │   ├── multi_subject_dreambooth_inpainting
+│   │   │   │   │   │   ├── multi_token_textual_inversion
+│   │   │   │   │   │   ├── onnxruntime
+│   │   │   │   │   │   ├── pixart
+│   │   │   │   │   │   ├── promptdiffusion
+│   │   │   │   │   │   ├── pytorch_xla
+│   │   │   │   │   │   ├── rdm
+│   │   │   │   │   │   ├── realfill
+│   │   │   │   │   │   ├── scheduled_huber_loss_training
+│   │   │   │   │   │   ├── sd3_lora_colab
+│   │   │   │   │   │   ├── sdxl_flax
+│   │   │   │   │   │   ├── vae
+│   │   │   │   │   │   ├── wuerstchen
+│   │   │   │   │   │   └── README.md
+│   │   │   │   │   ├── server
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── requirements.in
+│   │   │   │   │   │   ├── requirements.txt
+│   │   │   │   │   │   └── server.py
+│   │   │   │   │   ├── t2i_adapter
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── README_sdxl.md
+│   │   │   │   │   │   ├── requirements.txt
+│   │   │   │   │   │   ├── test_t2i_adapter.py
+│   │   │   │   │   │   └── train_t2i_adapter_sdxl.py
+│   │   │   │   │   ├── text_to_image
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── README_sdxl.md
+│   │   │   │   │   │   ├── requirements.txt
+│   │   │   │   │   │   ├── requirements_flax.txt
+│   │   │   │   │   │   ├── requirements_sdxl.txt
+│   │   │   │   │   │   └── ... 7 more files
+│   │   │   │   │   ├── textual_inversion
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── README_sdxl.md
+│   │   │   │   │   │   ├── requirements.txt
+│   │   │   │   │   │   ├── requirements_flax.txt
+│   │   │   │   │   │   ├── test_textual_inversion.py
+│   │   │   │   │   │   └── ... 4 more files
+│   │   │   │   │   ├── unconditional_image_generation
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── requirements.txt
+│   │   │   │   │   │   ├── test_unconditional.py
+│   │   │   │   │   │   └── train_unconditional.py
+│   │   │   │   │   ├── vqgan
+│   │   │   │   │   │   ├── README.md
+│   │   │   │   │   │   ├── discriminator.py
+│   │   │   │   │   │   ├── requirements.txt
+│   │   │   │   │   │   ├── test_vqgan.py
+│   │   │   │   │   │   └── train_vqgan.py
+│   │   │   │   │   ├── README.md
+│   │   │   │   │   ├── conftest.py
+│   │   │   │   │   └── test_examples_utils.py
+│   │   │   │   ├── scripts
+│   │   │   │   │   ├── __init__.py
+│   │   │   │   │   ├── change_naming_configs_and_checkpoints.py
+│   │   │   │   │   ├── conversion_ldm_uncond.py
+│   │   │   │   │   ├── convert_amused.py
+│   │   │   │   │   ├── convert_animatediff_motion_lora_to_diffusers.py
+│   │   │   │   │   └── ... 67 more files
+│   │   │   │   ├── src
+│   │   │   │   │   └── diffusers
+│   │   │   │   │       ├── commands
+│   │   │   │   │       ├── experimental
+│   │   │   │   │       ├── hooks
+│   │   │   │   │       ├── loaders
+│   │   │   │   │       ├── models
+│   │   │   │   │       ├── pipelines
+│   │   │   │   │       ├── quantizers
+│   │   │   │   │       ├── schedulers
+│   │   │   │   │       ├── utils
+│   │   │   │   │       ├── __init__.py
+│   │   │   │   │       ├── callbacks.py
+│   │   │   │   │       ├── configuration_utils.py
+│   │   │   │   │       ├── dependency_versions_check.py
+│   │   │   │   │       ├── dependency_versions_table.py
+│   │   │   │   │       └── ... 5 more files
+│   │   │   │   ├── tests
+│   │   │   │   │   ├── fixtures
+│   │   │   │   │   │   ├── custom_pipeline
+│   │   │   │   │   │   └── elise_format0.mid
+│   │   │   │   │   ├── hooks
+│   │   │   │   │   │   └── test_hooks.py
+│   │   │   │   │   ├── lora
+│   │   │   │   │   │   ├── test_deprecated_utilities.py
+│   │   │   │   │   │   ├── test_lora_layers_cogvideox.py
+│   │   │   │   │   │   ├── test_lora_layers_flux.py
+│   │   │   │   │   │   ├── test_lora_layers_hunyuanvideo.py
+│   │   │   │   │   │   ├── test_lora_layers_ltx_video.py
+│   │   │   │   │   │   └── ... 6 more files
+│   │   │   │   │   ├── models
+│   │   │   │   │   │   ├── autoencoders
+│   │   │   │   │   │   ├── transformers
+│   │   │   │   │   │   ├── unets
+│   │   │   │   │   │   ├── __init__.py
+│   │   │   │   │   │   ├── test_activations.py
+│   │   │   │   │   │   ├── test_attention_processor.py
+│   │   │   │   │   │   ├── test_layers_utils.py
+│   │   │   │   │   │   ├── test_modeling_common.py
+│   │   │   │   │   │   └── ... 1 more files
+│   │   │   │   │   ├── others
+│   │   │   │   │   │   ├── test_check_copies.py
+│   │   │   │   │   │   ├── test_check_dummies.py
+│   │   │   │   │   │   ├── test_config.py
+│   │   │   │   │   │   ├── test_dependencies.py
+│   │   │   │   │   │   ├── test_ema.py
+│   │   │   │   │   │   └── ... 6 more files
+│   │   │   │   │   ├── pipelines
+│   │   │   │   │   │   ├── allegro
+│   │   │   │   │   │   ├── amused
+│   │   │   │   │   │   ├── animatediff
+│   │   │   │   │   │   ├── audioldm
+│   │   │   │   │   │   ├── audioldm2
+│   │   │   │   │   │   ├── aura_flow
+│   │   │   │   │   │   ├── blipdiffusion
+│   │   │   │   │   │   ├── cogvideo
+│   │   │   │   │   │   ├── cogview3
+│   │   │   │   │   │   ├── consisid
+│   │   │   │   │   │   ├── consistency_models
+│   │   │   │   │   │   ├── controlnet
+│   │   │   │   │   │   ├── controlnet_flux
+│   │   │   │   │   │   ├── controlnet_hunyuandit
+│   │   │   │   │   │   ├── controlnet_sd3
+│   │   │   │   │   │   ├── controlnet_xs
+│   │   │   │   │   │   ├── dance_diffusion
+│   │   │   │   │   │   ├── ddim
+│   │   │   │   │   │   ├── ddpm
+│   │   │   │   │   │   ├── deepfloyd_if
+│   │   │   │   │   │   ├── dit
+│   │   │   │   │   │   ├── flux
+│   │   │   │   │   │   ├── hunyuan_dit
+│   │   │   │   │   │   ├── hunyuan_video
+│   │   │   │   │   │   ├── i2vgen_xl
+│   │   │   │   │   │   ├── ip_adapters
+│   │   │   │   │   │   ├── kandinsky
+│   │   │   │   │   │   ├── kandinsky2_2
+│   │   │   │   │   │   ├── kandinsky3
+│   │   │   │   │   │   ├── kolors
+│   │   │   │   │   │   ├── latent_consistency_models
+│   │   │   │   │   │   ├── latent_diffusion
+│   │   │   │   │   │   ├── latte
+│   │   │   │   │   │   ├── ledits_pp
+│   │   │   │   │   │   ├── ltx
+│   │   │   │   │   │   ├── lumina
+│   │   │   │   │   │   ├── marigold
+│   │   │   │   │   │   ├── mochi
+│   │   │   │   │   │   ├── musicldm
+│   │   │   │   │   │   ├── pag
+│   │   │   │   │   │   ├── paint_by_example
+│   │   │   │   │   │   ├── pia
+│   │   │   │   │   │   ├── pixart_alpha
+│   │   │   │   │   │   ├── pixart_sigma
+│   │   │   │   │   │   ├── pndm
+│   │   │   │   │   │   ├── sana
+│   │   │   │   │   │   ├── semantic_stable_diffusion
+│   │   │   │   │   │   ├── shap_e
+│   │   │   │   │   │   ├── stable_audio
+│   │   │   │   │   │   ├── stable_cascade
+│   │   │   │   │   │   ├── stable_diffusion
+│   │   │   │   │   │   ├── stable_diffusion_2
+│   │   │   │   │   │   ├── stable_diffusion_3
+│   │   │   │   │   │   ├── stable_diffusion_adapter
+│   │   │   │   │   │   ├── stable_diffusion_gligen
+│   │   │   │   │   │   ├── stable_diffusion_gligen_text_image
+│   │   │   │   │   │   ├── stable_diffusion_image_variation
+│   │   │   │   │   │   ├── stable_diffusion_k_diffusion
+│   │   │   │   │   │   ├── stable_diffusion_ldm3d
+│   │   │   │   │   │   ├── stable_diffusion_panorama
+│   │   │   │   │   │   ├── stable_diffusion_safe
+│   │   │   │   │   │   ├── stable_diffusion_sag
+│   │   │   │   │   │   ├── stable_diffusion_xl
+│   │   │   │   │   │   ├── stable_unclip
+│   │   │   │   │   │   ├── stable_video_diffusion
+│   │   │   │   │   │   ├── text_to_video_synthesis
+│   │   │   │   │   │   ├── unclip
+│   │   │   │   │   │   ├── unidiffuser
+│   │   │   │   │   │   ├── wuerstchen
+│   │   │   │   │   │   ├── __init__.py
+│   │   │   │   │   │   ├── pipeline_params.py
+│   │   │   │   │   │   ├── test_pipeline_utils.py
+│   │   │   │   │   │   ├── test_pipelines.py
+│   │   │   │   │   │   ├── test_pipelines_auto.py
+│   │   │   │   │   │   └── ... 4 more files
+│   │   │   │   │   ├── quantization
+│   │   │   │   │   │   ├── bnb
+│   │   │   │   │   │   ├── gguf
+│   │   │   │   │   │   └── torchao
+│   │   │   │   │   ├── schedulers
+│   │   │   │   │   │   ├── __init__.py
+│   │   │   │   │   │   ├── test_scheduler_consistency_model.py
+│   │   │   │   │   │   ├── test_scheduler_ddim.py
+│   │   │   │   │   │   ├── test_scheduler_ddim_inverse.py
+│   │   │   │   │   │   ├── test_scheduler_ddim_parallel.py
+│   │   │   │   │   │   └── ... 26 more files
+│   │   │   │   │   ├── single_file
+│   │   │   │   │   │   ├── __init__.py
+│   │   │   │   │   │   ├── single_file_testing_utils.py
+│   │   │   │   │   │   ├── test_model_autoencoder_dc_single_file.py
+│   │   │   │   │   │   ├── test_model_controlnet_single_file.py
+│   │   │   │   │   │   ├── test_model_flux_transformer_single_file.py
+│   │   │   │   │   │   └── ... 15 more files
+│   │   │   │   │   ├── __init__.py
+│   │   │   │   │   └── conftest.py
+│   │   │   │   ├── utils
+│   │   │   │   │   ├── check_config_docstrings.py
+│   │   │   │   │   ├── check_copies.py
+│   │   │   │   │   ├── check_doc_toc.py
+│   │   │   │   │   ├── check_dummies.py
+│   │   │   │   │   ├── check_inits.py
+│   │   │   │   │   └── ... 16 more files
+│   │   │   │   ├── .gitignore
+│   │   │   │   ├── CITATION.cff
+│   │   │   │   ├── CODE_OF_CONDUCT.md
+│   │   │   │   ├── CONTRIBUTING.md
+│   │   │   │   ├── LICENSE
+│   │   │   │   └── ... 7 more files
+│   │   │   ├── models
+│   │   │   │   ├── cogvideox1_5_i2v
+│   │   │   │   │   ├── lora_trainer.py
+│   │   │   │   │   └── sft_trainer.py
+│   │   │   │   ├── cogvideox1_5_t2v
+│   │   │   │   │   ├── lora_trainer.py
+│   │   │   │   │   └── sft_trainer.py
+│   │   │   │   ├── cogvideox_i2v
+│   │   │   │   │   ├── lora_trainer.py
+│   │   │   │   │   └── sft_trainer.py
+│   │   │   │   ├── cogvideox_t2v
+│   │   │   │   │   ├── lora_trainer.py
+│   │   │   │   │   └── sft_trainer.py
+│   │   │   │   ├── cogvideox_t2v_align
+│   │   │   │   │   ├── models
+│   │   │   │   │   │   ├── ssl
+│   │   │   │   │   │   └── cogvideox_align.py
+│   │   │   │   │   ├── lora_trainer.py
+│   │   │   │   │   └── sft_trainer.py
+│   │   │   │   ├── __init__.py
+│   │   │   │   └── utils.py
+│   │   │   ├── openvid
+│   │   │   │   ├── openvid_3w2.csv
+│   │   │   │   ├── openvid_6w4.csv
+│   │   │   │   └── unzip.sh
+│   │   │   ├── schemas
+│   │   │   │   ├── __init__.py
+│   │   │   │   ├── args.py
+│   │   │   │   ├── components.py
+│   │   │   │   └── state.py
+│   │   │   ├── scripts
+│   │   │   │   ├── dataset_precomputing.sh
+│   │   │   │   ├── merge.sh
+│   │   │   │   ├── multigpu_VideoREPA_2B_sft.sh
+│   │   │   │   └── multigpu_VideoREPA_5B_lora.sh
+│   │   │   ├── utils
+│   │   │   │   ├── __init__.py
+│   │   │   │   ├── checkpointing.py
+│   │   │   │   ├── file_utils.py
+│   │   │   │   ├── memory_utils.py
+│   │   │   │   ├── optimizer_utils.py
+│   │   │   │   └── ... 1 more files
+│   │   │   ├── validation
+│   │   │   │   ├── prompts.txt
+│   │   │   │   └── prompts_videophy2.txt
+│   │   │   ├── accelerate_config.yaml
+│   │   │   ├── constants.py
+│   │   │   ├── train.py
+│   │   │   └── trainer.py
+│   │   ├── inference
+│   │   │   ├── gradio_composite_demo
+│   │   │   │   ├── example_images
+│   │   │   │   │   ├── beach.png
+│   │   │   │   │   ├── camping.png
+│   │   │   │   │   └── street.png
+│   │   │   │   ├── example_videos
+│   │   │   │   │   ├── horse.mp4
+│   │   │   │   │   ├── kitten.mp4
+│   │   │   │   │   └── train_running.mp4
+│   │   │   │   ├── rife
+│   │   │   │   │   ├── pytorch_msssim
+│   │   │   │   │   │   └── __init__.py
+│   │   │   │   │   ├── IFNet.py
+│   │   │   │   │   ├── IFNet_2R.py
+│   │   │   │   │   ├── IFNet_HDv3.py
+│   │   │   │   │   ├── IFNet_m.py
+│   │   │   │   │   ├── RIFE.py
+│   │   │   │   │   ├── RIFE_HDv3.py
+│   │   │   │   │   ├── __init__.py
+│   │   │   │   │   ├── laplacian.py
+│   │   │   │   │   ├── loss.py
+│   │   │   │   │   ├── refine.py
+│   │   │   │   │   ├── refine_2R.py
+│   │   │   │   │   └── warplayer.py
+│   │   │   │   ├── README.md
+│   │   │   │   ├── app.py
+│   │   │   │   ├── requirements.txt
+│   │   │   │   ├── rife_model.py
+│   │   │   │   └── utils.py
+│   │   │   ├── models
+│   │   │   │   └── cogvideox_align.py
+│   │   │   ├── scripts
+│   │   │   │   ├── infer_one_prompt.sh
+│   │   │   │   ├── infer_videorepa_2b_sft.sh
+│   │   │   │   └── infer_videorepa_5b_lora.sh
+│   │   │   ├── cli_vae_demo.py
+│   │   │   ├── convert_demo.py
+│   │   │   ├── encoded.pt
+│   │   │   ├── generate.py
+│   │   │   ├── gradio_web_demo.py
+│   │   │   ├── videophy.txt
+│   │   │   ├── videophy2.csv
+│   │   │   └── videophy_detailed.txt
+│   │   ├── .gitignore
+│   │   ├── LICENSE
+│   │   ├── README.md
+│   │   ├── download.sh
+│   │   └── requirements.txt
+│   ├── videophy
+│   │   ├── .git
+│   │   │   ├── branches
+│   │   │   ├── hooks
+│   │   │   ├── info
+│   │   │   ├── logs
+│   │   │   ├── objects
+│   │   │   ├── refs
+│   │   │   ├── HEAD
+│   │   │   ├── config
+│   │   │   ├── description
+│   │   │   └── ... 2 more files
+│   │   ├── VIDEOPHY2
+│   │   │   ├── data_utils
+│   │   │   │   ├── processors
+│   │   │   │   │   ├── __init__.py
+│   │   │   │   │   ├── builder.py
+│   │   │   │   │   ├── caption_processor.py
+│   │   │   │   │   └── default_processor.py
+│   │   │   │   ├── __init__.py
+│   │   │   │   ├── randaugment.py
+│   │   │   │   ├── registry.py
+│   │   │   │   └── xgpt3_dataset.py
+│   │   │   ├── examples
+│   │   │   │   ├── A_bobsled_team_pushes_their_sled_off_the_starting_line,_accelerating_down_a_snowy_track.mp4
+│   │   │   │   ├── A_canoeist_uses_a_single-bladed_paddle_to_propel_their_canoe_across_a_lake,_the_paddle's_movement_visible_against_the_still_water_1.mp4
+│   │   │   │   ├── A_carpenter_pulls_apart_two_glued_pieces_of_wood_using_a_chisel,_resulting_in_two_separate_boards.mp4
+│   │   │   │   ├── A_construction_worker_uses_a_sandblasting_machine_to_clean_the_brick_facade_of_a_building,_removing_layers_of_grime.mp4
+│   │   │   │   ├── A_hedge_trimmer_is_used_to_shape_a_tall,_dense_privet_hedge,_the_blades_visibly_cutting_through_the_leaves_and_stems_1.mp4
+│   │   │   │   ├── A_jetski_moves_quickly_through_a_narrow_channel_between_two_rocky_outcrops_0.mp4
+│   │   │   │   ├── A_large,_heavy_pot_is_pushed_on_a_slightly_inclined_kitchen_counter;_it_nearly_slides_off_but_remains_in_place.mp4
+│   │   │   │   ├── A_leaf_blower_is_pointed_at_a_patch_of_leaves_on_a_lawn;_the_leaves_are_forcefully_displaced_in_a_specific_direction_0.mp4
+│   │   │   │   ├── A_paint_roller_applies_a_coat_of_beige_paint_to_a_textured_wall,_showing_the_paint_filling_in_the_textures_0.mp4
+│   │   │   │   ├── A_person_uses_a_leaf_blower_to_clear_leaves_from_a_paved_driveway,_the_leaves_propelled_into_a_nearby_flower_bed.mp4
+│   │   │   │   ├── A_player_lunges_to_reach_a_low_shot,_reaching_the_shuttlecock_with_their_racquet.mp4
+│   │   │   │   ├── A_potter_wedges_clay,_forcefully_pushing_and_folding_the_clay_to_remove_air_bubbles.mp4
+│   │   │   │   ├── A_seamstress_pulls_the_fabric_taut,_guiding_the_needle_with_their_fingers_as_they_sew_a_straight_seam_2.mp4
+│   │   │   │   ├── A_streamer,_cut_from_paper,_descends_from_a_high_point,_twisting_and_turning_gently_0.mp4
+│   │   │   │   ├── A_surfer_performs_a_sharp_turn_on_their_board,_creating_a_spray_of_water_0.mp4
+│   │   │   │   ├── Beer_is_poured_from_a_keg_into_a_plastic_cup,_the_liquid_splashing_slightly_on_the_rim.mp4
+│   │   │   │   ├── Hands_fold_a_map,_showing_the_creases_forming_as_sections_are_brought_together_0.mp4
+│   │   │   │   ├── Nunchucks_are_used_to_break_a_single_brick_from_a_wall,_creating_visible_cracks_in_the_surrounding_bricks.mp4
+│   │   │   │   ├── Syrup_is_poured_onto_pancakes_from_a_bottle,_the_syrup_coating_the_surface_1.mp4
+│   │   │   │   ├── Two_knives_are_thrown_in_a_criss-cross_pattern,_nearly_colliding_in_mid-air_before_striking_a_stack_of_wooden_blocks.mp4
+│   │   │   │   └── ... 5 more files
+│   │   │   ├── mplug_owl_video
+│   │   │   │   ├── __init__.py
+│   │   │   │   ├── configuration_mplug_owl.py
+│   │   │   │   ├── modeling_mplug_owl.py
+│   │   │   │   ├── processing_mplug_owl.py
+│   │   │   │   └── tokenization_mplug_owl.py
+│   │   │   ├── README.md
+│   │   │   ├── inference.py
+│   │   │   ├── main_graph.png
+│   │   │   ├── paper.pdf
+│   │   │   ├── template.py
+│   │   │   ├── utils.py
+│   │   │   └── videophy2.png
+│   │   ├── asset
+│   │   │   ├── .DS_Store
+│   │   │   ├── Lavie_The_net_catches_the_fast-moving_soccer_ball._1.gif
+│   │   │   ├── Lavie_Water_drips_from_a_leaky_tap_into_a_sink._1.gif
+│   │   │   ├── Pika_A_whisk_churns_heavy_cream_into_whipped_cream._0.gif
+│   │   │   ├── Pika_Wooden_swing_dangles_over_the_sand_in_the_sandpit._0.gif
+│   │   │   ├── VideoPhysics.png
+│   │   │   ├── leaderboard.png
+│   │   │   ├── main_graph.png
+│   │   │   ├── physics_verylong.png
+│   │   │   ├── vc2_Plastic_frisbee_lands_on_a_lush_grass_lawn_0.gif
+│   │   │   └── vc2_Water_pouring_from_a_watering_can_onto_plants_0.gif
+│   │   ├── examples
+│   │   │   ├── A_car_brush_lathers_shampoo_onto_a_dirty_vehicle_1.mp4
+│   │   │   ├── A_spatula_scoops_up_cake_batter_into_a_baking_pan._0.mp4
+│   │   │   ├── A_wooden_spoon_stirs_the_hot_soup_in_the_pot._1.mp4
+│   │   │   ├── An_apple_falls_and_bounces_on_the_hard_ground._1.mp4
+│   │   │   ├── Coffee_accepting_a_gentle_pour_of_milk_1.mp4
+│   │   │   ├── Pushpin_skates_across_a_glossy_desk_surface._1.mp4
+│   │   │   ├── Shoe_squishes_a_bug._0.mp4
+│   │   │   ├── example.csv
+│   │   │   ├── physics_testing.csv
+│   │   │   ├── sa_testing.csv
+│   │   │   ├── train_example.csv
+│   │   │   ├── videocon_format_train.csv
+│   │   │   ├── videocon_format_val.csv
+│   │   │   ├── videocon_physics_pc_testing.csv
+│   │   │   └── videocon_physics_sa_testing.csv
+│   │   ├── utils
+│   │   │   ├── constants.py
+│   │   │   ├── prepare_data.py
+│   │   │   └── prepare_train_data.py
+│   │   ├── videocon
+│   │   │   └── training
+│   │   │       ├── configs
+│   │   │       │   └── video.yaml
+│   │   │       ├── pipeline_video
+│   │   │       │   ├── data_utils
+│   │   │       │   │   ├── processors
+│   │   │       │   │   ├── __init__.py
+│   │   │       │   │   ├── randaugment.py
+│   │   │       │   │   ├── registry.py
+│   │   │       │   │   └── xgpt3_dataset.py
+│   │   │       │   ├── mplug_owl_video
+│   │   │       │   │   ├── __init__.py
+│   │   │       │   │   ├── configuration_mplug_owl.py
+│   │   │       │   │   ├── modeling_mplug_owl.py
+│   │   │       │   │   ├── processing_mplug_owl.py
+│   │   │       │   │   └── tokenization_mplug_owl.py
+│   │   │       │   ├── __init__.py
+│   │   │       │   ├── entailment_inference.py
+│   │   │       │   ├── model_unload_merge.py
+│   │   │       │   ├── train.py
+│   │   │       │   └── utils.py
+... output truncated ...

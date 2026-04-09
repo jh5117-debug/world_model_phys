@@ -1,0 +1,20 @@
+experiment_name: exp_base_zeroshot
+seed_list:
+  - 42
+  - 123
+  - 3407
+split: val
+manifest_path: data/manifests/csgo_phys_val50.csv
+frame_num: 81
+sample_steps: 70
+guide_scale: 5.0
+height: 480
+width: 832
+num_gpus: 8
+ulysses_size: 8
+run_fid_fvd: true
+run_action_control: true
+run_videophy2: true
+base_model_dir: links/base_model
+ft_ckpt_dir: ""
+output_root: .
