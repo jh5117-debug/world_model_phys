@@ -35,6 +35,24 @@ generate_kwargs = {
     'max_length': 256,
 }
 
+
+def resolve_model_dtype():
+    value = os.environ.get("VIDEOPHY_TORCH_DTYPE", "bfloat16").strip().lower()
+    mapping = {
+        "bf16": torch.bfloat16,
+        "bfloat16": torch.bfloat16,
+        "fp16": torch.float16,
+        "float16": torch.float16,
+        "fp32": torch.float32,
+        "float32": torch.float32,
+    }
+    if value not in mapping:
+        raise ValueError(
+            f"Unsupported VIDEOPHY_TORCH_DTYPE={value}. "
+            "Use one of: bfloat16, bf16, float16, fp16, float32, fp32."
+        )
+    return mapping[value]
+
 def inference(args, model, df, processor, tokenizer):
     num_map = {
         "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
@@ -51,7 +69,8 @@ def inference(args, model, df, processor, tokenizer):
             else:
                 prompts = [PROMPT_RULE.format(rule=row['rule'])]
             inputs = processor(text=prompts, videos=videopaths, num_frames=args.num_frames, return_tensors='pt')
-            inputs = {k: v.bfloat16() if v.dtype == torch.float else v for k, v in inputs.items()}
+            model_dtype = next(model.parameters()).dtype
+            inputs = {k: v.to(dtype=model_dtype) if v.dtype == torch.float else v for k, v in inputs.items()}
             inputs = {k: v.to(model.device) for k, v in inputs.items()}
             res = model.generate(**inputs, **generate_kwargs)
             output = tokenizer.decode(res.tolist()[0], skip_special_tokens=True)
@@ -92,6 +111,7 @@ def modify_keys(state_dict):
 def main():
 
     checkpoint = args.checkpoint
+    model_dtype = resolve_model_dtype()
 
     # Processors
     tokenizer = LlamaTokenizer.from_pretrained(checkpoint)
@@ -108,10 +128,11 @@ def main():
     # Instantiate model
     model = MplugOwlForConditionalGeneration.from_pretrained(
         checkpoint,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=model_dtype,
         device_map={'': 'cpu'}
     )
     print('Model Loaded')
+    print(f"Using torch dtype: {model_dtype}")
     model.eval()
 
     lora_checkpoint = args.lora_checkpoint
@@ -133,7 +154,7 @@ def main():
             ckpt = modify_keys(ckpt)
             model.load_state_dict(ckpt)
         print("LOADED")
-    model = model.to("cuda").to(torch.bfloat16)
+    model = model.to("cuda").to(model_dtype)
     
     out = inference(args, model, df, processor, tokenizer)
     out.to_csv(args.output_csv)
