@@ -4,6 +4,10 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
 
+log() {
+  printf '[%s] %s\n' "$(date '+%F %T')" "$*"
+}
+
 ENV_FILE="${ENV_FILE:-${PROJECT_ROOT}/configs/path_config_cluster.env}"
 if [[ -f "${ENV_FILE}" ]]; then
   set -a
@@ -22,6 +26,9 @@ VIDEOPHY2_CKPT_DIR="${VIDEOPHY2_CKPT_DIR:-${PROJECT_ROOT}/links/videophy2_checkp
 VIDEO_FILENAME="${VIDEO_FILENAME:-video.mp4}"
 GPU_LIST="${GPU_LIST:-4,5,6,7}"
 SEED="${SEED:-0}"
+STATUS_EVERY_SEC="${STATUS_EVERY_SEC:-30}"
+KILL_EXISTING_GPU_PIDS="${KILL_EXISTING_GPU_PIDS:-0}"
+KILL_GRACE_SEC="${KILL_GRACE_SEC:-5}"
 
 if [[ ! -f "${MANIFEST}" ]]; then
   echo "[ERROR] Manifest not found: ${MANIFEST}" >&2
@@ -44,6 +51,58 @@ IFS=',' read -r -a GPUS <<< "${GPU_LIST}"
 if [[ "${#GPUS[@]}" -eq 0 || -z "${GPUS[0]}" ]]; then
   echo "[ERROR] GPU_LIST is empty" >&2
   exit 1
+fi
+
+print_target_gpu_processes() {
+  local gpu_csv="$1"
+  nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits 2>/dev/null | \
+    awk -F', *' -v gpu_csv="${gpu_csv}" '
+      BEGIN {
+        split(gpu_csv, gpus, ",");
+        while (("nvidia-smi --query-gpu=index,uuid --format=csv,noheader,nounits" | getline line) > 0) {
+          split(line, parts, /, */);
+          gpu_uuid[parts[1]] = parts[2];
+        }
+        for (i in gpus) {
+          wanted_uuid[gpu_uuid[gpus[i]]] = gpus[i];
+        }
+      }
+      ($1 in wanted_uuid) {
+        printf("gpu=%s pid=%s mem=%sMiB cmd=%s\n", wanted_uuid[$1], $2, $4, $3);
+      }
+    '
+}
+
+collect_target_gpu_pids() {
+  local gpu_csv="$1"
+  print_target_gpu_processes "${gpu_csv}" | awk '{for (i=1;i<=NF;i++) if ($i ~ /^pid=/) {sub(/^pid=/, "", $i); print $i}}' | sort -u
+}
+
+log "Project root: ${PROJECT_ROOT}"
+log "Config: ${CONFIG_PATH}"
+log "Env file: ${ENV_FILE}"
+log "Manifest: ${MANIFEST}"
+log "Video source root: ${VIDEO_SOURCE_ROOT}"
+log "Checkpoint dir: ${VIDEOPHY2_CKPT_DIR}"
+log "GPU list: ${GPU_LIST}"
+log "Experiment: ${EXPERIMENT_NAME}"
+log "Target GPU processes before launch:"
+print_target_gpu_processes "${GPU_LIST}" || true
+
+if [[ "${KILL_EXISTING_GPU_PIDS}" == "1" ]]; then
+  mapfile -t TARGET_PIDS < <(collect_target_gpu_pids "${GPU_LIST}")
+  if [[ "${#TARGET_PIDS[@]}" -gt 0 ]]; then
+    log "Killing existing processes on GPUs ${GPU_LIST}: ${TARGET_PIDS[*]}"
+    kill "${TARGET_PIDS[@]}" || true
+    sleep "${KILL_GRACE_SEC}"
+    mapfile -t TARGET_PIDS < <(collect_target_gpu_pids "${GPU_LIST}")
+    if [[ "${#TARGET_PIDS[@]}" -gt 0 ]]; then
+      log "Force killing remaining processes on GPUs ${GPU_LIST}: ${TARGET_PIDS[*]}"
+      kill -9 "${TARGET_PIDS[@]}" || true
+    fi
+  else
+    log "No existing processes found on GPUs ${GPU_LIST}"
+  fi
 fi
 
 BASE_OUTPUT="${OUTPUT_ROOT}/runs/eval/videophy2/${EXPERIMENT_NAME}"
@@ -74,6 +133,10 @@ for idx, rows in enumerate(shards):
         writer.writerows(rows)
 PY
 
+declare -a JOB_PIDS=()
+declare -a JOB_GPUS=()
+declare -a JOB_EXPERIMENTS=()
+
 for shard_idx in "${!GPUS[@]}"; do
   shard_experiment="${EXPERIMENT_NAME}_shard_${shard_idx}"
   shard_manifest="${SHARD_DIR}/manifest_shard_${shard_idx}.csv"
@@ -82,7 +145,12 @@ for shard_idx in "${!GPUS[@]}"; do
     continue
   fi
   gpu="${GPUS[$shard_idx]}"
-  echo "[RUN][GPU ${gpu}] ${shard_experiment}"
+  sa_log="${OUTPUT_ROOT}/runs/eval/videophy2/${shard_experiment}/seed_${SEED}/videophy2_sa.log"
+  pc_log="${OUTPUT_ROOT}/runs/eval/videophy2/${shard_experiment}/seed_${SEED}/videophy2_pc.log"
+  row_count="$(($(wc -l < "${shard_manifest}") - 1))"
+  log "[RUN][GPU ${gpu}] ${shard_experiment} rows=${row_count}"
+  log "[LOG][GPU ${gpu}] SA=${sa_log}"
+  log "[LOG][GPU ${gpu}] PC=${pc_log}"
   CUDA_VISIBLE_DEVICES="${gpu}" python -m physical_consistency.cli.run_videophy2 \
     --config "${CONFIG_PATH}" \
     --env_file "${ENV_FILE}" \
@@ -95,8 +163,64 @@ for shard_idx in "${!GPUS[@]}"; do
     --checkpoint_dir "${VIDEOPHY2_CKPT_DIR}" \
     --output_root "${OUTPUT_ROOT}" \
     --seed "${SEED}" &
+  job_pid=$!
+  JOB_PIDS+=("${job_pid}")
+  JOB_GPUS+=("${gpu}")
+  JOB_EXPERIMENTS+=("${shard_experiment}")
+  log "[PID][GPU ${gpu}] ${shard_experiment} pid=${job_pid}"
 done
-wait
+
+monitor_jobs() {
+  while true; do
+    alive=0
+    status_parts=()
+    for idx in "${!JOB_PIDS[@]}"; do
+      pid="${JOB_PIDS[$idx]}"
+      if kill -0 "${pid}" 2>/dev/null; then
+        alive=1
+        shard_experiment="${JOB_EXPERIMENTS[$idx]}"
+        gpu="${JOB_GPUS[$idx]}"
+        sa_log="${OUTPUT_ROOT}/runs/eval/videophy2/${shard_experiment}/seed_${SEED}/videophy2_sa.log"
+        sa_lines=0
+        if [[ -f "${sa_log}" ]]; then
+          sa_lines="$(wc -l < "${sa_log}")"
+        fi
+        status_parts+=("gpu=${gpu}:pid=${pid}:sa_lines=${sa_lines}")
+      fi
+    done
+    if [[ "${alive}" -eq 0 ]]; then
+      break
+    fi
+    log "[WAIT] ${status_parts[*]}"
+    sleep "${STATUS_EVERY_SEC}"
+  done
+}
+
+monitor_jobs &
+MONITOR_PID=$!
+
+failed=0
+for idx in "${!JOB_PIDS[@]}"; do
+  pid="${JOB_PIDS[$idx]}"
+  gpu="${JOB_GPUS[$idx]}"
+  shard_experiment="${JOB_EXPERIMENTS[$idx]}"
+  sa_log="${OUTPUT_ROOT}/runs/eval/videophy2/${shard_experiment}/seed_${SEED}/videophy2_sa.log"
+  pc_log="${OUTPUT_ROOT}/runs/eval/videophy2/${shard_experiment}/seed_${SEED}/videophy2_pc.log"
+  if wait "${pid}"; then
+    log "[OK][GPU ${gpu}] ${shard_experiment}"
+  else
+    failed=1
+    log "[FAIL][GPU ${gpu}] ${shard_experiment}"
+    log "[FAIL][GPU ${gpu}] Inspect logs: ${sa_log} ${pc_log}"
+  fi
+done
+
+wait "${MONITOR_PID}" || true
+
+if [[ "${failed}" -ne 0 ]]; then
+  log "[ERROR] One or more shard jobs failed. Summary will not be generated."
+  exit 1
+fi
 
 python - "${OUTPUT_ROOT}" "${EXPERIMENT_NAME}" "${SEED}" "${#GPUS[@]}" <<'PY'
 import csv
@@ -138,6 +262,7 @@ for task in ("sa", "pc"):
         writer.writerows(merged_rows)
 PY
 
+log "[SUMMARY] Writing aggregate summary for ${EXPERIMENT_NAME}"
 python -m physical_consistency.cli.run_videophy2 \
   --config "${CONFIG_PATH}" \
   --env_file "${ENV_FILE}" \
@@ -145,4 +270,4 @@ python -m physical_consistency.cli.run_videophy2 \
   --summary_only \
   --output_root "${OUTPUT_ROOT}"
 
-echo "[DONE] Parallel VideoPhy-2 AutoEval summary written to ${BASE_OUTPUT}/summary.json"
+log "[DONE] Parallel VideoPhy-2 AutoEval summary written to ${BASE_OUTPUT}/summary.json"

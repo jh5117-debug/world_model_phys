@@ -4,6 +4,10 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
 
+log() {
+  printf '[%s] %s\n' "$(date '+%F %T')" "$*"
+}
+
 ENV_FILE="${ENV_FILE:-${PROJECT_ROOT}/configs/path_config_cluster.env}"
 if [[ -f "${ENV_FILE}" ]]; then
   set -a
@@ -21,6 +25,9 @@ VIDEOPHY2_CKPT_DIR="${VIDEOPHY2_CKPT_DIR:-${PROJECT_ROOT}/links/videophy2_checkp
 GPU_LIST="${GPU_LIST:-4,5,6,7}"
 BASE_GENERATED_ROOT="${BASE_GENERATED_ROOT:-${OUTPUT_ROOT}/runs/eval/exp_base_zeroshot}"
 STAGE1_GENERATED_ROOT="${STAGE1_GENERATED_ROOT:-${OUTPUT_ROOT}/runs/eval/exp_stage1_epoch2}"
+STATUS_EVERY_SEC="${STATUS_EVERY_SEC:-30}"
+KILL_EXISTING_GPU_PIDS="${KILL_EXISTING_GPU_PIDS:-0}"
+KILL_GRACE_SEC="${KILL_GRACE_SEC:-5}"
 
 if [[ ! -f "${MANIFEST}" ]]; then
   echo "[INFO] ${MANIFEST} missing, building fixed validation manifests..."
@@ -41,6 +48,55 @@ IFS=',' read -r -a GPUS <<< "${GPU_LIST}"
 if [[ "${#GPUS[@]}" -eq 0 ]]; then
   echo "[ERROR] GPU_LIST is empty" >&2
   exit 1
+fi
+
+print_target_gpu_processes() {
+  local gpu_csv="$1"
+  nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits 2>/dev/null | \
+    awk -F', *' -v gpu_csv="${gpu_csv}" '
+      BEGIN {
+        split(gpu_csv, gpus, ",");
+        while (("nvidia-smi --query-gpu=index,uuid --format=csv,noheader,nounits" | getline line) > 0) {
+          split(line, parts, /, */);
+          gpu_uuid[parts[1]] = parts[2];
+        }
+        for (i in gpus) {
+          wanted_uuid[gpu_uuid[gpus[i]]] = gpus[i];
+        }
+      }
+      ($1 in wanted_uuid) {
+        printf("gpu=%s pid=%s mem=%sMiB cmd=%s\n", wanted_uuid[$1], $2, $4, $3);
+      }
+    '
+}
+
+collect_target_gpu_pids() {
+  local gpu_csv="$1"
+  print_target_gpu_processes "${gpu_csv}" | awk '{for (i=1;i<=NF;i++) if ($i ~ /^pid=/) {sub(/^pid=/, "", $i); print $i}}' | sort -u
+}
+
+log "Project root: ${PROJECT_ROOT}"
+log "Config: ${CONFIG_PATH}"
+log "Manifest: ${MANIFEST}"
+log "Checkpoint dir: ${VIDEOPHY2_CKPT_DIR}"
+log "GPU list: ${GPU_LIST}"
+log "Target GPU processes before launch:"
+print_target_gpu_processes "${GPU_LIST}" || true
+
+if [[ "${KILL_EXISTING_GPU_PIDS}" == "1" ]]; then
+  mapfile -t TARGET_PIDS < <(collect_target_gpu_pids "${GPU_LIST}")
+  if [[ "${#TARGET_PIDS[@]}" -gt 0 ]]; then
+    log "Killing existing processes on GPUs ${GPU_LIST}: ${TARGET_PIDS[*]}"
+    kill "${TARGET_PIDS[@]}" || true
+    sleep "${KILL_GRACE_SEC}"
+    mapfile -t TARGET_PIDS < <(collect_target_gpu_pids "${GPU_LIST}")
+    if [[ "${#TARGET_PIDS[@]}" -gt 0 ]]; then
+      log "Force killing remaining processes on GPUs ${GPU_LIST}: ${TARGET_PIDS[*]}"
+      kill -9 "${TARGET_PIDS[@]}" || true
+    fi
+  else
+    log "No existing processes found on GPUs ${GPU_LIST}"
+  fi
 fi
 
 TASKS=(
@@ -64,7 +120,7 @@ run_one_seed() {
     return 1
   fi
 
-  echo "[RUN][GPU ${gpu}] ${experiment_name} seed=${seed}"
+  log "[RUN][GPU ${gpu}] ${experiment_name} seed=${seed}"
   CUDA_VISIBLE_DEVICES="${gpu}" python -m physical_consistency.cli.run_videophy2 \
     --config "${CONFIG_PATH}" \
     --env_file "${ENV_FILE}" \
@@ -93,12 +149,57 @@ worker() {
   done
 }
 
+declare -a JOB_PIDS=()
+declare -a JOB_GPUS=()
+
 for worker_idx in "${!GPUS[@]}"; do
   worker "${GPUS[$worker_idx]}" "${worker_idx}" "${#GPUS[@]}" &
+  JOB_PIDS+=("$!")
+  JOB_GPUS+=("${GPUS[$worker_idx]}")
+  log "[PID][GPU ${GPUS[$worker_idx]}] worker pid=$!"
 done
-wait
+
+monitor_jobs() {
+  while true; do
+    alive=0
+    status_parts=()
+    for idx in "${!JOB_PIDS[@]}"; do
+      pid="${JOB_PIDS[$idx]}"
+      if kill -0 "${pid}" 2>/dev/null; then
+        alive=1
+        status_parts+=("gpu=${JOB_GPUS[$idx]}:pid=${pid}")
+      fi
+    done
+    if [[ "${alive}" -eq 0 ]]; then
+      break
+    fi
+    log "[WAIT] ${status_parts[*]}"
+    sleep "${STATUS_EVERY_SEC}"
+  done
+}
+
+monitor_jobs &
+MONITOR_PID=$!
+
+failed=0
+for idx in "${!JOB_PIDS[@]}"; do
+  if wait "${JOB_PIDS[$idx]}"; then
+    log "[OK][GPU ${JOB_GPUS[$idx]}] worker finished"
+  else
+    failed=1
+    log "[FAIL][GPU ${JOB_GPUS[$idx]}] worker failed"
+  fi
+done
+
+wait "${MONITOR_PID}" || true
+
+if [[ "${failed}" -ne 0 ]]; then
+  log "[ERROR] One or more VideoPhy-2 workers failed. Summary will not be generated."
+  exit 1
+fi
 
 for experiment_name in exp_base_zeroshot exp_stage1_epoch2; do
+  log "[SUMMARY] Writing aggregate summary for ${experiment_name}"
   python -m physical_consistency.cli.run_videophy2 \
     --config "${CONFIG_PATH}" \
     --env_file "${ENV_FILE}" \
@@ -107,4 +208,4 @@ for experiment_name in exp_base_zeroshot exp_stage1_epoch2; do
     --output_root "${OUTPUT_ROOT}"
 done
 
-echo "[DONE] VideoPhy-2 summaries written under ${OUTPUT_ROOT}/runs/eval/videophy2"
+log "[DONE] VideoPhy-2 summaries written under ${OUTPUT_ROOT}/runs/eval/videophy2"
