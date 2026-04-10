@@ -209,12 +209,15 @@ class MplugOwlVisionLocalTemporal(nn.Module):
         x = self.ln(x)
         x = einops.rearrange(x, 'b t (h w) c -> b c t h w', h=H)
         x = self.down_proj(x)
-        _device = x.device
-        self = self.to('cpu') # hack: cpu offloading since bfloat16 on gpu gives error with conv_depthwise3d 
-        x = x.to('cpu')
+        # Run the depthwise 3D conv on CPU in float32. Moving bfloat16 tensors to
+        # CPU here can trigger SIGFPE on some hosts, while float32 is stable.
+        orig_device = x.device
+        orig_dtype = x.dtype
+        self.conv = self.conv.to("cpu", dtype=torch.float32)
+        x = x.to("cpu", dtype=torch.float32)
         x = self.conv(x)
-        self = self.to(_device)
-        x = x.to(_device)
+        self.conv = self.conv.to(orig_device, dtype=orig_dtype)
+        x = x.to(orig_device, dtype=orig_dtype)
         x = self.activation_func(x)
         x = self.up_proj(x)
         x = einops.rearrange(x, 'b c t h w -> b t (h w) c')
