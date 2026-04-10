@@ -94,12 +94,30 @@ def build_generate_kwargs(model):
 
     return kwargs
 
-def inference(args, model, df, processor, tokenizer, generate_kwargs):
-    num_map = {
-        "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-        "0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5
+def parse_score_from_output(output):
+    text = output.lower().strip()
+    if not text:
+        return None
+
+    word_map = {
+        "zero": 0,
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
     }
-    
+    for word, score in word_map.items():
+        if re.search(rf"\b{word}\b", text):
+            return score
+
+    digit_match = re.search(r"[0-5]", text)
+    if digit_match:
+        return int(digit_match.group(0))
+
+    return None
+
+def inference(args, model, df, processor, tokenizer, generate_kwargs):
     with torch.no_grad():
         for i,row in tqdm(df.iterrows()):
             videopaths = [row['videopath']]
@@ -123,16 +141,11 @@ def inference(args, model, df, processor, tokenizer, generate_kwargs):
             output_lower = output.lower().strip()
             
             print(f"[RAW_OUTPUT] {repr(output)}")
-            score = None
-            for key, val in num_map.items():
-                if key in output_lower:
-                    score = val
-                    break
+            score = parse_score_from_output(output)
             
             if score is None:
-                # Optionally, try to extract a digit with a simple filter.
                 digits = ''.join([c for c in output_lower if c.isdigit()])
-                score = int(digits) if digits and int(digits) in num_map.values() else 0
+                score = int(digits[0]) if digits and digits[0] in "012345" else 0
                 print(f"Warning: Could not parse output {repr(output)}. Defaulting to {score}.")
             
             # Set the parsed score as an integer in the dataframe.

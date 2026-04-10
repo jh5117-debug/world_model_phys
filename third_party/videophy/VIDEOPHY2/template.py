@@ -3,7 +3,8 @@ PROMPT_SA = (
     "The assistant gives helpful, detailed, and polite answers to the user's questions.\n"
     "Human: <|video|>\n"
     "Human: Does this video match the description: \"{caption}\"? "
-    "Please rate the video on a scale from 1 to 5, where 5 indicates a perfect match and 1 indicates no relevance.\n"
+    "Please rate the video on a scale from 1 to 5, where 5 indicates a perfect match and 1 indicates no relevance. "
+    "Respond with a single digit only.\n"
     "AI: "
 )
 
@@ -12,7 +13,8 @@ PROMPT_PHYSICS = (
     "The assistant gives helpful, detailed, and polite answers to the user's questions.\n"
     "Human: <|video|>\n"
     "Human: Does this video adhere to the physical laws? "
-    "Rate the video on a scale from 1 to 5, where 5 means full compliance and 1 means significant violations.\n"
+    "Rate the video on a scale from 1 to 5, where 5 means full compliance and 1 means significant violations. "
+    "Respond with a single digit only.\n"
     "AI: "
 )
 
