@@ -14,6 +14,7 @@ from peft import LoraConfig, get_peft_model
 from transformers.models.llama.tokenization_llama import LlamaTokenizer
 from mplug_owl_video.modeling_mplug_owl import MplugOwlForConditionalGeneration
 from mplug_owl_video.processing_mplug_owl import MplugOwlImageProcessor, MplugOwlProcessor
+from output_parsing import parse_score_from_output
 from template import *
 
 parser = argparse.ArgumentParser()
@@ -57,9 +58,11 @@ def _read_bool_env(name, default):
 def build_generate_kwargs(model):
     cfg = getattr(model, "generation_config", None)
     kwargs = {
-        # Deterministic decoding is much more stable for scoring/eval than the
-        # model's chat-style sampling defaults.
+        # Stay close to the upstream inference defaults unless explicitly
+        # overridden. This keeps eval behavior comparable across environments.
         "do_sample": False,
+        "top_k": 1,
+        "temperature": 0.001,
         "pad_token_id": getattr(cfg, "pad_token_id", 0),
         "bos_token_id": getattr(cfg, "bos_token_id", 1),
         "eos_token_id": getattr(cfg, "eos_token_id", 2),
@@ -68,54 +71,34 @@ def build_generate_kwargs(model):
     if "VIDEOPHY_DO_SAMPLE" in os.environ:
         kwargs["do_sample"] = _read_bool_env("VIDEOPHY_DO_SAMPLE", kwargs["do_sample"])
 
-    if kwargs["do_sample"]:
-        kwargs["top_k"] = int(
-            os.environ.get(
-                "VIDEOPHY_TOP_K",
-                getattr(cfg, "top_k", 3),
-            )
-        )
-        if "VIDEOPHY_TEMPERATURE" in os.environ:
-            kwargs["temperature"] = float(os.environ["VIDEOPHY_TEMPERATURE"])
-        elif getattr(cfg, "temperature", None) is not None:
-            kwargs["temperature"] = cfg.temperature
+    if "VIDEOPHY_TOP_K" in os.environ:
+        kwargs["top_k"] = int(os.environ["VIDEOPHY_TOP_K"])
+    elif getattr(cfg, "top_k", None) is not None:
+        kwargs["top_k"] = int(cfg.top_k)
 
-    if "VIDEOPHY_MAX_LENGTH" in os.environ:
+    if "VIDEOPHY_TEMPERATURE" in os.environ:
+        kwargs["temperature"] = float(os.environ["VIDEOPHY_TEMPERATURE"])
+    elif getattr(cfg, "temperature", None) is not None:
+        kwargs["temperature"] = float(cfg.temperature)
+
+    if "VIDEOPHY_MAX_NEW_TOKENS" in os.environ:
+        kwargs["max_new_tokens"] = int(os.environ["VIDEOPHY_MAX_NEW_TOKENS"])
+    elif "VIDEOPHY_MAX_LENGTH" in os.environ:
         kwargs["max_length"] = int(os.environ["VIDEOPHY_MAX_LENGTH"])
-    elif getattr(cfg, "max_new_tokens", None) is not None:
-        kwargs["max_new_tokens"] = int(cfg.max_new_tokens)
     else:
-        # The processor needs generation room up front; leaving this at zero
-        # makes the model emit only prompt-aligned tokens on some setups.
-        kwargs["max_new_tokens"] = int(os.environ.get("VIDEOPHY_MAX_NEW_TOKENS", "8"))
+        kwargs["max_length"] = int(getattr(cfg, "max_length", 256) or 256)
 
     if "max_new_tokens" in kwargs:
         kwargs.pop("max_length", None)
 
     return kwargs
 
-def parse_score_from_output(output):
-    text = output.lower().strip()
-    if not text:
-        return None
 
-    word_map = {
-        "zero": 0,
-        "one": 1,
-        "two": 2,
-        "three": 3,
-        "four": 4,
-        "five": 5,
-    }
-    for word, score in word_map.items():
-        if re.search(rf"\b{word}\b", text):
-            return score
-
-    digit_match = re.search(r"[0-5]", text)
-    if digit_match:
-        return int(digit_match.group(0))
-
-    return None
+def resolve_tokens_to_generate():
+    raw = os.environ.get("VIDEOPHY_TOKENS_TO_GENERATE")
+    if raw is None:
+        return 0
+    return int(raw)
 
 def inference(args, model, df, processor, tokenizer, generate_kwargs):
     with torch.no_grad():
@@ -133,22 +116,15 @@ def inference(args, model, df, processor, tokenizer, generate_kwargs):
             inputs = {k: v.to(model.device) for k, v in inputs.items()}
             res = model.generate(**inputs, **generate_kwargs)
             token_ids = res.tolist()[0]
-            if "max_new_tokens" in generate_kwargs:
-                tail_token_ids = token_ids[-generate_kwargs["max_new_tokens"]:]
-            else:
-                tail_token_ids = token_ids
-            output = tokenizer.decode(tail_token_ids, skip_special_tokens=True)
-            output_lower = output.lower().strip()
+            output = tokenizer.decode(token_ids, skip_special_tokens=True)
             
             print(f"[RAW_OUTPUT] {repr(output)}")
-            score = parse_score_from_output(output)
+            score = parse_score_from_output(output, task=args.task)
             
             if score is None:
-                digits = ''.join([c for c in output_lower if c.isdigit()])
-                score = int(digits[0]) if digits and digits[0] in "012345" else 0
-                print(f"Warning: Could not parse output {repr(output)}. Defaulting to {score}.")
+                print(f"Warning: Could not parse output {repr(output)}. Leaving score empty.")
             
-            # Set the parsed score as an integer in the dataframe.
+            df.at[i, "raw_output"] = output
             df.at[i, "score"] = score
     return df
 
@@ -215,10 +191,7 @@ def main():
         print("LOADED")
     model = model.to("cuda").to(model_dtype)
     generate_kwargs = build_generate_kwargs(model)
-    processor.tokens_to_generate = generate_kwargs.get(
-        "max_new_tokens",
-        int(os.environ.get("VIDEOPHY_TOKENS_TO_GENERATE", "8")),
-    )
+    processor.tokens_to_generate = resolve_tokens_to_generate()
     print(f"Processor tokens_to_generate: {processor.tokens_to_generate}")
     print(f"Using generate kwargs: {generate_kwargs}")
     
