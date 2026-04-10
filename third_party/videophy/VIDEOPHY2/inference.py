@@ -28,13 +28,6 @@ parser.add_argument('--output_csv', type = str, required = True, help = 'csv')
 
 args = parser.parse_args()
 
-generate_kwargs = {
-    'do_sample': False,
-    'top_k': 1,
-    'temperature': 0.001,
-    'max_length': 256,
-}
-
 
 def resolve_model_dtype():
     value = os.environ.get("VIDEOPHY_TORCH_DTYPE", "bfloat16").strip().lower()
@@ -53,7 +46,48 @@ def resolve_model_dtype():
         )
     return mapping[value]
 
-def inference(args, model, df, processor, tokenizer):
+
+def _read_bool_env(name, default):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def build_generate_kwargs(model):
+    cfg = getattr(model, "generation_config", None)
+    kwargs = {
+        "do_sample": getattr(cfg, "do_sample", True),
+        "top_k": getattr(cfg, "top_k", 3),
+        "pad_token_id": getattr(cfg, "pad_token_id", 0),
+        "bos_token_id": getattr(cfg, "bos_token_id", 1),
+        "eos_token_id": getattr(cfg, "eos_token_id", 2),
+    }
+
+    if getattr(cfg, "temperature", None) is not None:
+        kwargs["temperature"] = cfg.temperature
+
+    if "VIDEOPHY_DO_SAMPLE" in os.environ:
+        kwargs["do_sample"] = _read_bool_env("VIDEOPHY_DO_SAMPLE", kwargs["do_sample"])
+    if "VIDEOPHY_TOP_K" in os.environ:
+        kwargs["top_k"] = int(os.environ["VIDEOPHY_TOP_K"])
+    if "VIDEOPHY_TEMPERATURE" in os.environ:
+        kwargs["temperature"] = float(os.environ["VIDEOPHY_TEMPERATURE"])
+    if "VIDEOPHY_MAX_LENGTH" in os.environ:
+        kwargs["max_length"] = int(os.environ["VIDEOPHY_MAX_LENGTH"])
+    elif getattr(cfg, "max_new_tokens", None) is not None:
+        kwargs["max_new_tokens"] = int(cfg.max_new_tokens)
+    else:
+        # The processor needs generation room up front; leaving this at zero
+        # makes the model emit only prompt-aligned tokens on some setups.
+        kwargs["max_new_tokens"] = int(os.environ.get("VIDEOPHY_MAX_NEW_TOKENS", "8"))
+
+    if "max_new_tokens" in kwargs:
+        kwargs.pop("max_length", None)
+
+    return kwargs
+
+def inference(args, model, df, processor, tokenizer, generate_kwargs):
     num_map = {
         "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
         "0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5
@@ -73,10 +107,15 @@ def inference(args, model, df, processor, tokenizer):
             inputs = {k: v.to(dtype=model_dtype) if v.dtype == torch.float else v for k, v in inputs.items()}
             inputs = {k: v.to(model.device) for k, v in inputs.items()}
             res = model.generate(**inputs, **generate_kwargs)
-            output = tokenizer.decode(res.tolist()[0], skip_special_tokens=True)
+            token_ids = res.tolist()[0]
+            if "max_new_tokens" in generate_kwargs:
+                tail_token_ids = token_ids[-generate_kwargs["max_new_tokens"]:]
+            else:
+                tail_token_ids = token_ids
+            output = tokenizer.decode(tail_token_ids, skip_special_tokens=True)
             output_lower = output.lower().strip()
             
-            print(output_lower)
+            print(f"[RAW_OUTPUT] {repr(output)}")
             score = None
             for key, val in num_map.items():
                 if key in output_lower:
@@ -87,7 +126,7 @@ def inference(args, model, df, processor, tokenizer):
                 # Optionally, try to extract a digit with a simple filter.
                 digits = ''.join([c for c in output_lower if c.isdigit()])
                 score = int(digits) if digits and int(digits) in num_map.values() else 0
-                print(f"Warning: Could not parse output '{output}'. Defaulting to {score}.")
+                print(f"Warning: Could not parse output {repr(output)}. Defaulting to {score}.")
             
             # Set the parsed score as an integer in the dataframe.
             df.at[i, "score"] = score
@@ -155,8 +194,15 @@ def main():
             model.load_state_dict(ckpt)
         print("LOADED")
     model = model.to("cuda").to(model_dtype)
+    generate_kwargs = build_generate_kwargs(model)
+    processor.tokens_to_generate = generate_kwargs.get(
+        "max_new_tokens",
+        int(os.environ.get("VIDEOPHY_TOKENS_TO_GENERATE", "8")),
+    )
+    print(f"Processor tokens_to_generate: {processor.tokens_to_generate}")
+    print(f"Using generate kwargs: {generate_kwargs}")
     
-    out = inference(args, model, df, processor, tokenizer)
+    out = inference(args, model, df, processor, tokenizer, generate_kwargs)
     out.to_csv(args.output_csv)
 
 if __name__  == "__main__":
