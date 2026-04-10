@@ -1,0 +1,7 @@
+seed_list: [0]
+output_root: .
+compare_seconds: 5.0
+sample_frames: 40
+resize_divisor: 4
+mask_threshold: 10
+max_samples: 0
