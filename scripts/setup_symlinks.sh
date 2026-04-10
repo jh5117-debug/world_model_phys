@@ -17,22 +17,39 @@ LOG_FILE="${PROJECT_ROOT}/logs/setup_symlinks.log"
 link_one() {
   local target="$1"
   local source_path="$2"
+  local target_real source_real current_real
   if [[ -z "${source_path}" ]]; then
     echo "[SKIP] empty source for ${target}" | tee -a "${LOG_FILE}"
     return 0
   fi
-  if [[ "$(realpath -m "${target}")" == "$(realpath -m "${source_path}")" ]]; then
+  target_real="$(realpath -m "${target}")"
+  source_real="$(realpath -m "${source_path}")"
+  if [[ "${target_real}" == "${source_real}" ]]; then
     echo "[SKIP] ${target} already points to itself" | tee -a "${LOG_FILE}"
-    return 0
-  fi
-  if [[ -L "${target}" || -e "${target}" ]]; then
-    echo "[SKIP] ${target} already exists" | tee -a "${LOG_FILE}"
     return 0
   fi
   if [[ ! -e "${source_path}" ]]; then
     echo "[WARN] source missing: ${source_path}" | tee -a "${LOG_FILE}"
     return 0
   fi
+
+  if [[ -L "${target}" ]]; then
+    current_real="$(readlink -f "${target}" || true)"
+    if [[ "${current_real}" == "${source_real}" ]]; then
+      echo "[SKIP] ${target} already points to ${source_path}" | tee -a "${LOG_FILE}"
+      return 0
+    fi
+    rm -f "${target}"
+    ln -s "${source_path}" "${target}"
+    echo "[RELINK] ${target} -> ${source_path}" | tee -a "${LOG_FILE}"
+    return 0
+  fi
+
+  if [[ -e "${target}" ]]; then
+    echo "[SKIP] ${target} already exists as a non-symlink path" | tee -a "${LOG_FILE}"
+    return 0
+  fi
+
   ln -s "${source_path}" "${target}"
   echo "[LINK] ${target} -> ${source_path}" | tee -a "${LOG_FILE}"
 }
