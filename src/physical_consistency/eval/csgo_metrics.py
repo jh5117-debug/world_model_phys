@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 from dataclasses import dataclass
@@ -19,6 +18,7 @@ from physical_consistency.common.io import (
     write_json,
 )
 from physical_consistency.common.path_config import resolve_path_config
+from physical_consistency.common.summary_tables import format_csgo_metrics_summary
 from physical_consistency.common.subprocess_utils import run_command
 from physical_consistency.eval.checkpoint_bundle import materialize_eval_checkpoint_bundle
 from physical_consistency.datasets.manifest_builder import hash_manifest, materialize_dataset_view
@@ -344,7 +344,12 @@ def main() -> None:
             ft_ckpt_dir=cfg.ft_ckpt_dir,
         )
     summary_path = write_summary(cfg.output_root, cfg.experiment_name)
-    print(json.dumps(read_json(summary_path), indent=2))
+    print(
+        format_csgo_metrics_summary(
+            read_json(summary_path),
+            title=f"CSGO Eval Summary: {cfg.experiment_name}",
+        )
+    )
 
 
 if __name__ == "__main__":

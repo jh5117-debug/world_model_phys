@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,6 +28,7 @@ from physical_consistency.common.io import (
     write_json,
 )
 from physical_consistency.common.path_config import resolve_path_config
+from physical_consistency.common.summary_tables import format_physics_iq_summary
 
 
 @dataclass(slots=True)
@@ -532,7 +532,12 @@ def main() -> None:
 
     if args.summary_only:
         summary_path = write_physics_iq_summary(base_output)
-        print(json.dumps(read_json(summary_path), indent=2))
+        print(
+            format_physics_iq_summary(
+                read_json(summary_path),
+                title=f"Physics-IQ Summary: {args.experiment_name}",
+            )
+        )
         return
 
     if bool(reference_videopath) != bool(candidate_videopath):
@@ -556,7 +561,12 @@ def main() -> None:
                 mask_threshold=cfg.mask_threshold,
             )
         summary_path = write_physics_iq_summary(base_output)
-        print(json.dumps(read_json(summary_path), indent=2))
+        print(
+            format_physics_iq_summary(
+                read_json(summary_path),
+                title=f"Physics-IQ Summary: {args.experiment_name}",
+            )
+        )
         return
 
     for seed in cfg.seed_list:
@@ -578,7 +588,12 @@ def main() -> None:
         )
 
     summary_path = write_physics_iq_summary(base_output)
-    print(json.dumps(read_json(summary_path), indent=2))
+    print(
+        format_physics_iq_summary(
+            read_json(summary_path),
+            title=f"Physics-IQ Summary: {args.experiment_name}",
+        )
+    )
 
 
 if __name__ == "__main__":

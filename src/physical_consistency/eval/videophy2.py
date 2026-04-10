@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +19,7 @@ from physical_consistency.common.io import (
     write_json,
 )
 from physical_consistency.common.path_config import resolve_path_config
+from physical_consistency.common.summary_tables import format_videophy2_summary
 from physical_consistency.common.subprocess_utils import run_command
 
 LOGGER = logging.getLogger(__name__)
@@ -241,7 +241,12 @@ def main() -> None:
 
     if args.summary_only:
         summary_path = write_videophy2_summary(base_output)
-        print(json.dumps(read_json(summary_path), indent=2))
+        print(
+            format_videophy2_summary(
+                read_json(summary_path),
+                title=f"VideoPhy-2 Summary: {args.experiment_name}",
+            )
+        )
         return
 
     if not args.manifest_csv:
@@ -288,7 +293,12 @@ def main() -> None:
         )
 
     summary_path = write_videophy2_summary(base_output)
-    print(json.dumps(read_json(summary_path), indent=2))
+    print(
+        format_videophy2_summary(
+            read_json(summary_path),
+            title=f"VideoPhy-2 Summary: {args.experiment_name}",
+        )
+    )
 
 
 if __name__ == "__main__":
