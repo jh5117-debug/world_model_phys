@@ -8,6 +8,7 @@ import numpy as np
 from physical_consistency.eval.physics_iq import (
     build_physics_iq_input_csv,
     evaluate_video_pair,
+    run_physics_iq_for_single_pair,
 )
 
 
@@ -73,3 +74,27 @@ def test_evaluate_video_pair_identity_score_is_high(tmp_path):
     assert result["spatial_iou"] == 1.0
     assert result["weighted_spatial_iou"] == 1.0
     assert result["physics_iq_style_score"] >= 99.99
+
+
+def test_run_physics_iq_for_single_pair_writes_outputs(tmp_path):
+    video_path = tmp_path / "identity.mp4"
+    _write_test_video(video_path)
+
+    output_csv = run_physics_iq_for_single_pair(
+        reference_videopath=video_path,
+        candidate_videopath=video_path,
+        output_dir=tmp_path / "out",
+        sample_id="clip_0001",
+        clip_path="val/clips/clip_0001",
+        prompt="test prompt",
+        compare_seconds=5.0,
+        sample_frames=12,
+        resize_divisor=2,
+        mask_threshold=10,
+    )
+
+    content = output_csv.read_text(encoding="utf-8")
+    assert "clip_0001" in content
+    assert "test prompt" in content
+    assert str(video_path) in content
+    assert '"physics_iq_style_score"' in (output_csv.parent / "summary.json").read_text(encoding="utf-8")

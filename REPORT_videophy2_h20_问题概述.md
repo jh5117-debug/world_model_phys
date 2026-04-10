@@ -994,3 +994,97 @@ PY
 - `reference = matched real val clips`
 
 以比较 LingBot-base / LingBot-Stage1。
+
+### 19.5 H20 上已完成的 `Physics-IQ-style real-vs-real` 单样本 sanity check
+
+在完成工作区清理、确认 `world_model_phys` 主线 repo 干净之后，我们已经在 H20 上成功跑通了一条单样本 `real-vs-real` sanity check。
+
+使用命令：
+
+```bash
+cd /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys
+conda activate /home/nvme03/workspace/world_model_phys/.conda_envs/phys-videophy
+
+python - <<'PY'
+import pandas as pd
+src = "/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/metadata_val.csv"
+dst = "/tmp/csgo_val_one.csv"
+pd.read_csv(src).head(1).to_csv(dst, index=False)
+print(dst)
+PY
+
+PYTHONPATH=src python -m physical_consistency.cli.run_physics_iq \
+  --config /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/configs/physics_iq_dataset_eval.yaml \
+  --experiment_name exp_dataset_val_physics_iq_real_one \
+  --manifest_csv /tmp/csgo_val_one.csv \
+  --reference_source_root /home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3 \
+  --candidate_source_root /home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3 \
+  --reference_source_mode dataset_clip \
+  --candidate_source_mode dataset_clip \
+  --output_root /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys \
+  --seed 0
+```
+
+H20 上的单样本输出为：
+
+- `compare_frame_count = 40.0`
+- `mse_mean = 0.0`
+- `spatiotemporal_iou_mean = 1.0`
+- `spatial_iou = 1.0`
+- `weighted_spatial_iou = 1.0`
+- `physics_iq_style_score = 100.0`
+
+这说明：
+
+- `Physics-IQ-style paired evaluator` 在 H20 上已经能够稳定工作
+- `real -> real` 的 identity sanity check 与预期一致
+- 相比之下，当前真正的剩余问题已经不在 evaluator 本身，而在“如何拿到干净、可复现的 LingBot candidate 视频”
+
+### 19.6 `LingBot-base vs real` 单样本评分的当前状态
+
+截至目前，`LingBot-base vs real` 单样本评分 **尚未在 H20 上完成**，原因不是 `Physics-IQ-style` evaluator 有问题，而是：
+
+- `LingBot-base` 生成依赖的外部 `code/` 目录并不属于 `world_model_phys` 主线 repo
+- 该目录最初只是合作者提供的额外代码快照，并不受当前主线 git 管理
+- 在后续调试过程中，这份外部代码被单独修改、误清空和最终移除，以恢复 H20 上主线工作区的干净状态
+
+因此，当前最准确的状态是：
+
+- `Physics-IQ-style real-vs-real`：已经通过单样本 sanity check
+- `LingBot-base vs real`：评测协议已准备好，但仍然缺少一条可信的 `LingBot-base` candidate video
+
+### 19.7 当前 repo 已支持“直接给两条视频路径”的单样本 Physics-IQ 评分
+
+为了避免后续再依赖整套外部 wrapper，当前 `Physics-IQ-style` CLI 已经支持直接输入：
+
+- `reference_videopath`
+- `candidate_videopath`
+
+也就是说，只要未来拿到一条 `LingBot-base` 生成视频，就可以不再构造完整 manifest，而是直接对单对视频评分。
+
+示例命令如下：
+
+```bash
+cd /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys
+conda activate /home/nvme03/workspace/world_model_phys/.conda_envs/phys-videophy
+
+PYTHONPATH=src python -m physical_consistency.cli.run_physics_iq \
+  --config /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/configs/physics_iq_dataset_eval.yaml \
+  --experiment_name exp_lingbot_base_vs_real_one \
+  --reference_videopath /home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0000/video.mp4 \
+  --candidate_videopath /path/to/lingbot_base_candidate.mp4 \
+  --sample_id Ep_000028_team_2_player_0001_inst_000_clip0000 \
+  --clip_path val/clips/Ep_000028_team_2_player_0001_inst_000_clip0000 \
+  --prompt "First-person view of a competitive CS:GO match on de_dust2. The player is moving through the map holding a Glock-18. Photorealistic game rendering with detailed textures, lighting effects, and HUD elements visible." \
+  --output_root /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys \
+  --seed 0
+```
+
+结果查看路径：
+
+```bash
+cat /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/runs/eval/physics_iq/exp_lingbot_base_vs_real_one/summary.json
+cat /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/runs/eval/physics_iq/exp_lingbot_base_vs_real_one/seed_0/output_pairs.csv
+```
+
+这意味着后续只要恢复一条干净的 `LingBot-base` 生成视频，`LingBot-base vs real` 的单样本 Physics-IQ 评分就可以立即执行，而不必再依赖之前那套混乱的外部 `code` 工作区。

@@ -355,6 +355,58 @@ def run_physics_iq_for_seed(
     return output_csv
 
 
+def run_physics_iq_for_single_pair(
+    *,
+    reference_videopath: str | Path,
+    candidate_videopath: str | Path,
+    output_dir: str | Path,
+    sample_id: str = "single_pair",
+    clip_path: str = "",
+    prompt: str = "",
+    compare_seconds: float,
+    sample_frames: int,
+    resize_divisor: int,
+    mask_threshold: int,
+) -> Path:
+    """Run Physics-IQ-style scoring for one explicit video pair."""
+    output_root = ensure_dir(output_dir)
+    result = evaluate_video_pair(
+        reference_videopath=reference_videopath,
+        candidate_videopath=candidate_videopath,
+        compare_seconds=compare_seconds,
+        sample_frames=sample_frames,
+        resize_divisor=resize_divisor,
+        mask_threshold=mask_threshold,
+    )
+    output_rows = [
+        {
+            "sample_id": sample_id,
+            "clip_path": clip_path,
+            "prompt": prompt,
+            "reference_videopath": str(reference_videopath),
+            "candidate_videopath": str(candidate_videopath),
+            **result,
+        }
+    ]
+    output_csv = output_root / "output_pairs.csv"
+    fieldnames = [
+        "sample_id",
+        "clip_path",
+        "prompt",
+        "reference_videopath",
+        "candidate_videopath",
+        "compare_frame_count",
+        "mse_mean",
+        "spatiotemporal_iou_mean",
+        "spatial_iou",
+        "weighted_spatial_iou",
+        "physics_iq_style_score",
+    ]
+    write_csv_rows(output_csv, output_rows, fieldnames)
+    write_json(output_root / "summary.json", summarize_physics_iq_outputs(output_csv))
+    return output_csv
+
+
 def summarize_physics_iq_outputs(path: str | Path) -> dict[str, Any]:
     rows = read_csv_rows(path)
     if not rows:
@@ -434,6 +486,11 @@ def main() -> None:
     )
     parser.add_argument("--reference_source_root", type=str, default="")
     parser.add_argument("--candidate_source_root", type=str, default="")
+    parser.add_argument("--reference_videopath", type=str, default="")
+    parser.add_argument("--candidate_videopath", type=str, default="")
+    parser.add_argument("--sample_id", type=str, default="single_pair")
+    parser.add_argument("--clip_path", type=str, default="")
+    parser.add_argument("--prompt", type=str, default="")
     parser.add_argument("--video_filename", type=str, default="video.mp4")
     parser.add_argument("--video_suffix", type=str, default="_gen.mp4")
     parser.add_argument("--seed", type=int, default=-1)
@@ -463,11 +520,41 @@ def main() -> None:
         if args.candidate_source_root
         else path_cfg.dataset_dir
     )
+    reference_videopath = (
+        resolve_project_path(args.reference_videopath) if args.reference_videopath else ""
+    )
+    candidate_videopath = (
+        resolve_project_path(args.candidate_videopath) if args.candidate_videopath else ""
+    )
 
     base_output = Path(output_root) / "runs" / "eval" / "physics_iq" / args.experiment_name
     ensure_dir(base_output)
 
     if args.summary_only:
+        summary_path = write_physics_iq_summary(base_output)
+        print(json.dumps(read_json(summary_path), indent=2))
+        return
+
+    if bool(reference_videopath) != bool(candidate_videopath):
+        raise ValueError(
+            "reference_videopath and candidate_videopath must be provided together "
+            "for single-pair Physics-IQ evaluation."
+        )
+
+    if reference_videopath and candidate_videopath:
+        for seed in cfg.seed_list:
+            run_physics_iq_for_single_pair(
+                reference_videopath=reference_videopath,
+                candidate_videopath=candidate_videopath,
+                output_dir=base_output / f"seed_{seed}",
+                sample_id=args.sample_id,
+                clip_path=args.clip_path,
+                prompt=args.prompt,
+                compare_seconds=cfg.compare_seconds,
+                sample_frames=cfg.sample_frames,
+                resize_divisor=cfg.resize_divisor,
+                mask_threshold=cfg.mask_threshold,
+            )
         summary_path = write_physics_iq_summary(base_output)
         print(json.dumps(read_json(summary_path), indent=2))
         return
