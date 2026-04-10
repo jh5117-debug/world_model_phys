@@ -57,22 +57,29 @@ def _read_bool_env(name, default):
 def build_generate_kwargs(model):
     cfg = getattr(model, "generation_config", None)
     kwargs = {
-        "do_sample": getattr(cfg, "do_sample", True),
-        "top_k": getattr(cfg, "top_k", 3),
+        # Deterministic decoding is much more stable for scoring/eval than the
+        # model's chat-style sampling defaults.
+        "do_sample": False,
         "pad_token_id": getattr(cfg, "pad_token_id", 0),
         "bos_token_id": getattr(cfg, "bos_token_id", 1),
         "eos_token_id": getattr(cfg, "eos_token_id", 2),
     }
 
-    if getattr(cfg, "temperature", None) is not None:
-        kwargs["temperature"] = cfg.temperature
-
     if "VIDEOPHY_DO_SAMPLE" in os.environ:
         kwargs["do_sample"] = _read_bool_env("VIDEOPHY_DO_SAMPLE", kwargs["do_sample"])
-    if "VIDEOPHY_TOP_K" in os.environ:
-        kwargs["top_k"] = int(os.environ["VIDEOPHY_TOP_K"])
-    if "VIDEOPHY_TEMPERATURE" in os.environ:
-        kwargs["temperature"] = float(os.environ["VIDEOPHY_TEMPERATURE"])
+
+    if kwargs["do_sample"]:
+        kwargs["top_k"] = int(
+            os.environ.get(
+                "VIDEOPHY_TOP_K",
+                getattr(cfg, "top_k", 3),
+            )
+        )
+        if "VIDEOPHY_TEMPERATURE" in os.environ:
+            kwargs["temperature"] = float(os.environ["VIDEOPHY_TEMPERATURE"])
+        elif getattr(cfg, "temperature", None) is not None:
+            kwargs["temperature"] = cfg.temperature
+
     if "VIDEOPHY_MAX_LENGTH" in os.environ:
         kwargs["max_length"] = int(os.environ["VIDEOPHY_MAX_LENGTH"])
     elif getattr(cfg, "max_new_tokens", None) is not None:
