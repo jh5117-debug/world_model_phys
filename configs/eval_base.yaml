@@ -15,6 +15,7 @@ ulysses_size: 8
 run_fid_fvd: true
 run_action_control: true
 run_videophy2: true
+control_type: act
 base_model_dir: links/base_model
 ft_ckpt_dir: ""
 output_root: .

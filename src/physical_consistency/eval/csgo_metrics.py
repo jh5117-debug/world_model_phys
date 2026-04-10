@@ -47,6 +47,7 @@ class CSGOEvalConfig:
     ft_ckpt_dir: str
     output_root: str
     seed_list: list[int]
+    control_type: str = "act"
     stage1_ckpt_dir: str = ""
     allow_stage1_fallback: bool = False
 
@@ -55,6 +56,7 @@ class CSGOEvalConfig:
         """Load config from YAML."""
         payload = read_yaml(path)
         payload.setdefault("seed_list", DEFAULT_SEED_LIST)
+        payload.setdefault("control_type", "act")
         for key in [
             "manifest_path",
             "base_model_dir",
@@ -84,6 +86,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest_path", type=str, default="")
     parser.add_argument("--num_gpus", type=int, default=0)
     parser.add_argument("--ulysses_size", type=int, default=0)
+    parser.add_argument("--control_type", type=str, default="", choices=["act", "cam"])
     return parser.parse_args()
 
 
@@ -136,10 +139,12 @@ def run_single_seed_eval(
         if visible_devices
         else ",".join(str(idx) for idx in range(cfg.num_gpus))
     )
+    effective_num_gpus = max(1, cfg.num_gpus)
+    effective_ulysses_size = max(1, min(cfg.ulysses_size, effective_num_gpus))
 
     batch_cmd = [
         "torchrun",
-        f"--nproc_per_node={cfg.num_gpus}",
+        f"--nproc_per_node={effective_num_gpus}",
         "eval_batch.py",
         "--ckpt_dir",
         base_model_dir,
@@ -165,12 +170,14 @@ def run_single_seed_eval(
         str(cfg.width),
         "--seed",
         str(seed),
-        "--dit_fsdp",
-        "--t5_fsdp",
+        "--control_type",
+        cfg.control_type,
         "--ulysses_size",
-        str(cfg.ulysses_size),
+        str(effective_ulysses_size),
         "--skip_existing",
     ]
+    if effective_num_gpus > 1:
+        batch_cmd.extend(["--dit_fsdp", "--t5_fsdp"])
     if effective_ft_ckpt_dir:
         batch_cmd.extend(["--ft_ckpt_dir", effective_ft_ckpt_dir])
 
@@ -313,6 +320,8 @@ def main() -> None:
         cfg.num_gpus = args.num_gpus
     if args.ulysses_size > 0:
         cfg.ulysses_size = args.ulysses_size
+    if args.control_type:
+        cfg.control_type = args.control_type
 
     path_cfg = resolve_path_config(args, env_file=args.env_file or None)
     cfg.base_model_dir = cfg.base_model_dir or path_cfg.base_model_dir
