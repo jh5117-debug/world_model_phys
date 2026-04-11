@@ -6,6 +6,7 @@ from physical_consistency.datasets.test_subset import (
     build_csgo_test_subset,
     select_diverse_test_rows,
 )
+from physical_consistency.datasets.manifest_builder import materialize_dataset_view
 
 
 def test_select_diverse_test_rows_preserves_sample_count_and_order():
@@ -65,3 +66,29 @@ def test_build_csgo_test_subset_rewrites_paths_and_links(tmp_path: Path):
     assert all(row["video"].startswith("test/clips/") for row in metadata_rows)
     for row in metadata_rows:
         assert (dataset_dir / row["clip_path"]).is_symlink()
+
+
+def test_materialize_dataset_view_keeps_test_split_symlink(tmp_path: Path):
+    dataset_dir = tmp_path / "processed_csgo_v3"
+    for split in ["train", "val", "test"]:
+        (dataset_dir / split).mkdir(parents=True)
+    rows = [
+        {
+            "prompt": "demo",
+            "video": "test/clips/clip_0000/video.mp4",
+            "clip_path": "test/clips/clip_0000",
+            "map": "de_dust2",
+            "episode_id": "28",
+            "stem": "stem_0",
+            "num_frames": "81",
+        }
+    ]
+    from physical_consistency.common.io import write_csv_rows
+
+    write_csv_rows(dataset_dir / "metadata_train.csv", rows, list(rows[0].keys()))
+    write_csv_rows(dataset_dir / "metadata_test.csv", rows, list(rows[0].keys()))
+    write_csv_rows(dataset_dir / "metadata_val.csv", rows, list(rows[0].keys()))
+    write_csv_rows(tmp_path / "manifest.csv", rows, list(rows[0].keys()))
+
+    out_dir = materialize_dataset_view(dataset_dir, tmp_path / "manifest.csv", tmp_path / "view")
+    assert (out_dir / "test").is_symlink()

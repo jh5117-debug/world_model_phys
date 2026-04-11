@@ -55,7 +55,7 @@ def materialize_dataset_view(
     base = Path(base_dataset_dir)
     out_dir = ensure_dir(output_dir)
 
-    for split_name in ["train", "val"]:
+    for split_name in ["train", "val", "test"]:
         source = base / split_name
         target = out_dir / split_name
         if not target.exists() and source.exists():
