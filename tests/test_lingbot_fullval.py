@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+from argparse import Namespace
+from types import SimpleNamespace
+
+import pytest
+
 from physical_consistency.eval.lingbot_fullval import (
+    _build_config,
     build_progress_row,
     shard_rows,
     summarize_physics_iq_outputs_from_rows,
@@ -71,3 +77,45 @@ def test_summarize_physics_iq_outputs_from_rows_aggregates_numeric_fields():
     assert summary["count"] == 2
     assert summary["means"]["physics_iq_style_score"]["mean"] == 50.0
     assert summary["means"]["mse_mean"]["mean"] == 0.08
+
+
+def test_build_config_allows_missing_physics_config(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "physical_consistency.eval.lingbot_fullval.resolve_path_config",
+        lambda args, env_file=None: SimpleNamespace(
+            dataset_dir="/tmp/dataset",
+            output_root="/tmp/output",
+            base_model_dir="/tmp/base",
+            stage1_ckpt_dir="/tmp/stage1",
+        ),
+    )
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+
+    cfg = _build_config(
+        Namespace(
+            env_file="",
+            dataset_dir="",
+            manifest_path="",
+            output_root="",
+            base_model_dir="",
+            stage1_ckpt_dir="",
+            val_inf_root="",
+            seed=0,
+            frame_num=81,
+            sample_steps=70,
+            guide_scale=5.0,
+            height=480,
+            width=832,
+            control_type="act",
+            models="both",
+            video_filename="video.mp4",
+            video_suffix="_gen.mp4",
+            report_every=10,
+            poll_seconds=15,
+            num_gpus=2,
+            ulysses_size=1,
+        )
+    )
+
+    assert cfg.physics_config == "/tmp/output/configs/physics_iq_dataset_eval.yaml"
+    assert cfg.gpu_list == ["0", "1"]

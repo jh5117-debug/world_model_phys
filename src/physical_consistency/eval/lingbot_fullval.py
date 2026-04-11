@@ -125,29 +125,37 @@ def _resolve_gpu_list(args: argparse.Namespace) -> list[str]:
 
 def _build_config(args: argparse.Namespace) -> FullvalConfig:
     path_cfg = resolve_path_config(args, env_file=args.env_file or None)
-    dataset_dir = resolve_project_path(args.dataset_dir) if args.dataset_dir else path_cfg.dataset_dir
+    dataset_dir_arg = getattr(args, "dataset_dir", "")
+    manifest_path_arg = getattr(args, "manifest_path", "")
+    output_root_arg = getattr(args, "output_root", "")
+    base_model_dir_arg = getattr(args, "base_model_dir", "")
+    stage1_ckpt_dir_arg = getattr(args, "stage1_ckpt_dir", "")
+    val_inf_root_arg = getattr(args, "val_inf_root", "")
+    physics_config_arg = getattr(args, "physics_config", "")
+
+    dataset_dir = resolve_project_path(dataset_dir_arg) if dataset_dir_arg else path_cfg.dataset_dir
     manifest_path = (
-        resolve_project_path(args.manifest_path)
-        if args.manifest_path
+        resolve_project_path(manifest_path_arg)
+        if manifest_path_arg
         else str(Path(dataset_dir) / "metadata_val.csv")
     )
-    output_root = resolve_project_path(args.output_root) if args.output_root else path_cfg.output_root
+    output_root = resolve_project_path(output_root_arg) if output_root_arg else path_cfg.output_root
     base_model_dir = (
-        resolve_project_path(args.base_model_dir) if args.base_model_dir else path_cfg.base_model_dir
+        resolve_project_path(base_model_dir_arg) if base_model_dir_arg else path_cfg.base_model_dir
     )
     stage1_ckpt_dir = (
-        resolve_project_path(args.stage1_ckpt_dir)
-        if args.stage1_ckpt_dir
+        resolve_project_path(stage1_ckpt_dir_arg)
+        if stage1_ckpt_dir_arg
         else path_cfg.stage1_ckpt_dir
     )
     val_inf_root = (
-        resolve_project_path(args.val_inf_root)
-        if args.val_inf_root
+        resolve_project_path(val_inf_root_arg)
+        if val_inf_root_arg
         else str(Path(dataset_dir) / "val_inf_result")
     )
     physics_config = (
-        resolve_project_path(args.physics_config)
-        if args.physics_config
+        resolve_project_path(physics_config_arg)
+        if physics_config_arg
         else str(Path(output_root) / "configs" / "physics_iq_dataset_eval.yaml")
     )
     return FullvalConfig(
