@@ -45,6 +45,7 @@ teacher = [
 pc-build-manifests = "physical_consistency.cli.build_manifests:main"
 pc-verify-stage1 = "physical_consistency.cli.verify_stage1_lineage:main"
 pc-run-csgo-metrics = "physical_consistency.cli.run_csgo_metrics:main"
+pc-run-lingbot-fullval = "physical_consistency.cli.run_lingbot_fullval:main"
 pc-run-videophy2 = "physical_consistency.cli.run_videophy2:main"
 pc-compare-reports = "physical_consistency.cli.compare_reports:main"
 pc-train-trd-v1 = "physical_consistency.cli.train_trd_v1:main"

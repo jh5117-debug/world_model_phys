@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from physical_consistency.common.summary_tables import (
     format_csgo_metrics_summary,
+    format_lingbot_progress_summary,
     format_physics_iq_summary,
     format_videophy2_summary,
 )
@@ -82,3 +83,30 @@ def test_format_videophy2_summary_renders_joint_score():
 
     assert "VideoPhy-2 Summary: demo" in rendered
     assert "Joint >= 4" in rendered
+
+
+def test_format_lingbot_progress_summary_renders_combined_table():
+    rendered = format_lingbot_progress_summary(
+        [
+            {
+                "Model": "LingBot-base",
+                "Processed": 10,
+                "Total": 405,
+                "Mean Physics-IQ Score": 43.65,
+                "Mean PSNR": 9.6551,
+            },
+            {
+                "Model": "LingBot-Stage1",
+                "Processed": 10,
+                "Total": 405,
+                "Mean Physics-IQ Score": 59.25,
+                "Mean PSNR": 11.5251,
+            },
+        ],
+        title="LingBot Full-Val Final Summary",
+    )
+
+    assert "LingBot Full-Val Final Summary" in rendered
+    assert "| Model | Processed | Total | Mean Physics-IQ Score | Mean PSNR |" in rendered
+    assert "| LingBot-base | 10 | 405 | 43.65 | 9.6551 |" in rendered
+    assert "| LingBot-Stage1 | 10 | 405 | 59.25 | 11.5251 |" in rendered

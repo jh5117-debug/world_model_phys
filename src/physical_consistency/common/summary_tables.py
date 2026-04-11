@@ -161,3 +161,26 @@ def format_csgo_metrics_summary(summary: dict[str, Any], *, title: str = "CSGO E
         metric_order=metric_order,
         metric_labels=metric_labels,
     )
+
+
+def format_lingbot_progress_summary(
+    rows: list[dict[str, Any]],
+    *,
+    title: str = "LingBot Eval Progress",
+) -> str:
+    """Render rolling full-val LingBot progress as a compact terminal table."""
+    headers = ["Model", "Processed", "Total", "Mean Physics-IQ Score", "Mean PSNR"]
+    table_rows = [
+        [
+            row.get("Model", ""),
+            row.get("Processed", ""),
+            row.get("Total", ""),
+            row.get("Mean Physics-IQ Score", ""),
+            row.get("Mean PSNR", ""),
+        ]
+        for row in rows
+    ]
+    sections = [title]
+    if table_rows:
+        sections.extend(["", "Overview", _markdown_table(headers, table_rows)])
+    return "\n".join(sections).strip()
