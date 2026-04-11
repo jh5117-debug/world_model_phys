@@ -184,3 +184,24 @@ def format_lingbot_progress_summary(
     if table_rows:
         sections.extend(["", "Overview", _markdown_table(headers, table_rows)])
     return "\n".join(sections).strip()
+
+
+def format_lingbot_generation_summary(
+    rows: list[dict[str, Any]],
+    *,
+    title: str = "LingBot Generation Progress",
+) -> str:
+    """Render generation-only LingBot progress as a compact terminal table."""
+    headers = ["Model", "Processed", "Total"]
+    table_rows = [
+        [
+            row.get("Model", ""),
+            row.get("Processed", ""),
+            row.get("Total", ""),
+        ]
+        for row in rows
+    ]
+    sections = [title]
+    if table_rows:
+        sections.extend(["", "Overview", _markdown_table(headers, table_rows)])
+    return "\n".join(sections).strip()
