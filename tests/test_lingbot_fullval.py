@@ -2,20 +2,21 @@ from __future__ import annotations
 
 from physical_consistency.eval.lingbot_fullval import (
     build_progress_row,
-    chunk_rows,
+    shard_rows,
     summarize_physics_iq_outputs_from_rows,
 )
 
 
-def test_chunk_rows_splits_manifest_sequentially():
+def test_shard_rows_round_robins_manifest_rows():
     rows = [{"clip_path": f"val/clips/clip_{idx:04d}", "prompt": f"prompt {idx}"} for idx in range(25)]
 
-    chunks = chunk_rows(rows, 10)
+    shards = shard_rows(rows, 4)
 
-    assert [len(chunk) for chunk in chunks] == [10, 10, 5]
-    assert chunks[0][0]["clip_path"] == "val/clips/clip_0000"
-    assert chunks[1][0]["clip_path"] == "val/clips/clip_0010"
-    assert chunks[2][-1]["clip_path"] == "val/clips/clip_0024"
+    assert [len(shard) for shard in shards] == [7, 6, 6, 6]
+    assert shards[0][0]["clip_path"] == "val/clips/clip_0000"
+    assert shards[0][1]["clip_path"] == "val/clips/clip_0004"
+    assert shards[1][0]["clip_path"] == "val/clips/clip_0001"
+    assert shards[3][-1]["clip_path"] == "val/clips/clip_0023"
 
 
 def test_build_progress_row_uses_mean_physics_iq_and_psnr():
