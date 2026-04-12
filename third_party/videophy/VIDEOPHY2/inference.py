@@ -190,15 +190,19 @@ def inference(args, model, df, processor, tokenizer, generate_kwargs, score_toke
             model_dtype = next(model.parameters()).dtype
             inputs = _prepare_model_inputs(inputs, model=model, model_dtype=model_dtype)
 
-            forward_out = model(**inputs)
-            last_prompt_idx = int(inputs["attention_mask"][0].sum().item()) - 1
-            choice_score, choice_confidence = _score_from_next_token_logits(
-                forward_out.logits[0, last_prompt_idx, :],
-                score_token_map,
-            )
+            generate_call_kwargs = dict(generate_kwargs)
+            generate_call_kwargs["return_dict_in_generate"] = True
+            generate_call_kwargs["output_scores"] = True
 
-            res = model.generate(**inputs, **generate_kwargs)
+            res = model.generate(**inputs, **generate_call_kwargs)
             sequences = res.sequences if hasattr(res, "sequences") else res
+            choice_score = None
+            choice_confidence = None
+            if hasattr(res, "scores") and res.scores:
+                choice_score, choice_confidence = _score_from_next_token_logits(
+                    res.scores[0][0],
+                    score_token_map,
+                )
             prompt_token_count = int(inputs["input_ids"].shape[1])
             full_output, generated_output = _decode_generation_outputs(
                 sequences,
