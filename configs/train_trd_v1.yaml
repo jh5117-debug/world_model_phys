@@ -20,6 +20,7 @@ teacher_pretrained_frames: 16
 teacher_input_frames: 49
 teacher_drop_first_frame: true
 teacher_image_size: 224
+teacher_dtype: bfloat16
 teacher_feature_dim: 768
 student_target_block: 20
 relation_tokens: 64

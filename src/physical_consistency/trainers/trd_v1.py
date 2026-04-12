@@ -473,6 +473,7 @@ class TRDTrainingRunner:
             repo_dir=self.args.teacher_repo_dir,
             checkpoint_path=self.teacher_checkpoint_path,
             device=self.accelerator.device,
+            model_dtype=self.args.teacher_dtype,
             model_variant=self.args.teacher_model_variant,
             image_size=self.args.teacher_image_size,
             align_video_resolution=(self.args.teacher_height, self.args.teacher_width),
@@ -1200,6 +1201,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("teacher_input_frames", 49)
     payload.setdefault("teacher_drop_first_frame", True)
     payload.setdefault("teacher_model_variant", "vit_base_patch16_224")
+    payload.setdefault("teacher_dtype", "bfloat16")
     payload.setdefault("validation_every_steps", 300)
     payload.setdefault("mini_val_max_samples", 8)
     payload.setdefault("student_target_block", 20)
@@ -1289,6 +1291,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--teacher_repo_dir", type=str, default="")
     parser.add_argument("--teacher_checkpoint_dir", type=str, default="")
     parser.add_argument("--teacher_checkpoint_path", type=str, default="")
+    parser.add_argument("--teacher_dtype", type=str, default="")
     parser.add_argument("--validation_runtime_mode", type=str, default="")
     parser.add_argument("--allow_deepspeed_feature_hook_experimental", type=str, default="")
     return parser.parse_args()
