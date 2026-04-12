@@ -16,6 +16,9 @@ CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/configs/videophy2_dataset_autoeval.y
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-exp_dataset_val_autoeval}"
 MANIFEST="${MANIFEST:-${DATASET_DIR}/metadata_val.csv}"
 VIDEO_SOURCE_ROOT="${VIDEO_SOURCE_ROOT:-${DATASET_DIR}}"
+VIDEO_SOURCE_MODE="${VIDEO_SOURCE_MODE:-dataset_clip}"
+MANIFEST_VIDEO_COLUMN="${MANIFEST_VIDEO_COLUMN:-videopath}"
+MANIFEST_CAPTION_COLUMN="${MANIFEST_CAPTION_COLUMN:-prompt}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}}"
 VIDEOPHY_REPO_DIR="${VIDEOPHY_REPO_DIR:-${PROJECT_ROOT}/third_party/videophy}"
 VIDEOPHY2_CKPT_DIR="${VIDEOPHY2_CKPT_DIR:-${PROJECT_ROOT}/links/videophy2_checkpoint}"
@@ -27,8 +30,10 @@ CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m physical_consistency.cli.run_videophy
   --env_file "${ENV_FILE}" \
   --experiment_name "${EXPERIMENT_NAME}" \
   --manifest_csv "${MANIFEST}" \
-  --video_source_mode dataset_clip \
+  --video_source_mode "${VIDEO_SOURCE_MODE}" \
   --video_source_root "${VIDEO_SOURCE_ROOT}" \
+  --manifest_video_column "${MANIFEST_VIDEO_COLUMN}" \
+  --manifest_caption_column "${MANIFEST_CAPTION_COLUMN}" \
   --video_filename "${VIDEO_FILENAME}" \
   --videophy_repo_dir "${VIDEOPHY_REPO_DIR}" \
   --checkpoint_dir "${VIDEOPHY2_CKPT_DIR}" \

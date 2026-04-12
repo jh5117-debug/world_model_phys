@@ -29,6 +29,15 @@ parser.add_argument('--output_csv', type = str, required = True, help = 'csv')
 
 args = parser.parse_args()
 
+_SCORE_TO_WORD = {
+    0: "zero",
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+}
+
 
 def resolve_model_dtype():
     value = os.environ.get("VIDEOPHY_TORCH_DTYPE", "bfloat16").strip().lower()
@@ -86,7 +95,9 @@ def build_generate_kwargs(model):
     elif "VIDEOPHY_MAX_LENGTH" in os.environ:
         kwargs["max_length"] = int(os.environ["VIDEOPHY_MAX_LENGTH"])
     else:
-        kwargs["max_length"] = int(getattr(cfg, "max_length", 256) or 256)
+        # Score-only prompts should finish within a couple of tokens. Keeping
+        # the generation short avoids garbage tails like "100000".
+        kwargs["max_new_tokens"] = 4
 
     if "max_new_tokens" in kwargs:
         kwargs.pop("max_length", None)
@@ -100,9 +111,74 @@ def resolve_tokens_to_generate():
         return 0
     return int(raw)
 
-def inference(args, model, df, processor, tokenizer, generate_kwargs):
+
+def _prepare_model_inputs(inputs, *, model, model_dtype):
+    prepared = {}
+    for key, value in inputs.items():
+        if key == "attention_mask":
+            prepared[key] = value.to(device=model.device, dtype=torch.long)
+        elif value.dtype == torch.float:
+            prepared[key] = value.to(device=model.device, dtype=model_dtype)
+        else:
+            prepared[key] = value.to(model.device)
+    return prepared
+
+
+def _allowed_scores_for_task(task):
+    if task == "rule":
+        return (0, 1, 2)
+    return (1, 2, 3, 4, 5)
+
+
+def _build_score_token_map(tokenizer, task):
+    token_map = {}
+    for score in _allowed_scores_for_task(task):
+        token_ids = set()
+        for variant in (
+            str(score),
+            f" {score}",
+            f"\n{score}",
+            _SCORE_TO_WORD[score],
+            f" {_SCORE_TO_WORD[score]}",
+            f"\n{_SCORE_TO_WORD[score]}",
+        ):
+            encoded = tokenizer(variant, add_special_tokens=False)["input_ids"]
+            if len(encoded) == 1:
+                token_ids.add(int(encoded[0]))
+        if token_ids:
+            token_map[score] = sorted(token_ids)
+    return token_map
+
+
+def _score_from_next_token_logits(next_token_logits, score_token_map):
+    if not score_token_map:
+        return None, None
+
+    allowed_scores = []
+    allowed_logits = []
+    for score in sorted(score_token_map):
+        token_ids = score_token_map[score]
+        score_logit = max(float(next_token_logits[token_id].item()) for token_id in token_ids)
+        allowed_scores.append(score)
+        allowed_logits.append(score_logit)
+
+    logits_tensor = torch.tensor(allowed_logits, dtype=torch.float32)
+    probs = torch.softmax(logits_tensor, dim=0)
+    best_idx = int(torch.argmax(probs).item())
+    return allowed_scores[best_idx], float(probs[best_idx].item())
+
+
+def _decode_generation_outputs(sequences, *, prompt_token_count, tokenizer):
+    token_ids = sequences[0].tolist()
+    generated_token_ids = token_ids[prompt_token_count:]
+    full_output = tokenizer.decode(token_ids, skip_special_tokens=True)
+    generated_output = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
+    return full_output, generated_output
+
+
+def inference(args, model, df, processor, tokenizer, generate_kwargs, score_token_map):
     with torch.no_grad():
-        for i,row in tqdm(df.iterrows()):
+        for i, row in tqdm(df.iterrows()):
             videopaths = [row['videopath']]
             if args.task == 'sa':
                 prompts = [PROMPT_SA.format(caption=row['caption'])] 
@@ -112,19 +188,50 @@ def inference(args, model, df, processor, tokenizer, generate_kwargs):
                 prompts = [PROMPT_RULE.format(rule=row['rule'])]
             inputs = processor(text=prompts, videos=videopaths, num_frames=args.num_frames, return_tensors='pt')
             model_dtype = next(model.parameters()).dtype
-            inputs = {k: v.to(dtype=model_dtype) if v.dtype == torch.float else v for k, v in inputs.items()}
-            inputs = {k: v.to(model.device) for k, v in inputs.items()}
+            inputs = _prepare_model_inputs(inputs, model=model, model_dtype=model_dtype)
+
+            forward_out = model(**inputs)
+            last_prompt_idx = int(inputs["attention_mask"][0].sum().item()) - 1
+            choice_score, choice_confidence = _score_from_next_token_logits(
+                forward_out.logits[0, last_prompt_idx, :],
+                score_token_map,
+            )
+
             res = model.generate(**inputs, **generate_kwargs)
-            token_ids = res.tolist()[0]
-            output = tokenizer.decode(token_ids, skip_special_tokens=True)
-            
-            print(f"[RAW_OUTPUT] {repr(output)}")
-            score = parse_score_from_output(output, task=args.task)
-            
+            sequences = res.sequences if hasattr(res, "sequences") else res
+            prompt_token_count = int(inputs["input_ids"].shape[1])
+            full_output, generated_output = _decode_generation_outputs(
+                sequences,
+                prompt_token_count=prompt_token_count,
+                tokenizer=tokenizer,
+            )
+
+            print(f"[RAW_OUTPUT] {repr(full_output)}")
+            print(f"[GENERATED_OUTPUT] {repr(generated_output)}")
+            if choice_score is not None:
+                print(
+                    f"[CHOICE_SCORE] score={choice_score} confidence={choice_confidence:.4f}"
+                )
+
+            score = parse_score_from_output(generated_output, task=args.task)
+            score_source = "generated_output"
             if score is None:
-                print(f"Warning: Could not parse output {repr(output)}. Leaving score empty.")
-            
-            df.at[i, "raw_output"] = output
+                score = parse_score_from_output(full_output, task=args.task)
+                if score is not None:
+                    score_source = "full_output"
+            if score is None:
+                score = choice_score
+                score_source = "choice_logits" if choice_score is not None else ""
+                print(
+                    f"Warning: Could not parse generated output {repr(generated_output)}. "
+                    f"Falling back to {score_source or 'empty score'}."
+                )
+
+            df.at[i, "raw_output"] = full_output
+            df.at[i, "generated_output"] = generated_output
+            df.at[i, "choice_score"] = choice_score
+            df.at[i, "choice_confidence"] = choice_confidence
+            df.at[i, "score_source"] = score_source
             df.at[i, "score"] = score
     return df
 
@@ -192,11 +299,13 @@ def main():
     model = model.to("cuda").to(model_dtype)
     generate_kwargs = build_generate_kwargs(model)
     processor.tokens_to_generate = resolve_tokens_to_generate()
+    score_token_map = _build_score_token_map(tokenizer, args.task)
     print(f"Processor tokens_to_generate: {processor.tokens_to_generate}")
     print(f"Using generate kwargs: {generate_kwargs}")
+    print(f"Score token map: {score_token_map}")
     
-    out = inference(args, model, df, processor, tokenizer, generate_kwargs)
-    out.to_csv(args.output_csv)
+    out = inference(args, model, df, processor, tokenizer, generate_kwargs, score_token_map)
+    out.to_csv(args.output_csv, index=False)
 
 if __name__  == "__main__":
     main()

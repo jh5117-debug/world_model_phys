@@ -20,6 +20,9 @@ CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/configs/videophy2_dataset_autoeval.y
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-exp_dataset_val_autoeval_parallel}"
 MANIFEST="${MANIFEST:-${DATASET_DIR}/metadata_val.csv}"
 VIDEO_SOURCE_ROOT="${VIDEO_SOURCE_ROOT:-${DATASET_DIR}}"
+VIDEO_SOURCE_MODE="${VIDEO_SOURCE_MODE:-dataset_clip}"
+MANIFEST_VIDEO_COLUMN="${MANIFEST_VIDEO_COLUMN:-videopath}"
+MANIFEST_CAPTION_COLUMN="${MANIFEST_CAPTION_COLUMN:-prompt}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}}"
 VIDEOPHY_REPO_DIR="${VIDEOPHY_REPO_DIR:-${PROJECT_ROOT}/third_party/videophy}"
 VIDEOPHY2_CKPT_DIR="${VIDEOPHY2_CKPT_DIR:-${PROJECT_ROOT}/links/videophy2_checkpoint}"
@@ -29,12 +32,13 @@ SEED="${SEED:-0}"
 STATUS_EVERY_SEC="${STATUS_EVERY_SEC:-30}"
 KILL_EXISTING_GPU_PIDS="${KILL_EXISTING_GPU_PIDS:-0}"
 KILL_GRACE_SEC="${KILL_GRACE_SEC:-5}"
+MAX_ROWS_PER_GPU="${MAX_ROWS_PER_GPU:-0}"
 
 if [[ ! -f "${MANIFEST}" ]]; then
   echo "[ERROR] Manifest not found: ${MANIFEST}" >&2
   exit 1
 fi
-if [[ ! -d "${VIDEO_SOURCE_ROOT}" ]]; then
+if [[ "${VIDEO_SOURCE_MODE}" != "manifest_videopath" && "${VIDEO_SOURCE_MODE}" != "manifest_video_column" && ! -d "${VIDEO_SOURCE_ROOT}" ]]; then
   echo "[ERROR] Video source root not found: ${VIDEO_SOURCE_ROOT}" >&2
   exit 1
 fi
@@ -83,6 +87,9 @@ log "Config: ${CONFIG_PATH}"
 log "Env file: ${ENV_FILE}"
 log "Manifest: ${MANIFEST}"
 log "Video source root: ${VIDEO_SOURCE_ROOT}"
+log "Video source mode: ${VIDEO_SOURCE_MODE}"
+log "Manifest video column: ${MANIFEST_VIDEO_COLUMN}"
+log "Manifest caption column: ${MANIFEST_CAPTION_COLUMN}"
 log "Checkpoint dir: ${VIDEOPHY2_CKPT_DIR}"
 log "GPU list: ${GPU_LIST}"
 log "Experiment: ${EXPERIMENT_NAME}"
@@ -109,7 +116,40 @@ BASE_OUTPUT="${OUTPUT_ROOT}/runs/eval/videophy2/${EXPERIMENT_NAME}"
 SHARD_DIR="${BASE_OUTPUT}/shards"
 mkdir -p "${SHARD_DIR}"
 
-python - "${MANIFEST}" "${SHARD_DIR}" "${#GPUS[@]}" <<'PY'
+MANIFEST_ROWS="$(python - "${MANIFEST}" <<'PY'
+import csv
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+with manifest_path.open("r", encoding="utf-8", newline="") as handle:
+    reader = csv.DictReader(handle)
+    count = sum(1 for _ in reader)
+print(count)
+PY
+)"
+
+if [[ "${MANIFEST_ROWS}" -le 0 ]]; then
+  echo "[ERROR] Manifest has no data rows: ${MANIFEST}" >&2
+  exit 1
+fi
+
+SHARD_COUNT="${#GPUS[@]}"
+if [[ "${MAX_ROWS_PER_GPU}" -gt 0 ]]; then
+  SHARD_COUNT="$(( (MANIFEST_ROWS + MAX_ROWS_PER_GPU - 1) / MAX_ROWS_PER_GPU ))"
+  if [[ "${SHARD_COUNT}" -gt "${#GPUS[@]}" ]]; then
+    echo "[ERROR] Need ${SHARD_COUNT} GPUs to keep <= ${MAX_ROWS_PER_GPU} rows/GPU, but GPU_LIST only has ${#GPUS[@]} GPUs." >&2
+    exit 1
+  fi
+fi
+
+log "Manifest rows: ${MANIFEST_ROWS}"
+log "Shard count: ${SHARD_COUNT}"
+if [[ "${MAX_ROWS_PER_GPU}" -gt 0 ]]; then
+  log "Max rows per GPU: ${MAX_ROWS_PER_GPU}"
+fi
+
+python - "${MANIFEST}" "${SHARD_DIR}" "${SHARD_COUNT}" <<'PY'
 import csv
 import sys
 from pathlib import Path
@@ -138,6 +178,9 @@ declare -a JOB_GPUS=()
 declare -a JOB_EXPERIMENTS=()
 
 for shard_idx in "${!GPUS[@]}"; do
+  if [[ "${shard_idx}" -ge "${SHARD_COUNT}" ]]; then
+    break
+  fi
   shard_experiment="${EXPERIMENT_NAME}_shard_${shard_idx}"
   shard_manifest="${SHARD_DIR}/manifest_shard_${shard_idx}.csv"
   if [[ "$(wc -l < "${shard_manifest}")" -le 1 ]]; then
@@ -156,8 +199,10 @@ for shard_idx in "${!GPUS[@]}"; do
     --env_file "${ENV_FILE}" \
     --experiment_name "${shard_experiment}" \
     --manifest_csv "${shard_manifest}" \
-    --video_source_mode dataset_clip \
+    --video_source_mode "${VIDEO_SOURCE_MODE}" \
     --video_source_root "${VIDEO_SOURCE_ROOT}" \
+    --manifest_video_column "${MANIFEST_VIDEO_COLUMN}" \
+    --manifest_caption_column "${MANIFEST_CAPTION_COLUMN}" \
     --video_filename "${VIDEO_FILENAME}" \
     --videophy_repo_dir "${VIDEOPHY_REPO_DIR}" \
     --checkpoint_dir "${VIDEOPHY2_CKPT_DIR}" \
@@ -222,7 +267,7 @@ if [[ "${failed}" -ne 0 ]]; then
   exit 1
 fi
 
-python - "${OUTPUT_ROOT}" "${EXPERIMENT_NAME}" "${SEED}" "${#GPUS[@]}" <<'PY'
+python - "${OUTPUT_ROOT}" "${EXPERIMENT_NAME}" "${SEED}" "${SHARD_COUNT}" <<'PY'
 import csv
 import sys
 from pathlib import Path

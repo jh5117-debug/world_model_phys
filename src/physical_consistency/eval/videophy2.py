@@ -55,6 +55,8 @@ def build_videophy2_input_csv(
     output_csv: str | Path,
     task: str,
     source_mode: str = "generated",
+    manifest_video_column: str = "videopath",
+    manifest_caption_column: str = "prompt",
     video_filename: str = "video.mp4",
     video_suffix: str = "_gen.mp4",
 ) -> Path:
@@ -70,15 +72,18 @@ def build_videophy2_input_csv(
             video_path = source_root / f"{clip_name}{video_suffix}"
         elif source_mode == "dataset_clip":
             video_path = source_root / clip_path / video_filename
-        elif source_mode == "manifest_videopath":
-            video_path = Path(row.get("videopath", ""))
+        elif source_mode in {"manifest_videopath", "manifest_video_column"}:
+            raw_video_path = row.get(manifest_video_column, "")
+            video_path = Path(raw_video_path)
+            if raw_video_path and not video_path.is_absolute():
+                video_path = source_root / raw_video_path
         else:
             raise ValueError(f"Unsupported VideoPhy-2 source mode: {source_mode}")
         if not video_path.exists():
             continue
         payload = {"videopath": str(video_path)}
         if task == "sa":
-            payload["caption"] = row.get("prompt", "")
+            payload["caption"] = row.get(manifest_caption_column, "")
         output_rows.append(payload)
 
     if output_rows:
@@ -100,6 +105,8 @@ def run_videophy2_for_seed(
     seed: int,
     task_modes: list[str],
     source_mode: str = "generated",
+    manifest_video_column: str = "videopath",
+    manifest_caption_column: str = "prompt",
     video_filename: str = "video.mp4",
     video_suffix: str = "_gen.mp4",
 ) -> dict[str, str]:
@@ -115,6 +122,8 @@ def run_videophy2_for_seed(
             output_csv=csv_dir / f"seed_{seed}_{task}.csv",
             task=task.lower(),
             source_mode=source_mode,
+            manifest_video_column=manifest_video_column,
+            manifest_caption_column=manifest_caption_column,
             video_filename=video_filename,
             video_suffix=video_suffix,
         )
@@ -204,9 +213,11 @@ def main() -> None:
         "--video_source_mode",
         type=str,
         default="generated",
-        choices=["generated", "dataset_clip", "manifest_videopath"],
+        choices=["generated", "dataset_clip", "manifest_videopath", "manifest_video_column"],
     )
     parser.add_argument("--video_source_root", type=str, default="")
+    parser.add_argument("--manifest_video_column", type=str, default="videopath")
+    parser.add_argument("--manifest_caption_column", type=str, default="prompt")
     parser.add_argument("--video_filename", type=str, default="video.mp4")
     parser.add_argument("--video_suffix", type=str, default="_gen.mp4")
     parser.add_argument("--seed", type=int, default=-1)
@@ -288,6 +299,8 @@ def main() -> None:
             seed=seed,
             task_modes=cfg.task_modes,
             source_mode=args.video_source_mode,
+            manifest_video_column=args.manifest_video_column,
+            manifest_caption_column=args.manifest_caption_column,
             video_filename=args.video_filename,
             video_suffix=args.video_suffix,
         )
