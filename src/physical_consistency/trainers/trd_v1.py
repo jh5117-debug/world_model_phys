@@ -1208,6 +1208,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("teacher_model_variant", "vit_base_patch16_224")
     payload.setdefault("teacher_dtype", "bfloat16")
     payload.setdefault("teacher_offload_after_encode", True)
+    payload.setdefault("student_memory_efficient_modulation", True)
     payload.setdefault("validation_every_steps", 300)
     payload.setdefault("mini_val_max_samples", 8)
     payload.setdefault("student_target_block", 20)
@@ -1225,6 +1226,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         payload["allow_deepspeed_feature_hook_experimental"]
     )
     payload["teacher_offload_after_encode"] = _coerce_bool(payload["teacher_offload_after_encode"])
+    payload["student_memory_efficient_modulation"] = _coerce_bool(payload["student_memory_efficient_modulation"])
 
     payload["output_dir"] = str(Path(payload["output_root"]) / "checkpoints" / payload["experiment_name"])
     payload.setdefault("teacher_checkpoint_path", "")
@@ -1300,6 +1302,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--teacher_checkpoint_path", type=str, default="")
     parser.add_argument("--teacher_dtype", type=str, default="")
     parser.add_argument("--teacher_offload_after_encode", type=str, default="")
+    parser.add_argument("--student_memory_efficient_modulation", type=str, default="")
     parser.add_argument("--validation_runtime_mode", type=str, default="")
     parser.add_argument("--allow_deepspeed_feature_hook_experimental", type=str, default="")
     return parser.parse_args()

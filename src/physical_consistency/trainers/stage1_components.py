@@ -10,6 +10,7 @@ import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import MethodType
 
 import numpy as np
 import torch
@@ -197,6 +198,8 @@ class LingBotStage1Helper:
             torch_dtype=torch.bfloat16,
             control_type="act",
         )
+        if getattr(self.args, "student_memory_efficient_modulation", True):
+            apply_memory_efficient_wan_block_patch(model, subfolder)
         model.train()
         return model
 
@@ -386,6 +389,62 @@ def apply_gradient_checkpointing(model, model_name: str = "model") -> None:
         block.forward = _make_ckpt(original_forward)
         patched += 1
     LOGGER.info("Gradient checkpointing patched %s blocks for %s", patched, model_name)
+
+
+def apply_memory_efficient_wan_block_patch(model, model_name: str = "model") -> None:
+    """Avoid full fp32 modulation tensors inside Wan attention blocks."""
+
+    def _squeeze_gate(tensor: torch.Tensor) -> torch.Tensor:
+        if tensor.ndim >= 3 and tensor.shape[2] == 1:
+            return tensor.squeeze(2)
+        return tensor
+
+    def _modulate(normed: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor, target_dtype: torch.dtype) -> torch.Tensor:
+        normed = normed.to(target_dtype)
+        shift = _squeeze_gate(shift).to(device=normed.device, dtype=target_dtype)
+        scale = _squeeze_gate(scale).to(device=normed.device, dtype=target_dtype)
+        return normed * (1 + scale) + shift
+
+    def _gate(value: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
+        return value * _squeeze_gate(gate).to(device=value.device, dtype=value.dtype)
+
+    patched = 0
+    block_container = getattr(model, "blocks", None)
+    if block_container is None:
+        LOGGER.warning("No transformer blocks found for %s", model_name)
+        return
+
+    for block in block_container:
+        if getattr(block, "_pc_memory_efficient_modulation_patched", False):
+            continue
+        required_attrs = ("modulation", "norm1", "self_attn", "norm2", "ffn", "norm3", "cross_attn")
+        if not all(hasattr(block, attr) for attr in required_attrs):
+            continue
+
+        def _forward(self, x, e, seq_lens, grid_sizes, freqs, context, context_lens, dit_cond_dict=None):
+            target_dtype = x.dtype
+            e = (self.modulation.to(dtype=e.dtype, device=e.device) + e).chunk(6, dim=1)
+
+            self_attn_input = _modulate(self.norm1(x), e[0], e[1], target_dtype)
+            y = self.self_attn(self_attn_input, seq_lens, grid_sizes, freqs)
+            x = x + _gate(y, e[2])
+
+            cross_input = self.norm3(x).to(target_dtype)
+            x = x + self.cross_attn(cross_input, context, context_lens)
+
+            ffn_input = _modulate(self.norm2(x), e[3], e[4], target_dtype)
+            y = self.ffn(ffn_input)
+            x = x + _gate(y, e[5])
+            return x
+
+        block.forward = MethodType(_forward, block)
+        block._pc_memory_efficient_modulation_patched = True
+        patched += 1
+
+    if patched:
+        LOGGER.info("Memory-efficient modulation patched %s blocks for %s", patched, model_name)
+    else:
+        LOGGER.warning("No Wan attention blocks matched modulation patch for %s", model_name)
 
 
 def get_model_subfolder(model_type: str) -> str:
