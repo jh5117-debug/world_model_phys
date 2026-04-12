@@ -20,6 +20,7 @@ from accelerate import DistributedType
 from accelerate.utils import (
     DataLoaderConfiguration,
     DistributedDataParallelKwargs,
+    GradientAccumulationPlugin,
     InitProcessGroupKwargs,
     ProjectConfiguration,
 )
@@ -224,8 +225,12 @@ class TRDTrainingRunner:
             backend="nccl",
             timeout=timedelta(hours=args.distributed_timeout_hours),
         )
+        grad_accum_plugin = GradientAccumulationPlugin(
+            num_steps=args.gradient_accumulation_steps,
+            sync_each_batch=True,
+        )
         self.accelerator = accelerate.Accelerator(
-            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            gradient_accumulation_plugin=grad_accum_plugin,
             dataloader_config=DataLoaderConfiguration(use_seedable_sampler=True),
             kwargs_handlers=[ddp_kwargs, init_process_group_kwargs],
             log_with="wandb",
