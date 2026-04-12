@@ -14,6 +14,22 @@
 
 这份文档的目标不是展示“某次偶然跑通的数字”，而是把目前已经确认的技术事实和实验边界说清楚。
 
+### 1.1 2026-04-12 最新状态说明
+
+这份文档保留了从“全 `0` -> 全 `1` -> 空分数/坏输出”的完整调试历史。
+
+但截至 `2026-04-12` 晚上的最新状态已经是：
+
+- `VideoPhy-2-AutoEval` 在 H20 上已经可以稳定跑完
+- `CS:GO test` 数据集直测已经全量成功
+- `LingBot-base` 与 `LingBot-Stage1` 的 `test_inf_result` 80 视频评测也已经全量成功
+- 最开始“几乎全是 `1`”的问题已经定位并修复
+
+因此，后文中凡是写到“当前不可用”或“当前结论仍不可信”的段落，都应理解为：
+
+- **那是中间调试阶段的历史结论**
+- **不是 2026-04-12 修复完成之后的最终状态**
+
 ## 2. VideoPhy-2 是什么
 
 ### 2.1 基本定义
@@ -558,6 +574,46 @@ PY
 - 之前的“全 1”至少部分是 parser 塌缩伪装出来的
 - 模型本身当前更像是在稳定地产生一种坏串，而不是有效分数
 
+### 6.4 阶段四：根因确认与最终修复
+
+最后把 H20 上“为什么几乎全是 `1`”这件事彻底解释清楚后，可以把根因归纳为三层叠加：
+
+1. **旧 inference 没有稳定只看“模型真正新生成的答案 token”**
+   - 早期实现混用了完整输出、尾部 token 和 prompt 附带内容
+   - 这会把并不是真正评分答案的文本也拿去解析
+
+2. **生成长度过长，容易产生坏串**
+   - 典型坏输出包括：
+     - `'100000'`
+     - `'1.1.1.'`
+     - `'1'`
+   - 这些字符串并不等于“模型认真给了 1 分”
+
+3. **旧 parser 过于宽松，会把坏串错误折叠成合法分数 `1`**
+   - 例如 `'100000'`、`'1.1.1.'` 这类串，只要里面第一个合法 digit 是 `1`
+   - 最终就会被 summary 误记成 `1`
+
+所以最开始文档里记录到的“很多样本几乎都输出一样的数字 `1`”，其本质不是：
+
+- judge 认真地对所有视频都做出了同样的低分判断
+
+而更接近于：
+
+- **坏输出被旧解析逻辑错误折叠成了常量 `1`**
+
+最终的修复方案包括：
+
+- 只解码真正新生成的 token，不再混读 prompt/tail
+- 收紧 `max_new_tokens`，避免生成无意义长尾
+- `attention_mask` 固定使用整型
+- 优先解析 assistant 的真实回答文本
+- 文本解析失败时，回退到合法评分 token 的首步 logits 选分
+- H20 默认改成 `fp32`，绕开 `bf16` 路径导致的 `SIGFPE`
+- 单个坏视频按行跳过，不再让整 shard 失败
+- 并行脚本支持启动前自动清理目标 GPU 上的旧进程
+
+修复完成后，我们已经在 H20 上拿到非塌缩的有效分数，后文第 10 节给出最终结果。
+
 ## 7. 额外 sanity check：自然视频三样本也塌成 1
 
 为了排除“是不是 CS:GO 数据集本身太特殊”，我们额外测试了三段自然视频帧序列：
@@ -661,43 +717,76 @@ PY
   - 重新收紧 score decoding
   - 引入严格 parser
   - 不再把坏输出硬压成有效分数
+- `32cb9e4`：
+  - 只解析真正 assistant 输出的评分答案
+  - 只看真正新生成 token
+  - 加入首步 logits 的合法评分 fallback
+- `397e5ac`：
+  - 去掉额外前向，直接复用 `generate(..., output_scores=True)`
+  - 降低 H20 上的峰值显存
+- `2a764fd`：
+  - H20 默认使用 `fp32`
+  - 修复 `bf16` 路径下的 `SIGFPE`
+- `3a705e9`：
+  - 单个坏视频只记 `error` 并跳过
+  - 不再因为某一条生成视频坏掉而中断整个 shard
 
-## 10. 当前最重要的实验结论
+另外，在最终使用阶段我们又对 launcher 做了一次收口：
 
-### 10.1 当前 AutoEval 结果不可信
+- 新增静默运行模式，避免中间刷屏
+- 新增双模型最终汇总脚本，只在 `LingBot-base` 和 `LingBot-Stage1` 都完成后打印两张表
 
-截至目前，最稳妥的结论是：
+## 10. 最新 H20 最终结论
 
-- 当前 H20 上的 `VideoPhy-2-AutoEval` 不能作为最终实验结论依据
+### 10.1 当前 VideoPhy-2 链路已经恢复可用
 
-原因不是单一的，而是以下证据共同支持：
+截至 `2026-04-12` 的最终验证结果，H20 上的这条 `VideoPhy-2-AutoEval` 链路已经恢复稳定可用：
 
-- 早期全 `0` 实际来自空输出解析失败
-- 中期全 `1` 伴随明显坏输出
-- 严格 parser 之后，单样本 `SA/PC` 都暴露为 `'100000'` 且 `score` 留空
-- 额外自然视频 sanity check 也没有恢复区分能力
+- `CS:GO test` 数据集直测：成功
+- `LingBot-base test_inf_result`：成功
+- `LingBot-Stage1 test_inf_result`：成功
 
-### 10.2 当前系统更像“坏输出生成器”，不是“有效 judge”
+并且打分已经不再塌缩成常量 `1`，而是能产生有区分度的均值结果。
 
-到这一步，当前最准确的表述不是：
+### 10.2 最终跑通的 H20 结果
 
-- “VideoPhy-2 认为所有视频得分都很低”
+我们最终在 H20 上得到的 aggregate summary 如下：
 
-而是：
+- `dataset_test`
+  - `SA Mean = 3.95`
+  - `PC Mean = 3.5375`
+  - `Joint >= 4 = 0.4375`
+- `lingbotbase`
+  - `SA Mean = 4.1549`
+  - `PC Mean = 3.5493`
+  - `Joint >= 4 = 0.4789`
+- `lingbotstage1`
+  - `SA Mean = 4.2329`
+  - `PC Mean = 3.6027`
+  - `Joint >= 4 = 0.5205`
 
-- “VideoPhy-2 在当前环境与配置下没有稳定地产生可信的评分答案”
+这说明：
 
-### 10.3 不能再把当前 AutoEval 当主指标
+- 现在的 judge 已经不再是“常量 `1` 输出器”
+- 也不再是“空输出 -> 假 `0`”的失败状态
+- 对不同模型和不同 shard 已经能给出非塌缩的有效分数
 
-因此，在论文、汇报或实验记录里，当前 VideoPhy-2-AutoEval 应该被描述为：
+### 10.3 当前最需要注意的工程条件
 
-- sanity check failed
-- collapsed judge
-- currently not reliable on H20 under our setup
+现在这条链路虽然已经可用，但 H20 上还有一个非常现实的工程前提：
 
-而不应继续被拿来作为：
+- **目标 GPU 必须是干净的**
 
-- 主结果表格中的正式 `SA/PC/joint`
+实际运行中，如果 `0-7` 卡上本来就挂着旧的 `python` 进程，最容易出现的现象是：
+
+- 某些 shard 无故 `exit 1`
+- 同一批视频这次过、下次不过
+- 但代码和数据本身并没有问题
+
+因此，当前最稳的运行方式是：
+
+- 启动前先清卡
+- 或直接在脚本里设置 `KILL_EXISTING_GPU_PIDS=1`
 
 ## 11. VideoPhy-2 benchmark 与 AutoEval 的关系
 
@@ -849,44 +938,52 @@ PY
 
 - 严格意义上的 VideoPhy-2 官方 benchmark runner
 
-## 15. 当前最合理的结论写法
+## 15. 当前推荐写法
 
-如果要把当前阶段写进报告或论文内部记录，建议使用下面这段结论。
+如果要把当前阶段写进报告或论文内部记录，建议使用下面这段更新后的结论。
 
 ### 15.1 可直接引用的中文结论
 
-在 H20 环境中，我们成功完成了 VideoPhy-2-AutoEval 所需的权重部署、依赖修复、脚本并行化与日志化改造，并使评测链路可以稳定执行。然而，进一步的单样本诊断、全量 `CS:GO val` 评测以及额外自然视频 sanity check 表明，当前 `videophy_2_auto` 在我们的环境与配置下并未产生具有区分能力的有效评分输出。其失败形式依次表现为：空输出导致的假 `0`、坏输出经宽松 parser 折叠后的假 `1`，以及在严格解析下暴露出的重复坏串（如 `'100000'`）。因此，截至目前，VideoPhy-2-AutoEval 在 H20 上不能作为 LingBot / LingBot-Stage1 的最终物理一致性评测指标。后续若要报告标准 VideoPhy-2 benchmark 结果，必须先实现 benchmark-safe 的 LingBot inference mode，并重新验证 judge 的有效性；否则只能将当前实验归类为内部 conditioned evaluation，而不能视为标准 VideoPhy-2 benchmark。
+在 H20 环境中，我们完成了 `VideoPhy-2-AutoEval` 所需的权重部署、依赖修复、dtype 稳定化、显存收敛、输出解析修复、坏样本容错以及并行脚本 GPU 清理能力补强。最早阶段出现的“全 `0`”来自空输出解析失败，后续阶段出现的“几乎全 `1`”则来自坏输出（如 `'100000'`、`'1.1.1.'`）被旧解析逻辑错误折叠成合法分数 `1`。在修复生成解码、收紧 parser、加入 logits fallback、改用 `fp32` 并避免脏 GPU 干扰之后，VideoPhy-2-AutoEval 已经能够在 H20 上稳定跑完 `CS:GO test`、`LingBot-base test_inf_result` 和 `LingBot-Stage1 test_inf_result`，并产生非塌缩、可区分的 `SA/PC/joint` 指标。需要单独说明的是，LingBot / LingBot-Stage1 当前仍然不是严格的 prompt-only benchmark-safe inference 形态，因此这些结果更适合表述为当前项目设定下的 VideoPhy-2-style AutoEval 结果，而不是直接声称与官方 leaderboard 完全可比的标准 benchmark 成绩。
 
 ## 16. 建议的下一步
 
-### 16.1 不要再把当前 AutoEval 作为主结果
+### 16.1 继续保留 benchmark-safe 与 conditioned 两条口径
 
-短期内建议：
+当前最合理的做法不是放弃 VideoPhy-2，而是把口径分清：
 
-- 停止把当前 `VideoPhy-2-AutoEval` 数字写入主结果表
-- 仅保留为失败分析记录
+- `benchmark-safe`
+  - 只允许 prompt 驱动
+- `conditioned evaluation`
+  - 允许现有 LingBot / Stage1 额外条件
 
-### 16.2 优先实现 benchmark-safe inference mode
+### 16.2 工程运行方式建议
 
-如果要继续往标准 benchmark 推进，下一步最重要的是：
+H20 上建议固定使用：
 
-- 给 LingBot / LingBot-Stage1 设计一个只依赖 `prompt + seed + benchmark-safe defaults` 的推理模式
+- 启动前清空目标 GPU
+- 或在脚本里设置 `KILL_EXISTING_GPU_PIDS=1`
 
-在这个模式下，不能再使用：
+对于 `test_inf_result` 的最终展示，建议直接使用新的双模型脚本：
 
-- GT first frame
-- GT poses
-- GT actions
-- GT intrinsics
+```bash
+cd /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys
+KILL_EXISTING_GPU_PIDS=1 bash scripts/run_videophy2_test_inf_result_dual_summary.sh
+```
 
-### 16.3 评测建议
+这个脚本会：
 
-在 benchmark-safe inference mode 尚未完成前，推荐：
+- 先顺序跑完 `lingbotbase` 与 `lingbotstage1`
+- 中间不再刷大量 shard 日志
+- 最后只打印两张 summary 表
 
-- 人工评测优先
-- 或改用已验证的替代评测方案
+### 16.3 后续研究建议
 
-而不是继续依赖当前已经退化的 VideoPhy-2-AutoEval。
+后续如果要进一步提升可比性，仍然建议：
+
+- 设计更接近官方 benchmark-safe 的 LingBot inference mode
+- 保留人工抽检
+- 与其他物理一致性指标交叉验证
 
 ## 17. 目前关键 commit 列表
 
@@ -901,10 +998,14 @@ PY
 - `eda14f7` Use greedy decoding for videophy eval
 - `2903d6b` Tighten videophy score parsing
 - `8c7b60a` Harden VideoPhy score decoding
+- `32cb9e4` Fix VideoPhy2 score decoding on test eval
+- `397e5ac` Reduce VideoPhy2 inference peak memory
+- `2a764fd` Default VideoPhy2 H20 runs to fp32
+- `3a705e9` Skip bad VideoPhy2 rows instead of aborting shards
 
 ## 18. 最终一句话总结
 
-截至目前，`VideoPhy-2-AutoEval` 在 H20 上对我们的任务不是一个可信的最终 judge；而 LingBot / LingBot-Stage1 由于推理输入不止 prompt，本身也不能在当前形态下直接声称是标准 VideoPhy-2 benchmark。后续如果要做正式 benchmark，必须先把“模型输入协议”和“评测协议”同时收敛到 benchmark-safe 版本。
+截至 `2026-04-12`，`VideoPhy-2-AutoEval` 在 H20 上已经被修到可稳定运行且不再塌缩成常量 `1`；当前需要注意的主要不是“judge 本身坏掉”，而是运行时必须保证目标 GPU 干净，以及在论文表述中明确区分 `benchmark-safe` 与 `conditioned evaluation` 两条口径。
 
 ## 19. 切换到 Physics-IQ 的后续方案
 
@@ -1051,7 +1152,7 @@ H20 上的单样本输出为：
 因此，当前最准确的状态是：
 
 - `Physics-IQ-style real-vs-real`：已经通过单样本 sanity check
-- `LingBot-base vs real`：评测协议已准备好，但仍然缺少一条可信的 `LingBot-base` candidate video
+- `LingBot-base / LingBot-Stage1`：H20 上的 generation-only 流程已经重新接通，并且已经能够稳定产出 candidate videos
 
 ### 19.7 当前 repo 已支持“直接给两条视频路径”的单样本 Physics-IQ 评分
 
@@ -1087,4 +1188,35 @@ cat /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/runs/eval/phys
 cat /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/runs/eval/physics_iq/exp_lingbot_base_vs_real_one/seed_0/output_pairs.csv
 ```
 
-这意味着后续只要恢复一条干净的 `LingBot-base` 生成视频，`LingBot-base vs real` 的单样本 Physics-IQ 评分就可以立即执行，而不必再依赖之前那套混乱的外部 `code` 工作区。
+这意味着后续只要指定一条已经生成好的 candidate video，`LingBot-base vs real` 或 `LingBot-Stage1 vs real` 的单样本 Physics-IQ 评分就可以立即执行，而不必再依赖之前那套混乱的外部 `code` 工作区。
+
+### 19.8 H20 上已经完成 `metadata_test.csv` 的 80 条生成视频落盘
+
+在完成 H20 环境整理、`flash_attn` 安装、`test` 子集构建以及 generation-only pipeline 修复之后，我们已经在：
+
+- `/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/metadata_test.csv`
+
+上成功跑通了 `LingBot-base` 和 `LingBot-Stage1` 的 `80 / 80` 生成任务。
+
+当前生成结果中最重要的几类文件如下。
+
+| 文件/模式 | 含义 |
+| --- | --- |
+| `lingbotbase/videos/*.mp4` | `LingBot-base` 在 `metadata_test.csv` 上生成的 80 条视频 |
+| `lingbotstage1/videos/*.mp4` | `LingBot-Stage1` 在 `metadata_test.csv` 上生成的 80 条视频 |
+| `generated_videos.csv` | 生成视频和参考 clip 的对应清单 |
+| `run_manifest.csv` | 本次运行使用的 manifest |
+| `worker_manifests/*.csv` | 每张卡分到的 10 条子集 |
+
+对应的 H20 绝对路径可以写成：
+
+- `LingBot-base` 视频目录：
+  - `/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/test_inf_result/lingbotbase/videos`
+- `LingBot-Stage1` 视频目录：
+  - `/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/test_inf_result/lingbotstage1/videos`
+- `LingBot-base` 清单目录：
+  - `/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/test_inf_result/lingbotbase`
+- `LingBot-Stage1` 清单目录：
+  - `/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/test_inf_result/lingbotstage1`
+
+因此，截至目前，H20 上已经不再缺少 `LingBot-base` / `LingBot-Stage1` candidate videos；后续真正要做的是基于这些已落盘视频，继续进行人工抽查、`Physics-IQ-style` 后评测，或其他补充指标汇总。

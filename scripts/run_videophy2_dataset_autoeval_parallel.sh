@@ -5,7 +5,17 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
 
 log() {
-  printf '[%s] %s\n' "$(date '+%F %T')" "$*"
+  local message="$*"
+  if [[ "${VIDEOPHY2_QUIET:-0}" == "1" ]]; then
+    case "${message}" in
+      "[ERROR]"*|"[FAIL]"*)
+        ;;
+      *)
+        return
+        ;;
+    esac
+  fi
+  printf '[%s] %s\n' "$(date '+%F %T')" "${message}"
 }
 
 ENV_FILE="${ENV_FILE:-${PROJECT_ROOT}/configs/path_config_cluster.env}"
@@ -34,6 +44,8 @@ STATUS_EVERY_SEC="${STATUS_EVERY_SEC:-30}"
 KILL_EXISTING_GPU_PIDS="${KILL_EXISTING_GPU_PIDS:-0}"
 KILL_GRACE_SEC="${KILL_GRACE_SEC:-5}"
 MAX_ROWS_PER_GPU="${MAX_ROWS_PER_GPU:-0}"
+VIDEOPHY2_QUIET="${VIDEOPHY2_QUIET:-0}"
+VIDEOPHY2_SUMMARY_STDOUT="${VIDEOPHY2_SUMMARY_STDOUT:-1}"
 
 if [[ ! -f "${MANIFEST}" ]]; then
   echo "[ERROR] Manifest not found: ${MANIFEST}" >&2
@@ -95,8 +107,10 @@ log "VideoPhy torch dtype: ${VIDEOPHY_TORCH_DTYPE}"
 log "Checkpoint dir: ${VIDEOPHY2_CKPT_DIR}"
 log "GPU list: ${GPU_LIST}"
 log "Experiment: ${EXPERIMENT_NAME}"
-log "Target GPU processes before launch:"
-print_target_gpu_processes "${GPU_LIST}" || true
+if [[ "${VIDEOPHY2_QUIET}" != "1" ]]; then
+  log "Target GPU processes before launch:"
+  print_target_gpu_processes "${GPU_LIST}" || true
+fi
 
 if [[ "${KILL_EXISTING_GPU_PIDS}" == "1" ]]; then
   mapfile -t TARGET_PIDS < <(collect_target_gpu_pids "${GPU_LIST}")
@@ -196,20 +210,39 @@ for shard_idx in "${!GPUS[@]}"; do
   log "[RUN][GPU ${gpu}] ${shard_experiment} rows=${row_count}"
   log "[LOG][GPU ${gpu}] SA=${sa_log}"
   log "[LOG][GPU ${gpu}] PC=${pc_log}"
-  CUDA_VISIBLE_DEVICES="${gpu}" python -m physical_consistency.cli.run_videophy2 \
-    --config "${CONFIG_PATH}" \
-    --env_file "${ENV_FILE}" \
-    --experiment_name "${shard_experiment}" \
-    --manifest_csv "${shard_manifest}" \
-    --video_source_mode "${VIDEO_SOURCE_MODE}" \
-    --video_source_root "${VIDEO_SOURCE_ROOT}" \
-    --manifest_video_column "${MANIFEST_VIDEO_COLUMN}" \
-    --manifest_caption_column "${MANIFEST_CAPTION_COLUMN}" \
-    --video_filename "${VIDEO_FILENAME}" \
-    --videophy_repo_dir "${VIDEOPHY_REPO_DIR}" \
-    --checkpoint_dir "${VIDEOPHY2_CKPT_DIR}" \
-    --output_root "${OUTPUT_ROOT}" \
-    --seed "${SEED}" &
+  if [[ "${VIDEOPHY2_QUIET}" == "1" ]]; then
+    runner_log="${OUTPUT_ROOT}/runs/eval/videophy2/${shard_experiment}/seed_${SEED}/videophy2_runner.log"
+    mkdir -p "$(dirname "${runner_log}")"
+    CUDA_VISIBLE_DEVICES="${gpu}" python -m physical_consistency.cli.run_videophy2 \
+      --config "${CONFIG_PATH}" \
+      --env_file "${ENV_FILE}" \
+      --experiment_name "${shard_experiment}" \
+      --manifest_csv "${shard_manifest}" \
+      --video_source_mode "${VIDEO_SOURCE_MODE}" \
+      --video_source_root "${VIDEO_SOURCE_ROOT}" \
+      --manifest_video_column "${MANIFEST_VIDEO_COLUMN}" \
+      --manifest_caption_column "${MANIFEST_CAPTION_COLUMN}" \
+      --video_filename "${VIDEO_FILENAME}" \
+      --videophy_repo_dir "${VIDEOPHY_REPO_DIR}" \
+      --checkpoint_dir "${VIDEOPHY2_CKPT_DIR}" \
+      --output_root "${OUTPUT_ROOT}" \
+      --seed "${SEED}" >"${runner_log}" 2>&1 &
+  else
+    CUDA_VISIBLE_DEVICES="${gpu}" python -m physical_consistency.cli.run_videophy2 \
+      --config "${CONFIG_PATH}" \
+      --env_file "${ENV_FILE}" \
+      --experiment_name "${shard_experiment}" \
+      --manifest_csv "${shard_manifest}" \
+      --video_source_mode "${VIDEO_SOURCE_MODE}" \
+      --video_source_root "${VIDEO_SOURCE_ROOT}" \
+      --manifest_video_column "${MANIFEST_VIDEO_COLUMN}" \
+      --manifest_caption_column "${MANIFEST_CAPTION_COLUMN}" \
+      --video_filename "${VIDEO_FILENAME}" \
+      --videophy_repo_dir "${VIDEOPHY_REPO_DIR}" \
+      --checkpoint_dir "${VIDEOPHY2_CKPT_DIR}" \
+      --output_root "${OUTPUT_ROOT}" \
+      --seed "${SEED}" &
+  fi
   job_pid=$!
   JOB_PIDS+=("${job_pid}")
   JOB_GPUS+=("${gpu}")
@@ -309,12 +342,21 @@ for task in ("sa", "pc"):
         writer.writerows(merged_rows)
 PY
 
-log "[SUMMARY] Writing aggregate summary for ${EXPERIMENT_NAME}"
-python -m physical_consistency.cli.run_videophy2 \
-  --config "${CONFIG_PATH}" \
-  --env_file "${ENV_FILE}" \
-  --experiment_name "${EXPERIMENT_NAME}" \
-  --summary_only \
-  --output_root "${OUTPUT_ROOT}"
+if [[ "${VIDEOPHY2_SUMMARY_STDOUT}" == "1" ]]; then
+  log "[SUMMARY] Writing aggregate summary for ${EXPERIMENT_NAME}"
+  python -m physical_consistency.cli.run_videophy2 \
+    --config "${CONFIG_PATH}" \
+    --env_file "${ENV_FILE}" \
+    --experiment_name "${EXPERIMENT_NAME}" \
+    --summary_only \
+    --output_root "${OUTPUT_ROOT}"
 
-log "[DONE] Parallel VideoPhy-2 AutoEval summary written to ${BASE_OUTPUT}/summary.json"
+  log "[DONE] Parallel VideoPhy-2 AutoEval summary written to ${BASE_OUTPUT}/summary.json"
+else
+  python -m physical_consistency.cli.run_videophy2 \
+    --config "${CONFIG_PATH}" \
+    --env_file "${ENV_FILE}" \
+    --experiment_name "${EXPERIMENT_NAME}" \
+    --summary_only \
+    --output_root "${OUTPUT_ROOT}" >/dev/null 2>&1
+fi
