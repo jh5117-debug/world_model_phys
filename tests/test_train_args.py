@@ -6,6 +6,8 @@ class _CliArgs:
     config: str
     env_file: str
     experiment_name = ""
+    project_name = ""
+    wandb_entity = ""
     model_type = ""
     stage1_ckpt_dir = ""
     base_model_dir = ""
@@ -58,3 +60,23 @@ def test_build_args_supports_dual_training_defaults(tmp_path):
     args = build_args(_CliArgs(str(config_path), str(env_path)))
     assert args.model_type == "dual"
     assert args.output_dir.endswith("checkpoints/exp_dual")
+
+
+def test_build_args_accepts_wandb_entity_override(tmp_path):
+    config_path = tmp_path / "train.yaml"
+    env_path = tmp_path / "paths.env"
+    write_yaml(
+        config_path,
+        {
+            "experiment_name": "exp_wandb",
+            "model_type": "dual",
+            "project_name": "intro-example",
+            "wandb_entity": "WorldModel_11",
+            "teacher_checkpoint_dir": str(tmp_path / "teacher"),
+        },
+    )
+    env_path.write_text("", encoding="utf-8")
+
+    args = build_args(_CliArgs(str(config_path), str(env_path)))
+    assert args.project_name == "intro-example"
+    assert args.wandb_entity == "WorldModel_11"

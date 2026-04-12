@@ -1,5 +1,6 @@
 experiment_name: exp_stage1_epoch2_trd_v1
 project_name: physical_consistency
+wandb_entity: ""
 run_group: trd_v1
 seed: 42
 model_type: dual
@@ -44,7 +45,7 @@ validation_seed_list:
 wandb_mode: online
 distributed_timeout_hours: 8
 validation_runtime_mode: pause_external
-allow_deepspeed_feature_hook_experimental: false
+allow_deepspeed_feature_hook_experimental: true
 sample_steps: 70
 guide_scale: 5.0
 num_gpus: 8

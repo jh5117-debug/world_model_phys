@@ -1,6 +1,9 @@
 compute_environment: LOCAL_MACHINE
 debug: false
-distributed_type: MULTI_GPU
+deepspeed_config:
+  deepspeed_config_file: configs/deepspeed_trd_v1_zero3.json
+  zero3_init_flag: false
+distributed_type: DEEPSPEED
 downcast_bf16: 'no'
 enable_cpu_affinity: false
 machine_rank: 0

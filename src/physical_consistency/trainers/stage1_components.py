@@ -173,13 +173,17 @@ class LingBotStage1Helper:
                 device=self.device,
             )
         if getattr(self, "t5", None) is None:
+            # Keep T5 on CPU by default and only move it to GPU on cache misses.
             self.t5 = self.T5EncoderModel(
                 text_len=512,
                 dtype=torch.bfloat16,
-                device=self.device,
+                device=torch.device("cpu"),
                 checkpoint_path=os.path.join(self.args.base_model_dir, "models_t5_umt5-xxl-enc-bf16.pth"),
                 tokenizer_path=os.path.join(self.args.base_model_dir, "google", "umt5-xxl"),
             )
+            module = getattr(self.t5, "model", None)
+            if module is not None and hasattr(module, "to"):
+                module.to("cpu")
 
     def load_model(self, device: torch.device, model_type: str, checkpoint_dir: str | Path | None = None):
         """Load one target Stage-1 branch plus shared VAE/T5 runtime."""

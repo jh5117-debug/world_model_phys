@@ -45,7 +45,6 @@ from physical_consistency.trainers.stage1_components import (
     get_model_subfolder,
     move_optimizer_state,
     prune_checkpoint_dir,
-    save_accelerate_checkpoint,
 )
 from physical_consistency.wandb_utils.media import relation_matrix_image
 from physical_consistency.wandb_utils.session import init_wandb_run, log_dict
@@ -62,6 +61,153 @@ class StudentProjector(nn.Module):
 
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
         return self.proj(tokens)
+
+
+class DualBranchTrainingBundle(nn.Module):
+    """Wrap both Stage-1 branches so ZeRO-3 sees one trainable model."""
+
+    def __init__(
+        self,
+        *,
+        low_model: nn.Module,
+        high_model: nn.Module,
+        low_projector: nn.Module,
+        high_projector: nn.Module,
+        student_target_block: int,
+        patch_size: tuple[int, int, int],
+    ) -> None:
+        super().__init__()
+        self.low_model = low_model
+        self.high_model = high_model
+        self.low_projector = low_projector
+        self.high_projector = high_projector
+        self.patch_size = patch_size
+
+        self.low_hook = BlockFeatureHook()
+        self.high_hook = BlockFeatureHook()
+        self.low_hook.attach(self.low_model.blocks[student_target_block])
+        self.high_hook.attach(self.high_model.blocks[student_target_block])
+
+    def forward(
+        self,
+        *,
+        branch: str,
+        noisy_latent: torch.Tensor,
+        timestep: torch.Tensor,
+        context: list[torch.Tensor],
+        seq_len: int,
+        y: torch.Tensor,
+        dit_cond: dict[str, tuple[torch.Tensor, ...]],
+        lat_f: int,
+        lat_h: int,
+        lat_w: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        active_model, active_projector, active_hook = self._active_components(branch)
+        self.low_hook.clear()
+        self.high_hook.clear()
+
+        pred = active_model(
+            [noisy_latent],
+            t=timestep,
+            context=context,
+            seq_len=seq_len,
+            y=[y],
+            dit_cond_dict=dit_cond,
+        )[0]
+        if active_hook.latest is None:
+            raise RuntimeError(f"Feature hook did not capture student tokens for branch={branch}")
+
+        student_tokens = self._reshape_student_tokens(active_hook.latest, lat_f, lat_h, lat_w)
+        student_tokens = active_projector(student_tokens)
+        return pred, student_tokens
+
+    def projector_state_dicts(self) -> dict[str, dict[str, torch.Tensor]]:
+        return {
+            "low_projector": self.low_projector.state_dict(),
+            "high_projector": self.high_projector.state_dict(),
+        }
+
+    def _active_components(self, branch: str) -> tuple[nn.Module, nn.Module, BlockFeatureHook]:
+        if branch == "high":
+            return self.high_model, self.high_projector, self.high_hook
+        return self.low_model, self.low_projector, self.low_hook
+
+    def _reshape_student_tokens(
+        self,
+        tokens: torch.Tensor,
+        lat_f: int,
+        lat_h: int,
+        lat_w: int,
+    ) -> torch.Tensor:
+        channels = tokens.shape[-1]
+        pooled_h = lat_h // self.patch_size[1]
+        pooled_w = lat_w // self.patch_size[2]
+        return tokens.view(1, lat_f, pooled_h * pooled_w, channels)
+
+
+def _extract_prefixed_state_dict(state_dict: dict[str, torch.Tensor], prefix: str) -> dict[str, torch.Tensor]:
+    extracted: dict[str, torch.Tensor] = {}
+    for key, value in state_dict.items():
+        if key.startswith(prefix):
+            extracted[key[len(prefix) :]] = value.cpu()
+    if not extracted:
+        raise KeyError(f"No state_dict entries matched prefix={prefix!r}")
+    return extracted
+
+
+def _save_branch_checkpoint(
+    *,
+    branch_model: nn.Module,
+    state_dict: dict[str, torch.Tensor],
+    prefix: str,
+    model_dir: Path,
+) -> None:
+    ensure_dir(model_dir)
+    torch.save(_extract_prefixed_state_dict(state_dict, prefix), model_dir / "diffusion_pytorch_model.bin")
+    if hasattr(branch_model, "save_config"):
+        branch_model.save_config(model_dir)
+
+
+def save_dual_bundle_checkpoint(
+    *,
+    accelerator,
+    model_bundle: nn.Module,
+    args,
+    tag: str,
+    extra_training_state: dict[str, Any] | None = None,
+    training_state_filename: str = "resume_state.pt",
+) -> Path:
+    """Save a dual-branch checkpoint from one wrapped container model."""
+    save_dir = Path(args.output_dir) / tag
+    if accelerator.is_main_process:
+        save_dir.mkdir(parents=True, exist_ok=True)
+    accelerator.wait_for_everyone()
+
+    bundle_state = accelerator.get_state_dict(model_bundle)
+    accelerator.wait_for_everyone()
+
+    if accelerator.is_main_process:
+        if bundle_state is None:
+            raise RuntimeError("Accelerator returned no state_dict for the dual bundle on the main process")
+        unwrapped = accelerator.unwrap_model(model_bundle)
+        _save_branch_checkpoint(
+            branch_model=unwrapped.low_model,
+            state_dict=bundle_state,
+            prefix="low_model.",
+            model_dir=save_dir / "low_noise_model",
+        )
+        _save_branch_checkpoint(
+            branch_model=unwrapped.high_model,
+            state_dict=bundle_state,
+            prefix="high_model.",
+            model_dir=save_dir / "high_noise_model",
+        )
+        if extra_training_state:
+            training_only = save_dir / "training_only"
+            training_only.mkdir(parents=True, exist_ok=True)
+            torch.save(extra_training_state, training_only / training_state_filename)
+    accelerator.wait_for_everyone()
+    return save_dir
 
 
 class TRDTrainingRunner:
@@ -98,8 +244,11 @@ class TRDTrainingRunner:
         self._tracking_initialized = False
         self.teacher_checkpoint_path = ""
         self.train_dataset_len = 0
+        self.train_loader_raw = None
         self.train_loader = None
         self.val_loader = None
+        self.model_bundle = None
+        self.teacher = None
         self.best_metrics_path = Path(args.output_dir) / "best_videophy2.json"
         self.best_checkpoint_path = Path(args.output_dir) / args.best_checkpoint_name
         self.visible_gpu_list = os.environ.get(
@@ -116,6 +265,7 @@ class TRDTrainingRunner:
         self.run = init_wandb_run(
             accelerator=self.accelerator,
             project=self.args.project_name,
+            entity=self.args.wandb_entity,
             run_name=f"{self.args.experiment_name}_{self.args.model_type}",
             config=run_config,
             wandb_dir=self.args.wandb_dir,
@@ -132,15 +282,6 @@ class TRDTrainingRunner:
             raise RuntimeError(
                 "TRD-v1 now trains the Stage-1 dual model only. "
                 "Use model_type=dual and the dual training wrapper."
-            )
-        if (
-            self.accelerator.distributed_type == DistributedType.DEEPSPEED
-            and not self.args.allow_deepspeed_feature_hook_experimental
-        ):
-            raise RuntimeError(
-                "DeepSpeed + forward-hook TRD is disabled by default in this subproject. "
-                "Use the default DDP accelerate config, or explicitly opt in with "
-                "--allow_deepspeed_feature_hook_experimental true after cluster smoke testing."
             )
 
     def train(self) -> None:
@@ -167,7 +308,7 @@ class TRDTrainingRunner:
             self._set_train_mode()
             epoch_metrics: list[dict[str, float]] = []
             for batch in self.train_loader:
-                with self.accelerator.accumulate(self.low_model, self.high_model):
+                with self.accelerator.accumulate(self.model_bundle):
                     metrics = self.training_step(batch)
                     self.accelerator.backward(metrics["loss_total"])
                     if self.accelerator.sync_gradients:
@@ -191,17 +332,13 @@ class TRDTrainingRunner:
                         self.run_validation_cycle(tag=f"step_{self.global_step}")
 
             if self.args.save_every_n_epochs > 0 and self.current_epoch % self.args.save_every_n_epochs == 0:
-                epoch_path = save_accelerate_checkpoint(
+                epoch_path = save_dual_bundle_checkpoint(
                     accelerator=self.accelerator,
-                    model={
-                        "low_noise_model": self.low_model,
-                        "high_noise_model": self.high_model,
-                    },
+                    model_bundle=self.model_bundle,
                     args=self.args,
                     tag=f"epoch_{self.current_epoch}",
                     extra_training_state={
-                        "low_projector": self.accelerator.unwrap_model(self.low_projector).state_dict(),
-                        "high_projector": self.accelerator.unwrap_model(self.high_projector).state_dict(),
+                        **self.accelerator.unwrap_model(self.model_bundle).projector_state_dicts(),
                         "global_step": self.global_step,
                         "epoch": self.current_epoch,
                     },
@@ -213,17 +350,13 @@ class TRDTrainingRunner:
             elif self.accelerator.is_main_process:
                 self._log_epoch_summary(epoch, epoch_metrics, None)
 
-        final_path = save_accelerate_checkpoint(
+        final_path = save_dual_bundle_checkpoint(
             accelerator=self.accelerator,
-            model={
-                "low_noise_model": self.low_model,
-                "high_noise_model": self.high_model,
-            },
+            model_bundle=self.model_bundle,
             args=self.args,
             tag="final",
             extra_training_state={
-                "low_projector": self.accelerator.unwrap_model(self.low_projector).state_dict(),
-                "high_projector": self.accelerator.unwrap_model(self.high_projector).state_dict(),
+                **self.accelerator.unwrap_model(self.model_bundle).projector_state_dicts(),
                 "global_step": self.global_step,
                 "epoch": self.current_epoch,
             },
@@ -256,7 +389,8 @@ class TRDTrainingRunner:
             num_workers=2,
         )
         self.train_dataset_len = len(train_loader.dataset)
-        self.train_loader = self.accelerator.prepare(train_loader)
+        self.train_loader_raw = train_loader
+        self.train_loader = None
         self.val_loader = val_loader
 
     def _initialize_training_runtime(
@@ -265,40 +399,37 @@ class TRDTrainingRunner:
         checkpoint_dir: str | Path,
         resume_state: dict[str, Any] | None,
     ) -> None:
-        self.low_model = self.helper.load_model(self.accelerator.device, "low", checkpoint_dir=checkpoint_dir)
-        self.high_model = self.helper.load_model(self.accelerator.device, "high", checkpoint_dir=checkpoint_dir)
-        self.teacher = VideoMAEv2Teacher(
-            repo_dir=self.args.teacher_repo_dir,
-            checkpoint_path=self.teacher_checkpoint_path,
-            device=self.accelerator.device,
-            model_variant=self.args.teacher_model_variant,
-            image_size=self.args.teacher_image_size,
-            align_video_resolution=(self.args.teacher_height, self.args.teacher_width),
-            pretrained_num_frames=self.args.teacher_pretrained_frames,
-            teacher_input_frames=self.args.teacher_input_frames,
-            drop_first_frame=self.args.teacher_drop_first_frame,
-        )
-        student_dim = int(self.low_model.dim)
-        self.low_projector = StudentProjector(student_dim, self.teacher.feature_dim)
-        self.high_projector = StudentProjector(student_dim, self.teacher.feature_dim)
-        if resume_state:
-            self.low_projector.load_state_dict(resume_state["low_projector"])
-            self.high_projector.load_state_dict(resume_state["high_projector"])
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats(self.accelerator.device)
 
-        self.low_hook = BlockFeatureHook()
-        self.high_hook = BlockFeatureHook()
-        self.low_hook.attach(self.low_model.blocks[self.args.student_target_block])
-        self.high_hook.attach(self.high_model.blocks[self.args.student_target_block])
+        low_model = self.helper.load_model(self.accelerator.device, "low", checkpoint_dir=checkpoint_dir)
+        self._log_gpu_memory("after_low_model_load")
+        high_model = self.helper.load_model(self.accelerator.device, "high", checkpoint_dir=checkpoint_dir)
+        self._log_gpu_memory("after_high_model_load")
+
+        student_dim = int(low_model.dim)
+        low_projector = StudentProjector(student_dim, self.args.teacher_feature_dim)
+        high_projector = StudentProjector(student_dim, self.args.teacher_feature_dim)
+        if resume_state:
+            low_projector.load_state_dict(resume_state["low_projector"])
+            high_projector.load_state_dict(resume_state["high_projector"])
 
         if self.args.gradient_checkpointing:
-            apply_gradient_checkpointing(self.low_model, "low_noise_model")
-            apply_gradient_checkpointing(self.high_model, "high_noise_model")
+            apply_gradient_checkpointing(low_model, "low_noise_model")
+            apply_gradient_checkpointing(high_model, "high_noise_model")
+
+        self.model_bundle = DualBranchTrainingBundle(
+            low_model=low_model,
+            high_model=high_model,
+            low_projector=low_projector,
+            high_projector=high_projector,
+            student_target_block=self.args.student_target_block,
+            patch_size=self.helper.patch_size,
+        )
+        self._log_gpu_memory("after_dual_bundle_construct")
 
         optimizer = torch.optim.AdamW(
-            list(self.low_model.parameters())
-            + list(self.high_model.parameters())
-            + list(self.low_projector.parameters())
-            + list(self.high_projector.parameters()),
+            list(self.model_bundle.parameters()),
             lr=self.args.learning_rate,
             weight_decay=self.args.weight_decay,
         )
@@ -313,48 +444,79 @@ class TRDTrainingRunner:
             eta_min=1e-6,
         )
 
+        self._log_gpu_memory("before_accelerator_prepare")
         (
-            self.low_model,
-            self.high_model,
-            self.low_projector,
-            self.high_projector,
+            self.model_bundle,
             self.optimizer,
+            self.train_loader,
             self.scheduler,
         ) = self.accelerator.prepare(
-            self.low_model,
-            self.high_model,
-            self.low_projector,
-            self.high_projector,
+            self.model_bundle,
             optimizer,
+            self.train_loader_raw,
             scheduler,
         )
+        self._log_gpu_memory("after_accelerator_prepare")
         if resume_state:
             self.optimizer.load_state_dict(resume_state["optimizer"])
-            wrapped_optimizer = self._wrapped_optimizer()
-            move_optimizer_state(wrapped_optimizer, self.accelerator.device)
+            if self.accelerator.distributed_type != DistributedType.DEEPSPEED:
+                wrapped_optimizer = self._wrapped_optimizer()
+                move_optimizer_state(wrapped_optimizer, self.accelerator.device)
             self.scheduler.load_state_dict(resume_state["scheduler"])
+
+        self.teacher = VideoMAEv2Teacher(
+            repo_dir=self.args.teacher_repo_dir,
+            checkpoint_path=self.teacher_checkpoint_path,
+            device=self.accelerator.device,
+            model_variant=self.args.teacher_model_variant,
+            image_size=self.args.teacher_image_size,
+            align_video_resolution=(self.args.teacher_height, self.args.teacher_width),
+            pretrained_num_frames=self.args.teacher_pretrained_frames,
+            teacher_input_frames=self.args.teacher_input_frames,
+            drop_first_frame=self.args.teacher_drop_first_frame,
+        )
+        if self.teacher.feature_dim != self.args.teacher_feature_dim:
+            raise ValueError(
+                "teacher_feature_dim mismatch: "
+                f"config={self.args.teacher_feature_dim}, teacher={self.teacher.feature_dim}"
+            )
+        self._log_gpu_memory("after_teacher_load")
+
+    def _log_gpu_memory(self, label: str) -> None:
+        if not torch.cuda.is_available() or not self.accelerator.is_main_process:
+            return
+        device = self.accelerator.device
+        if device.type != "cuda":
+            return
+        allocated_gib = torch.cuda.memory_allocated(device) / (1024**3)
+        reserved_gib = torch.cuda.memory_reserved(device) / (1024**3)
+        max_allocated_gib = torch.cuda.max_memory_allocated(device) / (1024**3)
+        LOGGER.info(
+            "[GPU MEM] %s device=%s allocated=%.2f GiB reserved=%.2f GiB max_allocated=%.2f GiB",
+            label,
+            device,
+            allocated_gib,
+            reserved_gib,
+            max_allocated_gib,
+        )
+        log_dict(
+            self.global_step,
+            {
+                f"runtime/{label}_allocated_gib": allocated_gib,
+                f"runtime/{label}_reserved_gib": reserved_gib,
+                f"runtime/{label}_max_allocated_gib": max_allocated_gib,
+            },
+            accelerator=self.accelerator,
+        )
 
     def _wrapped_optimizer(self):
         return getattr(self.optimizer, "optimizer", self.optimizer)
 
     def _all_trainable_params(self) -> list[torch.nn.Parameter]:
-        return (
-            list(self.low_model.parameters())
-            + list(self.high_model.parameters())
-            + list(self.low_projector.parameters())
-            + list(self.high_projector.parameters())
-        )
+        return list(self.model_bundle.parameters())
 
     def _set_train_mode(self) -> None:
-        self.low_model.train()
-        self.high_model.train()
-        self.low_projector.train()
-        self.high_projector.train()
-
-    def _active_components(self, branch: str):
-        if branch == "high":
-            return self.high_model, self.high_projector, self.high_hook
-        return self.low_model, self.low_projector, self.low_hook
+        self.model_bundle.train()
 
     def training_step(self, batch: dict[str, Any]) -> dict[str, torch.Tensor]:
         """Compute FM + TRD for one batch."""
@@ -389,27 +551,24 @@ class TRDTrainingRunner:
             target = noise - video_latent
             teacher_features = self.teacher.encode(video.unsqueeze(0))
 
-        active_model, active_projector, active_hook = self._active_components(timestep_sample.branch)
-        self.low_hook.clear()
-        self.high_hook.clear()
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-            pred = active_model(
-                [noisy_latent],
-                t=timestep_sample.timestep,
+            pred, student_tokens = self.model_bundle(
+                branch=timestep_sample.branch,
+                noisy_latent=noisy_latent,
+                timestep=timestep_sample.timestep,
                 context=context,
                 seq_len=seq_len,
-                y=[y],
-                dit_cond_dict=dit_cond,
-            )[0]
-        if active_hook.latest is None:
-            raise RuntimeError("Feature hook did not capture student tokens.")
+                y=y,
+                dit_cond=dit_cond,
+                lat_f=lat_f,
+                lat_h=lat_h,
+                lat_w=lat_w,
+            )
 
         pred_rest = pred[:, 1:]
         target_rest = target[:, 1:]
         loss_fm = F.mse_loss(pred_rest.float(), target_rest.float()) * timestep_sample.weight
 
-        student_tokens = self._reshape_student_tokens(active_hook.latest, lat_f, lat_h, lat_w)
-        student_tokens = active_projector(student_tokens)
         trd_output = self.trd_loss(student_tokens, teacher_features.tokens)
         loss_total = loss_fm + self.args.lambda_trd * trd_output.total
 
@@ -455,17 +614,13 @@ class TRDTrainingRunner:
 
     def _run_snapshot_only_validation_cycle(self, tag: str) -> None:
         self.accelerator.wait_for_everyone()
-        checkpoint_path = save_accelerate_checkpoint(
+        checkpoint_path = save_dual_bundle_checkpoint(
             accelerator=self.accelerator,
-            model={
-                "low_noise_model": self.low_model,
-                "high_noise_model": self.high_model,
-            },
+            model_bundle=self.model_bundle,
             args=self.args,
             tag=tag,
             extra_training_state={
-                "low_projector": self.accelerator.unwrap_model(self.low_projector).state_dict(),
-                "high_projector": self.accelerator.unwrap_model(self.high_projector).state_dict(),
+                **self.accelerator.unwrap_model(self.model_bundle).projector_state_dicts(),
                 "global_step": self.global_step,
                 "tag": tag,
             },
@@ -479,12 +634,9 @@ class TRDTrainingRunner:
     def _run_pause_external_validation_cycle(self, tag: str) -> None:
         self.accelerator.wait_for_everyone()
         candidate_tag = f"_candidate_{tag}"
-        candidate_path = save_accelerate_checkpoint(
+        candidate_path = save_dual_bundle_checkpoint(
             accelerator=self.accelerator,
-            model={
-                "low_noise_model": self.low_model,
-                "high_noise_model": self.high_model,
-            },
+            model_bundle=self.model_bundle,
             args=self.args,
             tag=candidate_tag,
             extra_training_state=self._build_resume_state_payload(tag),
@@ -523,9 +675,9 @@ class TRDTrainingRunner:
         self.accelerator.wait_for_everyone()
 
     def _build_resume_state_payload(self, tag: str) -> dict[str, Any]:
+        unwrapped_bundle = self.accelerator.unwrap_model(self.model_bundle)
         return {
-            "low_projector": self.accelerator.unwrap_model(self.low_projector).state_dict(),
-            "high_projector": self.accelerator.unwrap_model(self.high_projector).state_dict(),
+            **unwrapped_bundle.projector_state_dicts(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict(),
             "global_step": self.global_step,
@@ -534,28 +686,23 @@ class TRDTrainingRunner:
         }
 
     def _release_training_runtime(self) -> None:
-        self.low_hook = None
-        self.high_hook = None
         self.teacher = None
         self.helper.release_runtime_components()
         (
-            self.low_model,
-            self.high_model,
-            self.low_projector,
-            self.high_projector,
+            self.model_bundle,
             self.optimizer,
+            self.train_loader,
             self.scheduler,
         ) = self.accelerator.free_memory(
-            self.low_model,
-            self.high_model,
-            self.low_projector,
-            self.high_projector,
+            self.model_bundle,
             self.optimizer,
+            self.train_loader,
             self.scheduler,
         )
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        self._log_gpu_memory("after_runtime_release")
 
     def _restore_training_runtime(self, checkpoint_path: Path) -> None:
         resume_state = torch.load(
@@ -790,8 +937,7 @@ class TRDTrainingRunner:
     def run_light_validation(self, tag: str) -> None:
         """Run lightweight loss validation inside the current training process."""
         del tag  # unused in the light path
-        self.low_model.eval()
-        self.high_model.eval()
+        self.model_bundle.eval()
         sample_count = 0
         total_loss = 0.0
         if self.accelerator.is_main_process:
@@ -812,18 +958,6 @@ class TRDTrainingRunner:
                 accelerator=self.accelerator,
             )
         self._set_train_mode()
-
-    def _reshape_student_tokens(
-        self,
-        tokens: torch.Tensor,
-        lat_f: int,
-        lat_h: int,
-        lat_w: int,
-    ) -> torch.Tensor:
-        channels = tokens.shape[-1]
-        pooled_h = lat_h // self.helper.patch_size[1]
-        pooled_w = lat_w // self.helper.patch_size[2]
-        return tokens.view(1, lat_f, pooled_h * pooled_w, channels)
 
     def _scalarize_metrics(self, metrics: dict[str, torch.Tensor]) -> dict[str, float]:
         output: dict[str, float] = {}
@@ -1052,7 +1186,9 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("teacher_repo_dir", path_cfg.videorepa_repo_dir)
     payload.setdefault("teacher_checkpoint_dir", path_cfg.teacher_ckpt_dir)
 
+    payload.setdefault("wandb_entity", "")
     payload.setdefault("margin", 0.1)
+    payload.setdefault("teacher_feature_dim", 768)
     payload.setdefault("teacher_height", 160)
     payload.setdefault("teacher_width", 240)
     payload.setdefault("teacher_pretrained_frames", 16)
@@ -1130,6 +1266,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=str, default=str(CONFIG_DIR / "train_trd_v1.yaml"))
     parser.add_argument("--env_file", type=str, default=str(CONFIG_DIR / "path_config_cluster.env"))
     parser.add_argument("--experiment_name", type=str, default="")
+    parser.add_argument("--project_name", type=str, default="")
+    parser.add_argument("--wandb_entity", type=str, default="")
     parser.add_argument("--model_type", type=str, default="", choices=["low", "high", "dual"])
     parser.add_argument("--stage1_ckpt_dir", type=str, default="")
     parser.add_argument("--base_model_dir", type=str, default="")

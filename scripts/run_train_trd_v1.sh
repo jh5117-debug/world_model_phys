@@ -4,6 +4,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 ENV_FILE="${ENV_FILE:-${PROJECT_ROOT}/configs/path_config_cluster.env}"
 CONFIG_PATH="${PROJECT_ROOT}/configs/train_trd_v1.yaml"
@@ -59,7 +60,7 @@ if [[ -f "${ENV_FILE}" ]]; then
 fi
 
 if [[ -z "${GPU_LIST}" ]]; then
-  GPU_LIST="${CUDA_VISIBLE_DEVICES:-4,5,6,7}"
+  GPU_LIST="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 fi
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-${GPU_LIST}}"
 IFS=',' read -r -a GPU_ARRAY <<< "${CUDA_VISIBLE_DEVICES}"
@@ -76,6 +77,8 @@ fi
 
 OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}}"
 mkdir -p "${OUTPUT_ROOT}/logs"
+
+cd "${PROJECT_ROOT}"
 
 accelerate launch \
   --config_file "${ACCELERATE_CONFIG}" \
