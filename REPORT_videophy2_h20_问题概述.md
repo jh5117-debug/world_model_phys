@@ -1220,3 +1220,79 @@ cat /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/runs/eval/phys
   - `/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/test_inf_result/lingbotstage1`
 
 因此，截至目前，H20 上已经不再缺少 `LingBot-base` / `LingBot-Stage1` candidate videos；后续真正要做的是基于这些已落盘视频，继续进行人工抽查、`Physics-IQ-style` 后评测，或其他补充指标汇总。
+
+### 19.9 H20 上最终 VideoPhy-2 命令与终端输出记录
+
+为了让这份文档同时保留“最终成功跑通时到底在终端里看到了什么”，这里把关键命令和终端输出摘录如下。
+
+#### 19.9.1 `dataset_test` 的最终 aggregate 输出
+
+对应运行阶段中，`CS:GO test` 数据集直测最终打印出的 aggregate summary 为：
+
+```text
+VideoPhy-2 Summary: exp_dataset_test_autoeval_parallel
+
+Overall
+| Metric | Mean | Count |
+| --- | --- | --- |
+| SA Mean | 3.95 | 1 |
+| PC Mean | 3.5375 | 1 |
+| Joint >= 4 | 0.4375 | 1 |
+```
+
+#### 19.9.2 最终双模型静默汇总命令
+
+H20 上最终用于只输出两张表的命令为：
+
+```bash
+cd /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys
+git pull origin main
+KILL_EXISTING_GPU_PIDS=1 bash scripts/run_videophy2_test_inf_result_dual_summary.sh
+```
+
+#### 19.9.3 最终双模型静默汇总终端输出
+
+H20 上这条命令最终打印出的结果如下：
+
+```text
+lingbotbase
+
+Overall
+| Metric | Mean | Count |
+| --- | --- | --- |
+| SA Mean | 4.1549 | 1 |
+| PC Mean | 3.5493 | 1 |
+| Joint >= 4 | 0.4789 | 1 |
+
+lingbotstage1
+
+Overall
+| Metric | Mean | Count |
+| --- | --- | --- |
+| SA Mean | 4.2329 | 1 |
+| PC Mean | 3.6027 | 1 |
+| Joint >= 4 | 0.5205 | 1 |
+```
+
+#### 19.9.4 这些输出从 VideoPhy-2 角度意味着什么
+
+从 `VideoPhy-2-AutoEval` 的 judge 视角看，这两张表可以解释为：
+
+- `SA Mean`
+  - `LingBot-base = 4.1549`
+  - `LingBot-Stage1 = 4.2329`
+  - 说明两者整体都已经能够较好地遵循文本语义，`Stage1` 略优于 `Base`
+- `PC Mean`
+  - `LingBot-base = 3.5493`
+  - `LingBot-Stage1 = 3.6027`
+  - 说明两者在物理常识一致性上处于中上水平，但物理性仍然弱于语义符合度
+- `Joint >= 4`
+  - `LingBot-base = 0.4789`
+  - `LingBot-Stage1 = 0.5205`
+  - 说明大约有 `48%` 与 `52%` 的视频，能够同时满足“语义上过关且物理上也过关”
+
+因此，最终的 VideoPhy-2 结论可以简写为：
+
+- `LingBot-Stage1` 相比 `LingBot-base` 有稳定但温和的提升
+- 当前两者的主要短板都不是 `SA`，而是 `PC`
+- 也就是说，模型在“视频内容是否符合描述”上做得比“视频运动和交互是否足够物理合理”更好
