@@ -261,6 +261,7 @@ class TRDTrainingRunner:
             ",".join(str(idx) for idx in range(args.num_gpus)),
         )
         self.best_metrics: dict[str, float] | None = None
+        self._logged_teacher_encode_offload_memory = False
 
     def initialize_tracking(self) -> None:
         """Create the shared W&B run before model loading."""
@@ -474,6 +475,7 @@ class TRDTrainingRunner:
             checkpoint_path=self.teacher_checkpoint_path,
             device=self.accelerator.device,
             model_dtype=self.args.teacher_dtype,
+            offload_after_encode=self.args.teacher_offload_after_encode,
             model_variant=self.args.teacher_model_variant,
             image_size=self.args.teacher_image_size,
             align_video_resolution=(self.args.teacher_height, self.args.teacher_width),
@@ -556,6 +558,9 @@ class TRDTrainingRunner:
             noisy_latent = (1.0 - timestep_sample.sigma) * video_latent + timestep_sample.sigma * noise
             target = noise - video_latent
             teacher_features = self.teacher.encode(video.unsqueeze(0))
+            if not self._logged_teacher_encode_offload_memory:
+                self._log_gpu_memory("after_teacher_encode")
+                self._logged_teacher_encode_offload_memory = True
 
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             pred, student_tokens = self.model_bundle(
@@ -1202,6 +1207,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("teacher_drop_first_frame", True)
     payload.setdefault("teacher_model_variant", "vit_base_patch16_224")
     payload.setdefault("teacher_dtype", "bfloat16")
+    payload.setdefault("teacher_offload_after_encode", True)
     payload.setdefault("validation_every_steps", 300)
     payload.setdefault("mini_val_max_samples", 8)
     payload.setdefault("student_target_block", 20)
@@ -1218,6 +1224,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload["allow_deepspeed_feature_hook_experimental"] = _coerce_bool(
         payload["allow_deepspeed_feature_hook_experimental"]
     )
+    payload["teacher_offload_after_encode"] = _coerce_bool(payload["teacher_offload_after_encode"])
 
     payload["output_dir"] = str(Path(payload["output_root"]) / "checkpoints" / payload["experiment_name"])
     payload.setdefault("teacher_checkpoint_path", "")
@@ -1292,6 +1299,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--teacher_checkpoint_dir", type=str, default="")
     parser.add_argument("--teacher_checkpoint_path", type=str, default="")
     parser.add_argument("--teacher_dtype", type=str, default="")
+    parser.add_argument("--teacher_offload_after_encode", type=str, default="")
     parser.add_argument("--validation_runtime_mode", type=str, default="")
     parser.add_argument("--allow_deepspeed_feature_hook_experimental", type=str, default="")
     return parser.parse_args()

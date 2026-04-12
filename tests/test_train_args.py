@@ -61,6 +61,7 @@ def test_build_args_supports_dual_training_defaults(tmp_path):
     assert args.model_type == "dual"
     assert args.output_dir.endswith("checkpoints/exp_dual")
     assert args.teacher_dtype == "bfloat16"
+    assert args.teacher_offload_after_encode is True
 
 
 def test_build_args_accepts_wandb_entity_override(tmp_path):
@@ -99,3 +100,21 @@ def test_build_args_accepts_teacher_dtype_override(tmp_path):
 
     args = build_args(_CliArgs(str(config_path), str(env_path)))
     assert args.teacher_dtype == "float32"
+
+
+def test_build_args_accepts_teacher_offload_override(tmp_path):
+    config_path = tmp_path / "train.yaml"
+    env_path = tmp_path / "paths.env"
+    write_yaml(
+        config_path,
+        {
+            "experiment_name": "exp_teacher_offload",
+            "model_type": "dual",
+            "teacher_offload_after_encode": "false",
+            "teacher_checkpoint_dir": str(tmp_path / "teacher"),
+        },
+    )
+    env_path.write_text("", encoding="utf-8")
+
+    args = build_args(_CliArgs(str(config_path), str(env_path)))
+    assert args.teacher_offload_after_encode is False
