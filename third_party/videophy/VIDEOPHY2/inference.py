@@ -3,6 +3,7 @@ import re
 import csv
 import json
 import argparse
+import traceback
 from collections import defaultdict
 
 import numpy as np
@@ -179,64 +180,77 @@ def _decode_generation_outputs(sequences, *, prompt_token_count, tokenizer):
 def inference(args, model, df, processor, tokenizer, generate_kwargs, score_token_map):
     with torch.no_grad():
         for i, row in tqdm(df.iterrows()):
-            videopaths = [row['videopath']]
-            if args.task == 'sa':
-                prompts = [PROMPT_SA.format(caption=row['caption'])] 
-            elif args.task == 'pc':
-                prompts = [PROMPT_PHYSICS]
-            else:
-                prompts = [PROMPT_RULE.format(rule=row['rule'])]
-            inputs = processor(text=prompts, videos=videopaths, num_frames=args.num_frames, return_tensors='pt')
-            model_dtype = next(model.parameters()).dtype
-            inputs = _prepare_model_inputs(inputs, model=model, model_dtype=model_dtype)
+            try:
+                videopaths = [row['videopath']]
+                if args.task == 'sa':
+                    prompts = [PROMPT_SA.format(caption=row['caption'])] 
+                elif args.task == 'pc':
+                    prompts = [PROMPT_PHYSICS]
+                else:
+                    prompts = [PROMPT_RULE.format(rule=row['rule'])]
+                inputs = processor(text=prompts, videos=videopaths, num_frames=args.num_frames, return_tensors='pt')
+                model_dtype = next(model.parameters()).dtype
+                inputs = _prepare_model_inputs(inputs, model=model, model_dtype=model_dtype)
 
-            generate_call_kwargs = dict(generate_kwargs)
-            generate_call_kwargs["return_dict_in_generate"] = True
-            generate_call_kwargs["output_scores"] = True
+                generate_call_kwargs = dict(generate_kwargs)
+                generate_call_kwargs["return_dict_in_generate"] = True
+                generate_call_kwargs["output_scores"] = True
 
-            res = model.generate(**inputs, **generate_call_kwargs)
-            sequences = res.sequences if hasattr(res, "sequences") else res
-            choice_score = None
-            choice_confidence = None
-            if hasattr(res, "scores") and res.scores:
-                choice_score, choice_confidence = _score_from_next_token_logits(
-                    res.scores[0][0],
-                    score_token_map,
-                )
-            prompt_token_count = int(inputs["input_ids"].shape[1])
-            full_output, generated_output = _decode_generation_outputs(
-                sequences,
-                prompt_token_count=prompt_token_count,
-                tokenizer=tokenizer,
-            )
-
-            print(f"[RAW_OUTPUT] {repr(full_output)}")
-            print(f"[GENERATED_OUTPUT] {repr(generated_output)}")
-            if choice_score is not None:
-                print(
-                    f"[CHOICE_SCORE] score={choice_score} confidence={choice_confidence:.4f}"
+                res = model.generate(**inputs, **generate_call_kwargs)
+                sequences = res.sequences if hasattr(res, "sequences") else res
+                choice_score = None
+                choice_confidence = None
+                if hasattr(res, "scores") and res.scores:
+                    choice_score, choice_confidence = _score_from_next_token_logits(
+                        res.scores[0][0],
+                        score_token_map,
+                    )
+                prompt_token_count = int(inputs["input_ids"].shape[1])
+                full_output, generated_output = _decode_generation_outputs(
+                    sequences,
+                    prompt_token_count=prompt_token_count,
+                    tokenizer=tokenizer,
                 )
 
-            score = parse_score_from_output(generated_output, task=args.task)
-            score_source = "generated_output"
-            if score is None:
-                score = parse_score_from_output(full_output, task=args.task)
-                if score is not None:
-                    score_source = "full_output"
-            if score is None:
-                score = choice_score
-                score_source = "choice_logits" if choice_score is not None else ""
-                print(
-                    f"Warning: Could not parse generated output {repr(generated_output)}. "
-                    f"Falling back to {score_source or 'empty score'}."
-                )
+                print(f"[RAW_OUTPUT] {repr(full_output)}")
+                print(f"[GENERATED_OUTPUT] {repr(generated_output)}")
+                if choice_score is not None:
+                    print(
+                        f"[CHOICE_SCORE] score={choice_score} confidence={choice_confidence:.4f}"
+                    )
 
-            df.at[i, "raw_output"] = full_output
-            df.at[i, "generated_output"] = generated_output
-            df.at[i, "choice_score"] = choice_score
-            df.at[i, "choice_confidence"] = choice_confidence
-            df.at[i, "score_source"] = score_source
-            df.at[i, "score"] = score
+                score = parse_score_from_output(generated_output, task=args.task)
+                score_source = "generated_output"
+                if score is None:
+                    score = parse_score_from_output(full_output, task=args.task)
+                    if score is not None:
+                        score_source = "full_output"
+                if score is None:
+                    score = choice_score
+                    score_source = "choice_logits" if choice_score is not None else ""
+                    print(
+                        f"Warning: Could not parse generated output {repr(generated_output)}. "
+                        f"Falling back to {score_source or 'empty score'}."
+                    )
+
+                df.at[i, "raw_output"] = full_output
+                df.at[i, "generated_output"] = generated_output
+                df.at[i, "choice_score"] = choice_score
+                df.at[i, "choice_confidence"] = choice_confidence
+                df.at[i, "score_source"] = score_source
+                df.at[i, "score"] = score
+                df.at[i, "error"] = ""
+            except Exception as exc:
+                error_text = f"{type(exc).__name__}: {exc}"
+                print(f"[ROW_ERROR] videopath={row.get('videopath', '')} error={error_text}")
+                print(traceback.format_exc())
+                df.at[i, "raw_output"] = ""
+                df.at[i, "generated_output"] = ""
+                df.at[i, "choice_score"] = ""
+                df.at[i, "choice_confidence"] = ""
+                df.at[i, "score_source"] = ""
+                df.at[i, "score"] = ""
+                df.at[i, "error"] = error_text
     return df
 
 
