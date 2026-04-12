@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import sys
 from pathlib import Path
 
 import torch
@@ -72,7 +73,17 @@ class VideoMAEv2Teacher(TeacherEncoder):
         if spec is None or spec.loader is None:
             raise ImportError(f"Failed to create spec for {ssl_path}")
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module_name = spec.name
+        previous = sys.modules.get(module_name)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            if previous is None:
+                sys.modules.pop(module_name, None)
+            else:
+                sys.modules[module_name] = previous
+            raise
         return module
 
     @torch.no_grad()
