@@ -40,7 +40,7 @@ _SCORE_TO_WORD = {
 
 
 def resolve_model_dtype():
-    value = os.environ.get("VIDEOPHY_TORCH_DTYPE", "bfloat16").strip().lower()
+    value = os.environ.get("VIDEOPHY_TORCH_DTYPE", "float32").strip().lower()
     mapping = {
         "bf16": torch.bfloat16,
         "bfloat16": torch.bfloat16,
