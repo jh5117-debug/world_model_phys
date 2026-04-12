@@ -51,6 +51,7 @@ def format_seed_mean_summary(
     metric_order: list[str],
     metric_labels: dict[str, str] | None = None,
     sample_count_key: str = "count",
+    include_per_seed: bool = True,
 ) -> str:
     """Render a seed-based summary.json payload as human-readable tables."""
     metric_labels = metric_labels or {}
@@ -62,32 +63,33 @@ def format_seed_mean_summary(
         sections.append("Overall")
         sections.append(_markdown_table(["Metric", "Mean", "Count"], overall_rows))
 
-    seed_rows: list[list[Any]] = []
-    seed_entries = summary.get("seeds", [])
-    active_seed_metrics = [
-        metric
-        for metric in metric_order
-        if any(item.get("means", {}).get(metric) for item in seed_entries)
-    ]
-    for item in seed_entries:
-        row = [item.get("seed", ""), item.get(sample_count_key, "")]
-        has_metric = False
-        item_means = item.get("means", {})
-        for metric in active_seed_metrics:
-            payload = item_means.get(metric)
-            value = ""
-            if payload:
-                value = payload.get("mean", "")
-                has_metric = True
-            row.append(value)
-        if has_metric:
-            seed_rows.append(row)
+    if include_per_seed:
+        seed_rows: list[list[Any]] = []
+        seed_entries = summary.get("seeds", [])
+        active_seed_metrics = [
+            metric
+            for metric in metric_order
+            if any(item.get("means", {}).get(metric) for item in seed_entries)
+        ]
+        for item in seed_entries:
+            row = [item.get("seed", ""), item.get(sample_count_key, "")]
+            has_metric = False
+            item_means = item.get("means", {})
+            for metric in active_seed_metrics:
+                payload = item_means.get(metric)
+                value = ""
+                if payload:
+                    value = payload.get("mean", "")
+                    has_metric = True
+                row.append(value)
+            if has_metric:
+                seed_rows.append(row)
 
-    if seed_rows:
-        sections.append("")
-        sections.append("Per Seed")
-        headers = ["Seed", "Samples"] + [metric_labels.get(metric, metric) for metric in active_seed_metrics]
-        sections.append(_markdown_table(headers, seed_rows))
+        if seed_rows:
+            sections.append("")
+            sections.append("Per Seed")
+            headers = ["Seed", "Samples"] + [metric_labels.get(metric, metric) for metric in active_seed_metrics]
+            sections.append(_markdown_table(headers, seed_rows))
 
     return "\n".join(sections).strip()
 
@@ -117,7 +119,12 @@ def format_physics_iq_summary(summary: dict[str, Any], *, title: str = "Physics-
     )
 
 
-def format_videophy2_summary(summary: dict[str, Any], *, title: str = "VideoPhy-2 Summary") -> str:
+def format_videophy2_summary(
+    summary: dict[str, Any],
+    *,
+    title: str = "VideoPhy-2 Summary",
+    include_per_seed: bool = True,
+) -> str:
     metric_order = ["sa_mean", "pc_mean", "joint"]
     metric_labels = {
         "sa_mean": "SA Mean",
@@ -129,6 +136,7 @@ def format_videophy2_summary(summary: dict[str, Any], *, title: str = "VideoPhy-
         title=title,
         metric_order=metric_order,
         metric_labels=metric_labels,
+        include_per_seed=include_per_seed,
     )
 
 

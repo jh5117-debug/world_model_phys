@@ -6,6 +6,7 @@ import csv
 import logging
 import math
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,12 @@ from einops import rearrange
 from torch.utils.data import DataLoader, Dataset
 
 LOGGER = logging.getLogger(__name__)
+
+MODEL_SUBFOLDERS = ("low_noise_model", "high_noise_model")
+MODEL_TYPE_TO_SUBFOLDER = {
+    "low": "low_noise_model",
+    "high": "high_noise_model",
+}
 
 
 class CSGODataset(Dataset):
@@ -99,6 +106,7 @@ class TimestepSample:
     sigma: float
     timestep: torch.Tensor
     weight: float
+    branch: str
 
 
 class LingBotStage1Helper:
@@ -126,6 +134,8 @@ class LingBotStage1Helper:
         y = torch.exp(-2 * ((self.timesteps_schedule - self.num_train_timesteps / 2) / self.num_train_timesteps) ** 2)
         y_shifted = y - y.min()
         training_weights = y_shifted * (self.num_train_timesteps / y_shifted.sum())
+        self.all_indices = torch.arange(self.num_train_timesteps)
+        self.all_weights = training_weights / training_weights.mean()
         self.low_noise_weights = training_weights[self.low_noise_indices] / training_weights[self.low_noise_indices].mean()
         self.high_noise_weights = training_weights[self.high_noise_indices] / training_weights[self.high_noise_indices].mean()
 
@@ -153,31 +163,59 @@ class LingBotStage1Helper:
             "get_Ks_transformed": get_Ks_transformed,
         }
 
-    def load_model(self, device: torch.device, model_type: str):
-        """Load the target Stage-1 model plus VAE and T5."""
+    def ensure_runtime_components(self, device: torch.device) -> None:
+        """Load the shared VAE/T5 runtime once."""
         self.bootstrap_imports()
         self.device = device
-        subfolder = "low_noise_model" if model_type == "low" else "high_noise_model"
-        LOGGER.info("Loading %s from %s", subfolder, self.args.stage1_ckpt_dir)
+        if getattr(self, "vae", None) is None:
+            self.vae = self.Wan2_1_VAE(
+                vae_pth=os.path.join(self.args.base_model_dir, "Wan2.1_VAE.pth"),
+                device=self.device,
+            )
+        if getattr(self, "t5", None) is None:
+            self.t5 = self.T5EncoderModel(
+                text_len=512,
+                dtype=torch.bfloat16,
+                device=self.device,
+                checkpoint_path=os.path.join(self.args.base_model_dir, "models_t5_umt5-xxl-enc-bf16.pth"),
+                tokenizer_path=os.path.join(self.args.base_model_dir, "google", "umt5-xxl"),
+            )
+
+    def load_model(self, device: torch.device, model_type: str, checkpoint_dir: str | Path | None = None):
+        """Load one target Stage-1 branch plus shared VAE/T5 runtime."""
+        self.ensure_runtime_components(device)
+        subfolder = get_model_subfolder(model_type)
+        checkpoint_root = str(checkpoint_dir or self.args.stage1_ckpt_dir)
+        LOGGER.info("Loading %s from %s", subfolder, checkpoint_root)
         model = self.WanModel.from_pretrained(
-            self.args.stage1_ckpt_dir,
+            checkpoint_root,
             subfolder=subfolder,
             torch_dtype=torch.bfloat16,
             control_type="act",
         )
         model.train()
-        self.vae = self.Wan2_1_VAE(
-            vae_pth=os.path.join(self.args.base_model_dir, "Wan2.1_VAE.pth"),
-            device=self.device,
-        )
-        self.t5 = self.T5EncoderModel(
-            text_len=512,
-            dtype=torch.bfloat16,
-            device=self.device,
-            checkpoint_path=os.path.join(self.args.base_model_dir, "models_t5_umt5-xxl-enc-bf16.pth"),
-            tokenizer_path=os.path.join(self.args.base_model_dir, "google", "umt5-xxl"),
-        )
         return model
+
+    def release_runtime_components(self) -> None:
+        """Drop non-trainable helper runtime objects to free GPU memory."""
+        for attr_name in ("vae", "t5"):
+            obj = getattr(self, attr_name, None)
+            if obj is None:
+                continue
+            module = getattr(obj, "model", None)
+            if module is not None and hasattr(module, "to"):
+                try:
+                    module.to("cpu")
+                except Exception:
+                    LOGGER.debug("Failed to move %s.model to CPU before release", attr_name, exc_info=True)
+            elif hasattr(obj, "to"):
+                try:
+                    obj.to("cpu")
+                except Exception:
+                    LOGGER.debug("Failed to move %s to CPU before release", attr_name, exc_info=True)
+            setattr(self, attr_name, None)
+        self._t5_cache.clear()
+        self.device = torch.device("cpu")
 
     @torch.no_grad()
     def encode_video(self, video_tensor: torch.Tensor) -> torch.Tensor:
@@ -281,7 +319,10 @@ class LingBotStage1Helper:
 
     def sample_timestep(self, model_type: str) -> TimestepSample:
         """Sample a valid noise step for the selected model."""
-        if model_type == "high":
+        if model_type == "dual":
+            indices = self.all_indices
+            weights = self.all_weights
+        elif model_type == "high":
             indices = self.high_noise_indices
             weights = self.high_noise_weights
         else:
@@ -292,7 +333,19 @@ class LingBotStage1Helper:
         sigma = float(self.sigmas[idx].item())
         timestep = self.timesteps_schedule[idx].to(self.device).unsqueeze(0)
         weight = float(weights[local_idx].item())
-        return TimestepSample(index=idx, sigma=sigma, timestep=timestep, weight=weight)
+        return TimestepSample(
+            index=idx,
+            sigma=sigma,
+            timestep=timestep,
+            weight=weight,
+            branch=self.branch_for_timestep_index(idx),
+        )
+
+    def branch_for_timestep_index(self, timestep_index: int) -> str:
+        """Return the model branch implied by one sampled timestep."""
+        timestep_value = float(self.timesteps_schedule[timestep_index].item())
+        boundary = self.boundary * self.num_train_timesteps
+        return "high" if timestep_value >= boundary else "low"
 
 
 def apply_gradient_checkpointing(model, model_name: str = "model") -> None:
@@ -331,37 +384,74 @@ def apply_gradient_checkpointing(model, model_name: str = "model") -> None:
     LOGGER.info("Gradient checkpointing patched %s blocks for %s", patched, model_name)
 
 
+def get_model_subfolder(model_type: str) -> str:
+    """Map a logical model type to its checkpoint subfolder."""
+    if model_type not in MODEL_TYPE_TO_SUBFOLDER:
+        raise ValueError(f"Unsupported model_type: {model_type}")
+    return MODEL_TYPE_TO_SUBFOLDER[model_type]
+
+
 def save_accelerate_checkpoint(
     *,
     accelerator,
     model,
     args,
-    subfolder: str,
     tag: str,
     extra_training_state: dict | None = None,
+    training_state_filename: str = "resume_state.pt",
 ) -> Path:
-    """Save a checkpoint compatible with WanModel.from_pretrained."""
+    """Save one or more Stage-1 branches in WanModel.from_pretrained layout."""
     save_dir = Path(args.output_dir) / tag
-    model_dir = save_dir / subfolder
     if accelerator.is_main_process:
-        model_dir.mkdir(parents=True, exist_ok=True)
+        save_dir.mkdir(parents=True, exist_ok=True)
     accelerator.wait_for_everyone()
-    unwrapped = accelerator.unwrap_model(model)
-    if hasattr(model, "save_16bit_model"):
-        model.save_16bit_model(model_dir, "diffusion_pytorch_model.bin")
-        accelerator.wait_for_everyone()
-        if accelerator.is_main_process:
-            unwrapped.save_config(model_dir)
+
+    if isinstance(model, dict):
+        model_items = list(model.items())
     else:
+        subfolder = getattr(args, "subfolder", "")
+        if not subfolder:
+            raise ValueError("subfolder must be set when saving a single model")
+        model_items = [(subfolder, model)]
+
+    for subfolder, branch_model in model_items:
+        model_dir = save_dir / subfolder
         if accelerator.is_main_process:
+            model_dir.mkdir(parents=True, exist_ok=True)
+        accelerator.wait_for_everyone()
+        unwrapped = accelerator.unwrap_model(branch_model)
+        if hasattr(unwrapped, "save_16bit_model"):
+            unwrapped.save_16bit_model(model_dir, "diffusion_pytorch_model.bin")
+            accelerator.wait_for_everyone()
+            if accelerator.is_main_process:
+                unwrapped.save_config(model_dir)
+        elif accelerator.is_main_process:
             unwrapped.save_pretrained(model_dir, safe_serialization=False)
+        accelerator.wait_for_everyone()
+
     if accelerator.is_main_process:
         if extra_training_state:
             training_only = save_dir / "training_only"
             training_only.mkdir(parents=True, exist_ok=True)
-            torch.save(extra_training_state, training_only / f"{subfolder}_extras.pt")
+            torch.save(extra_training_state, training_only / training_state_filename)
     accelerator.wait_for_everyone()
     return save_dir
+
+
+def prune_checkpoint_dir(path: str | Path) -> None:
+    """Delete one checkpoint directory if it exists."""
+    root = Path(path)
+    if root.exists():
+        shutil.rmtree(root)
+
+
+def move_optimizer_state(optimizer: torch.optim.Optimizer, device: torch.device | str) -> None:
+    """Move optimizer state tensors between CPU and GPU."""
+    target = torch.device(device)
+    for state in optimizer.state.values():
+        for key, value in state.items():
+            if torch.is_tensor(value):
+                state[key] = value.to(target)
 
 
 def build_dataloader(

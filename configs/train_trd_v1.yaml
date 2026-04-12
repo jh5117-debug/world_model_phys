@@ -2,15 +2,15 @@ experiment_name: exp_stage1_epoch2_trd_v1
 project_name: physical_consistency
 run_group: trd_v1
 seed: 42
-model_type: low
+model_type: dual
 base_model_dir: links/base_model
 stage1_ckpt_dir: links/stage1_epoch2
 dataset_dir: links/processed_csgo_v3
 lingbot_code_dir: links/lingbot_code
 output_root: .
 wandb_dir: runs/wandb
-manifest_mini_val: data/manifests/csgo_phys_val50.csv
-manifest_full_val: data/manifests/csgo_phys_val50.csv
+manifest_mini_val: data/manifests/csgo_phys_val8.csv
+manifest_full_val: data/manifests/csgo_phys_val8.csv
 teacher_backend: external
 teacher_repo_dir: third_party/VideoREPA
 teacher_checkpoint_dir: links/teacher_ckpt
@@ -29,7 +29,7 @@ learning_rate: 1.0e-5
 weight_decay: 0.01
 num_epochs: 5
 gradient_accumulation_steps: 4
-save_every_n_epochs: 1
+save_every_n_epochs: 0
 max_grad_norm: 1.0
 gradient_checkpointing: true
 num_frames: 81
@@ -41,11 +41,9 @@ mini_val_max_samples: 8
 full_val_max_samples: 50
 validation_seed_list:
   - 42
-  - 123
-  - 3407
 wandb_mode: online
 distributed_timeout_hours: 8
-validation_runtime_mode: snapshot_only
+validation_runtime_mode: pause_external
 allow_deepspeed_feature_hook_experimental: false
 sample_steps: 70
 guide_scale: 5.0

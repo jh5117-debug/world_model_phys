@@ -12,7 +12,7 @@ from physical_consistency.datasets.manifest_builder import build_fixed_manifest
 
 
 def main() -> None:
-    """Build the workflow's fixed `val50` and `val200` subsets."""
+    """Build the workflow's fixed `val8`, `val50`, and `val200` subsets."""
     parser = argparse.ArgumentParser(description="Build fixed validation manifests.")
     parser.add_argument(
         "--env_file",
@@ -32,6 +32,12 @@ def main() -> None:
     metadata_csv = Path(path_cfg.dataset_dir) / "metadata_val.csv"
     output_dir = Path(args.output_dir)
 
+    build_fixed_manifest(
+        metadata_csv,
+        output_dir / "csgo_phys_val8.csv",
+        sample_count=8,
+        seed=args.seed,
+    )
     build_fixed_manifest(
         metadata_csv,
         output_dir / "csgo_phys_val50.csv",

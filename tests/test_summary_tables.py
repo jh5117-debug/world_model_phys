@@ -86,6 +86,37 @@ def test_format_videophy2_summary_renders_joint_score():
     assert "Joint >= 4" in rendered
 
 
+def test_format_videophy2_summary_can_hide_per_seed_block():
+    summary = {
+        "seeds": [
+            {
+                "seed": 42,
+                "count": 8,
+                "means": {
+                    "sa_mean": {"mean": 4.2, "count": 1},
+                    "pc_mean": {"mean": 3.8, "count": 1},
+                    "joint": {"mean": 0.5, "count": 1},
+                },
+            }
+        ],
+        "means": {
+            "sa_mean": {"mean": 4.2, "count": 1},
+            "pc_mean": {"mean": 3.8, "count": 1},
+            "joint": {"mean": 0.5, "count": 1},
+        },
+    }
+
+    rendered = format_videophy2_summary(
+        summary,
+        title="Lingbot_VideoREPA",
+        include_per_seed=False,
+    )
+
+    assert "Lingbot_VideoREPA" in rendered
+    assert "Overall" in rendered
+    assert "Per Seed" not in rendered
+
+
 def test_format_lingbot_progress_summary_renders_combined_table():
     rendered = format_lingbot_progress_summary(
         [

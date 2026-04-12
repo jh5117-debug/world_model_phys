@@ -23,11 +23,13 @@ dependencies = [
   "torch>=2.1.0",
   "torchvision>=0.16.0",
   "tqdm>=4.66.0",
+  "typing_extensions>=4.10.0",
   "wandb>=0.17.0",
 ]
 
 [project.optional-dependencies]
 dev = [
+  "pygments>=2.18.0",
   "pytest>=8.0.0",
 ]
 viz = [

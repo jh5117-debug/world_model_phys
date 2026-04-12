@@ -11,7 +11,7 @@ ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-${PROJECT_ROOT}/configs/accelerate_trd_v
 GPU_LIST="${GPU_LIST:-}"
 NUM_GPUS="${NUM_GPUS:-}"
 ULYSSES_SIZE="${ULYSSES_SIZE:-}"
-MODEL_TYPE=""
+MODEL_TYPE="${MODEL_TYPE:-dual}"
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -50,11 +50,6 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-
-if [[ -z "${MODEL_TYPE}" ]]; then
-  echo "Usage: $0 --model_type <low|high> [extra train_trd_v1 args...]" >&2
-  exit 1
-fi
 
 if [[ -f "${ENV_FILE}" ]]; then
   set -a
