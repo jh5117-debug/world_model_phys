@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from physical_consistency.trainers.stage1_components import (
     LoRALinear,
+    LingBotStage1Helper,
     apply_lora_to_wan_model,
     apply_memory_efficient_wan_block_patch,
     export_pretrained_state_dict,
@@ -93,6 +94,14 @@ class _TinyLoRAModel(nn.Module):
         super().__init__()
         self.blocks = nn.ModuleList([_TinyLoRABlock(dim)])
         self.outside = nn.Linear(dim, dim, bias=False)
+
+
+class _FakeVAE:
+    def __init__(self, latent: torch.Tensor):
+        self.latent = latent
+
+    def encode(self, _videos):
+        return [self.latent.clone()]
 
 
 def test_apply_memory_efficient_wan_block_patch_keeps_bfloat16_activations():
@@ -213,3 +222,18 @@ def test_lora_state_dict_round_trip_and_merge_export():
 
     expected = torch.eye(2) + torch.full((2, 2), 6.0)
     assert torch.allclose(exported["blocks.0.linear.weight"], expected)
+
+
+def test_prepare_y_aligns_mask_with_latent_time_axis_for_non_1_plus_4k_frames():
+    helper = LingBotStage1Helper.__new__(LingBotStage1Helper)
+    helper.device = torch.device("cpu")
+    helper.vae = _FakeVAE(torch.randn(16, 18, 2, 3, dtype=torch.bfloat16))
+
+    video = torch.randn(3, 70, 8, 12)
+    latent = torch.randn(16, 18, 2, 3, dtype=torch.bfloat16)
+
+    y = helper.prepare_y(video, latent)
+
+    assert y.shape == (20, 18, 2, 3)
+    assert torch.all(y[:4, 0] == 1)
+    assert torch.count_nonzero(y[:4, 1:]) == 0

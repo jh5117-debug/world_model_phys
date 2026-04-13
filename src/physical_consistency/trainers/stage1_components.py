@@ -259,11 +259,9 @@ class LingBotStage1Helper:
         zeros = torch.zeros(3, frame_total - 1, height, width, device=video_tensor.device)
         y_latent = self.vae.encode([torch.concat([first_frame, zeros], dim=1).to(self.device)])[0]
 
-        mask = torch.ones(1, frame_total, lat_h, lat_w, device=self.device)
-        mask[:, 1:] = 0
-        mask = torch.concat([torch.repeat_interleave(mask[:, 0:1], repeats=4, dim=1), mask[:, 1:]], dim=1)
-        mask = mask.view(1, mask.shape[1] // 4, 4, lat_h, lat_w)
-        mask = mask.transpose(1, 2)[0]
+        # Wan consumes a 4-channel temporal mask aligned to the latent timeline, not the raw frame count.
+        mask = torch.zeros(4, y_latent.shape[1], lat_h, lat_w, device=self.device, dtype=y_latent.dtype)
+        mask[:, 0] = 1
         return torch.concat([mask, y_latent])
 
     @torch.no_grad()
