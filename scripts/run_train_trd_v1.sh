@@ -134,7 +134,11 @@ TRAIN_CMD=(
 if [[ "${RUN_WITH_NOHUP}" == "1" ]]; then
   : > "${LOG_FILE}"
   TRAIN_CMD_STRING="$(printf '%q ' "${TRAIN_CMD[@]}")"
-  nohup bash -lc "cd $(printf '%q' "${PROJECT_ROOT}") && ${TRAIN_CMD_STRING}" >>"${LOG_FILE}" 2>&1 &
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash -lc "cd $(printf '%q' "${PROJECT_ROOT}") && exec ${TRAIN_CMD_STRING}" </dev/null >>"${LOG_FILE}" 2>&1 &
+  else
+    nohup bash -lc "cd $(printf '%q' "${PROJECT_ROOT}") && exec ${TRAIN_CMD_STRING}" </dev/null >>"${LOG_FILE}" 2>&1 &
+  fi
   TRAIN_PID=$!
   printf '%s\n' "${TRAIN_PID}" > "${PID_FILE}"
   echo "[NOHUP] Started background training for ${MODEL_TYPE} with PID ${TRAIN_PID}"
