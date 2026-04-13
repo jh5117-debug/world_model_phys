@@ -67,7 +67,7 @@ def test_build_args_supports_dual_training_defaults(tmp_path):
     assert args.student_lora_alpha == 16
     assert args.student_lora_dropout == 0.0
     assert args.student_memory_efficient_modulation is True
-    assert args.student_ffn_chunk_size == 2048
+    assert args.student_ffn_chunk_size == 512
 
 
 def test_build_args_accepts_wandb_entity_override(tmp_path):

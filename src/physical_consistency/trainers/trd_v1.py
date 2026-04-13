@@ -300,6 +300,8 @@ class TRDTrainingRunner:
         )
         self.best_metrics: dict[str, float] | None = None
         self._logged_teacher_encode_offload_memory = False
+        self._logged_student_sequence_geometry = False
+        self._micro_step = 0
 
     def initialize_tracking(self) -> None:
         """Create the shared W&B run before model loading."""
@@ -352,9 +354,14 @@ class TRDTrainingRunner:
             self._set_train_mode()
             epoch_metrics: list[dict[str, float]] = []
             for batch in self.train_loader:
+                self._micro_step += 1
+                self._reset_gpu_peak_memory_stats()
+                self._log_gpu_memory(f"step_{self._micro_step}_start")
                 with self.accelerator.accumulate(self.model_bundle):
                     metrics = self.training_step(batch)
+                    self._log_gpu_memory(f"step_{self._micro_step}_after_forward")
                     self.accelerator.backward(metrics["loss_total"])
+                    self._log_gpu_memory(f"step_{self._micro_step}_after_backward")
                     if self.accelerator.sync_gradients:
                         grad_norm = self.accelerator.clip_grad_norm_(
                             self._all_trainable_params(),
@@ -365,7 +372,9 @@ class TRDTrainingRunner:
                     self.optimizer.step()
                     if self.accelerator.sync_gradients:
                         self.scheduler.step()
+                    self._log_gpu_memory(f"step_{self._micro_step}_after_optimizer_step")
                     self.optimizer.zero_grad()
+                    self._log_gpu_memory(f"step_{self._micro_step}_after_zero_grad")
 
                 epoch_metrics.append(self._scalarize_metrics(metrics))
                 if self.accelerator.sync_gradients:
@@ -559,6 +568,28 @@ class TRDTrainingRunner:
             accelerator=self.accelerator,
         )
 
+    def _reset_gpu_peak_memory_stats(self) -> None:
+        if not torch.cuda.is_available():
+            return
+        device = self.accelerator.device
+        if device.type != "cuda":
+            return
+        torch.cuda.reset_peak_memory_stats(device)
+
+    def _log_student_sequence_geometry(self, *, num_frames: int, lat_f: int, lat_h: int, lat_w: int, seq_len: int) -> None:
+        if self._logged_student_sequence_geometry or not self.accelerator.is_main_process:
+            return
+        LOGGER.info(
+            "[SEQ GEOM] num_frames=%s latent_grid=(%s,%s,%s) patch_size=%s seq_len=%s",
+            num_frames,
+            lat_f,
+            lat_h,
+            lat_w,
+            self.helper.patch_size,
+            seq_len,
+        )
+        self._logged_student_sequence_geometry = True
+
     def _wrapped_optimizer(self):
         return getattr(self.optimizer, "optimizer", self.optimizer)
 
@@ -584,6 +615,13 @@ class TRDTrainingRunner:
 
         lat_f, lat_h, lat_w = video_latent.shape[1], video_latent.shape[2], video_latent.shape[3]
         seq_len = lat_f * lat_h * lat_w // (self.helper.patch_size[1] * self.helper.patch_size[2])
+        self._log_student_sequence_geometry(
+            num_frames=int(video.shape[1]),
+            lat_f=int(lat_f),
+            lat_h=int(lat_h),
+            lat_w=int(lat_w),
+            seq_len=int(seq_len),
+        )
         with torch.no_grad():
             dit_cond = self.helper.prepare_control_signal(
                 poses,
@@ -1262,7 +1300,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("student_lora_alpha", 16)
     payload.setdefault("student_lora_dropout", 0.0)
     payload.setdefault("student_memory_efficient_modulation", True)
-    payload.setdefault("student_ffn_chunk_size", 2048)
+    payload.setdefault("student_ffn_chunk_size", 512)
     payload.setdefault("validation_every_steps", 300)
     payload.setdefault("mini_val_max_samples", 8)
     payload.setdefault("student_target_block", 20)
@@ -1306,7 +1344,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
             )
     payload["student_memory_efficient_modulation"] = _coerce_bool(payload["student_memory_efficient_modulation"])
     if payload["student_ffn_chunk_size"] in ("", None):
-        payload["student_ffn_chunk_size"] = 2048
+        payload["student_ffn_chunk_size"] = 512
     else:
         payload["student_ffn_chunk_size"] = int(payload["student_ffn_chunk_size"])
 
