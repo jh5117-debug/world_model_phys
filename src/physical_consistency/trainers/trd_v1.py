@@ -374,7 +374,7 @@ class TRDTrainingRunner:
             wandb.define_metric("progress/micro_step")
             wandb.define_metric("progress/global_step")
             wandb.define_metric("progress/epoch")
-            wandb.define_metric("train/*", step_metric="progress/global_step")
+            wandb.define_metric("train/*", step_metric="train/global_step")
             wandb.define_metric("val/*", step_metric="progress/global_step")
             wandb.define_metric("videophy2/*", step_metric="progress/global_step")
             wandb.define_metric("epoch/*", step_metric="progress/global_step")
@@ -671,7 +671,7 @@ class TRDTrainingRunner:
         if match:
             micro_step = int(match.group(1))
             phase = match.group(2)
-            step = micro_step
+            step = self.global_step
             payload = {
                 "progress/micro_step": micro_step,
                 "progress/global_step": self.global_step,
@@ -1266,6 +1266,9 @@ class TRDTrainingRunner:
             "train/lr": float(scheduler.get_last_lr()[0]),
             "train/global_step": self.global_step,
             "train/epoch": epoch + 1,
+            "progress/global_step": self.global_step,
+            "progress/micro_step": self._micro_step,
+            "progress/epoch": epoch + 1,
             "train/sample_sigma": float(metrics["sample_sigma"].detach().item()),
             "train/sample_timestep": float(metrics["sample_timestep"].detach().item()),
             "train/teacher_feat_norm": float(metrics["teacher_feat_norm"].detach().item()),
