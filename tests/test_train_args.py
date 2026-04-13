@@ -63,7 +63,7 @@ def test_build_args_supports_dual_training_defaults(tmp_path):
     assert args.teacher_dtype == "bfloat16"
     assert args.teacher_offload_after_encode is True
     assert args.student_memory_efficient_modulation is True
-    assert args.student_ffn_chunk_size == 2048
+    assert args.student_ffn_chunk_size == 1024
 
 
 def test_build_args_accepts_wandb_entity_override(tmp_path):
