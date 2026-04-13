@@ -45,7 +45,7 @@ class _TypedFFN(nn.Module):
 class _DummyWanBlock(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
-        self.modulation = nn.Parameter(torch.zeros(1, 6, 1, dim, dtype=torch.bfloat16))
+        self.modulation = nn.Parameter(torch.zeros(1, 6, dim, dtype=torch.bfloat16))
         self.norm1 = _FloatNorm()
         self.self_attn = _RecordingSelfAttention()
         self.norm3 = _FloatNorm()
@@ -69,7 +69,7 @@ def test_apply_memory_efficient_wan_block_patch_keeps_bfloat16_activations():
 
     block = model.blocks[0]
     x = torch.randn(1, 3, 4, dtype=torch.bfloat16)
-    e = torch.zeros(1, 6, 1, 4, dtype=torch.bfloat16)
+    e = torch.zeros(1, 3, 6, 4, dtype=torch.bfloat16)
     context = torch.zeros(1, 2, 4, dtype=torch.bfloat16)
 
     out = block(

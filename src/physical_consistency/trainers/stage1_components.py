@@ -423,7 +423,10 @@ def apply_memory_efficient_wan_block_patch(model, model_name: str = "model") -> 
 
         def _forward(self, x, e, seq_lens, grid_sizes, freqs, context, context_lens, dit_cond_dict=None):
             target_dtype = x.dtype
-            e = (self.modulation.to(dtype=e.dtype, device=e.device) + e).chunk(6, dim=1)
+            e = (
+                self.modulation.unsqueeze(0).to(device=e.device, dtype=torch.float32)
+                + e.to(dtype=torch.float32)
+            ).chunk(6, dim=2)
 
             self_attn_input = _modulate(self.norm1(x), e[0], e[1], target_dtype)
             y = self.self_attn(self_attn_input, seq_lens, grid_sizes, freqs)
