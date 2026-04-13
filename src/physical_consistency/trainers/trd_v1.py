@@ -6,7 +6,10 @@ import argparse
 import gc
 import hashlib
 import logging
+import math
 import os
+import re
+import time
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -83,6 +86,23 @@ def tensor_to_numpy_float32(value: torch.Tensor | np.ndarray) -> np.ndarray:
     if isinstance(value, np.ndarray):
         return value.astype(np.float32, copy=False)
     return value.detach().float().cpu().numpy()
+
+
+_STEP_LABEL_PATTERN = re.compile(r"^step_(\d+)_(.+)$")
+
+
+def format_eta(seconds: float | None) -> str:
+    """Render a compact ETA string for progress logs."""
+    if seconds is None or not math.isfinite(seconds) or seconds < 0:
+        return "unknown"
+    total_seconds = int(round(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours > 0:
+        return f"{hours:d}h{minutes:02d}m"
+    if minutes > 0:
+        return f"{minutes:d}m{seconds:02d}s"
+    return f"{seconds:d}s"
 
 
 class StudentProjector(nn.Module):
@@ -317,7 +337,13 @@ class TRDTrainingRunner:
         self.best_metrics: dict[str, float] | None = None
         self._logged_teacher_encode_offload_memory = False
         self._logged_student_sequence_geometry = False
+        self._logged_train_plan = False
         self._micro_step = 0
+        self.micro_steps_per_epoch = 0
+        self.optimizer_steps_per_epoch = 0
+        self.total_optimizer_steps = 0
+        self._train_start_time: float | None = None
+        self._last_optimizer_step_time: float | None = None
 
     def initialize_tracking(self) -> None:
         """Create the shared W&B run before model loading."""
@@ -336,7 +362,28 @@ class TRDTrainingRunner:
             job_type=f"train_{self.args.model_type}",
             mode=self.args.wandb_mode,
         )
+        self._define_wandb_metrics()
         self._tracking_initialized = True
+
+    def _define_wandb_metrics(self) -> None:
+        if not self.accelerator.is_main_process or self.run is None:
+            return
+        try:
+            import wandb
+
+            wandb.define_metric("progress/micro_step")
+            wandb.define_metric("progress/global_step")
+            wandb.define_metric("progress/epoch")
+            wandb.define_metric("train/*", step_metric="progress/global_step")
+            wandb.define_metric("val/*", step_metric="progress/global_step")
+            wandb.define_metric("videophy2/*", step_metric="progress/global_step")
+            wandb.define_metric("epoch/*", step_metric="progress/global_step")
+            wandb.define_metric("progress/*", step_metric="progress/global_step")
+            wandb.define_metric("runtime/optimizer/*", step_metric="progress/global_step")
+            wandb.define_metric("runtime/gpu_mem/*", step_metric="progress/micro_step")
+            wandb.define_metric("runtime/setup_mem/*", step_metric="progress/global_step")
+        except Exception:
+            LOGGER.warning("Failed to define W&B metrics", exc_info=True)
 
     def validate_runtime_stack(self) -> None:
         """Reject unsupported runtime combinations before training starts."""
@@ -363,7 +410,10 @@ class TRDTrainingRunner:
             self.args.teacher_checkpoint_path,
         )
         self._build_train_and_val_loaders()
+        self._log_train_plan()
         self._initialize_training_runtime(checkpoint_dir=self.args.stage1_ckpt_dir, resume_state=None)
+        self._train_start_time = time.perf_counter()
+        self._last_optimizer_step_time = self._train_start_time
 
         for epoch in range(self.args.num_epochs):
             self.current_epoch = epoch + 1
@@ -372,12 +422,12 @@ class TRDTrainingRunner:
             for batch in self.train_loader:
                 self._micro_step += 1
                 self._reset_gpu_peak_memory_stats()
-                self._log_gpu_memory(f"step_{self._micro_step}_start")
+                self._log_gpu_memory(f"step_{self._micro_step}_start", emit_console=False)
                 with self.accelerator.accumulate(self.model_bundle):
                     metrics = self.training_step(batch)
-                    self._log_gpu_memory(f"step_{self._micro_step}_after_forward")
+                    self._log_gpu_memory(f"step_{self._micro_step}_after_forward", emit_console=False)
                     self.accelerator.backward(metrics["loss_total"])
-                    self._log_gpu_memory(f"step_{self._micro_step}_after_backward")
+                    self._log_gpu_memory(f"step_{self._micro_step}_after_backward", emit_console=False)
                     if self.accelerator.sync_gradients:
                         grad_norm = self.accelerator.clip_grad_norm_(
                             self._all_trainable_params(),
@@ -388,14 +438,15 @@ class TRDTrainingRunner:
                     self.optimizer.step()
                     if self.accelerator.sync_gradients:
                         self.scheduler.step()
-                    self._log_gpu_memory(f"step_{self._micro_step}_after_optimizer_step")
+                    self._log_gpu_memory(f"step_{self._micro_step}_after_optimizer_step", emit_console=False)
                     self.optimizer.zero_grad()
-                    self._log_gpu_memory(f"step_{self._micro_step}_after_zero_grad")
+                    self._log_gpu_memory(f"step_{self._micro_step}_after_zero_grad", emit_console=False)
 
                 epoch_metrics.append(self._scalarize_metrics(metrics))
                 if self.accelerator.sync_gradients:
                     self.global_step += 1
                     if self.accelerator.is_main_process:
+                        self._log_progress(metrics, grad_norm)
                         self._log_train_metrics(metrics, self.scheduler, epoch, grad_norm)
                     if self.args.validation_every_steps > 0 and self.global_step % self.args.validation_every_steps == 0:
                         self.run_validation_cycle(tag=f"step_{self.global_step}")
@@ -458,9 +509,44 @@ class TRDTrainingRunner:
             num_workers=2,
         )
         self.train_dataset_len = len(train_loader.dataset)
+        self.micro_steps_per_epoch = math.ceil(self.train_dataset_len / self.accelerator.num_processes)
+        self.optimizer_steps_per_epoch = max(
+            self.micro_steps_per_epoch // self.args.gradient_accumulation_steps,
+            1,
+        )
+        self.total_optimizer_steps = max(self.optimizer_steps_per_epoch * self.args.num_epochs, 1)
         self.train_loader_raw = train_loader
         self.train_loader = None
         self.val_loader = val_loader
+
+    def _log_train_plan(self) -> None:
+        if self._logged_train_plan or not self.accelerator.is_main_process:
+            return
+        LOGGER.info(
+            "[TRAIN PLAN] epochs=%s micro_steps_per_epoch=%s optimizer_steps_per_epoch=%s total_optimizer_steps=%s grad_accum=%s dataset_samples=%s world_size=%s",
+            self.args.num_epochs,
+            self.micro_steps_per_epoch,
+            self.optimizer_steps_per_epoch,
+            self.total_optimizer_steps,
+            self.args.gradient_accumulation_steps,
+            self.train_dataset_len,
+            self.accelerator.num_processes,
+        )
+        log_dict(
+            0,
+            {
+                "progress/epoch": 0,
+                "progress/global_step": 0,
+                "progress/micro_step": 0,
+                "progress/epochs_total": self.args.num_epochs,
+                "progress/micro_steps_per_epoch": self.micro_steps_per_epoch,
+                "progress/optimizer_steps_per_epoch": self.optimizer_steps_per_epoch,
+                "progress/total_optimizer_steps": self.total_optimizer_steps,
+                "progress/grad_accumulation_steps": self.args.gradient_accumulation_steps,
+            },
+            accelerator=self.accelerator,
+        )
+        self._logged_train_plan = True
 
     def _initialize_training_runtime(
         self,
@@ -563,7 +649,7 @@ class TRDTrainingRunner:
             )
         self._log_gpu_memory("after_teacher_load")
 
-    def _log_gpu_memory(self, label: str) -> None:
+    def _log_gpu_memory(self, label: str, *, emit_console: bool = True) -> None:
         if not torch.cuda.is_available() or not self.accelerator.is_main_process:
             return
         device = self.accelerator.device
@@ -572,23 +658,40 @@ class TRDTrainingRunner:
         allocated_gib = torch.cuda.memory_allocated(device) / (1024**3)
         reserved_gib = torch.cuda.memory_reserved(device) / (1024**3)
         max_allocated_gib = torch.cuda.max_memory_allocated(device) / (1024**3)
-        LOGGER.info(
-            "[GPU MEM] %s device=%s allocated=%.2f GiB reserved=%.2f GiB max_allocated=%.2f GiB",
-            label,
-            device,
-            allocated_gib,
-            reserved_gib,
-            max_allocated_gib,
-        )
-        log_dict(
-            self.global_step,
-            {
-                f"runtime/{label}_allocated_gib": allocated_gib,
-                f"runtime/{label}_reserved_gib": reserved_gib,
-                f"runtime/{label}_max_allocated_gib": max_allocated_gib,
-            },
-            accelerator=self.accelerator,
-        )
+        if emit_console:
+            LOGGER.info(
+                "[GPU MEM] %s device=%s allocated=%.2f GiB reserved=%.2f GiB max_allocated=%.2f GiB",
+                label,
+                device,
+                allocated_gib,
+                reserved_gib,
+                max_allocated_gib,
+            )
+
+        match = _STEP_LABEL_PATTERN.match(label)
+        if match:
+            micro_step = int(match.group(1))
+            phase = match.group(2)
+            step = micro_step
+            payload = {
+                "progress/micro_step": micro_step,
+                "progress/global_step": self.global_step,
+                "progress/epoch": self.current_epoch,
+                f"runtime/gpu_mem/{phase}/allocated_gib": allocated_gib,
+                f"runtime/gpu_mem/{phase}/reserved_gib": reserved_gib,
+                f"runtime/gpu_mem/{phase}/max_allocated_gib": max_allocated_gib,
+            }
+        else:
+            step = self.global_step
+            payload = {
+                "progress/micro_step": self._micro_step,
+                "progress/global_step": self.global_step,
+                "progress/epoch": self.current_epoch,
+                f"runtime/setup_mem/{label}/allocated_gib": allocated_gib,
+                f"runtime/setup_mem/{label}/reserved_gib": reserved_gib,
+                f"runtime/setup_mem/{label}/max_allocated_gib": max_allocated_gib,
+            }
+        log_dict(step, payload, accelerator=self.accelerator)
 
     def _reset_gpu_peak_memory_stats(self) -> None:
         if not torch.cuda.is_available():
@@ -597,6 +700,77 @@ class TRDTrainingRunner:
         if device.type != "cuda":
             return
         torch.cuda.reset_peak_memory_stats(device)
+
+    def _current_peak_allocated_gib(self) -> float:
+        if not torch.cuda.is_available():
+            return 0.0
+        device = self.accelerator.device
+        if device.type != "cuda":
+            return 0.0
+        return torch.cuda.max_memory_allocated(device) / (1024**3)
+
+    def _log_progress(
+        self,
+        metrics: dict[str, torch.Tensor],
+        grad_norm: torch.Tensor | float | None,
+    ) -> None:
+        now = time.perf_counter()
+        if self._train_start_time is None:
+            self._train_start_time = now
+        elapsed = now - self._train_start_time
+        if self._last_optimizer_step_time is None:
+            optimizer_step_time = elapsed
+        else:
+            optimizer_step_time = max(now - self._last_optimizer_step_time, 0.0)
+        self._last_optimizer_step_time = now
+
+        average_step_time = elapsed / max(self.global_step, 1)
+        remaining_steps = max(self.total_optimizer_steps - self.global_step, 0)
+        eta_seconds = average_step_time * remaining_steps if remaining_steps > 0 else 0.0
+        progress_percent = 100.0 * self.global_step / max(self.total_optimizer_steps, 1)
+        current_accum_slot = ((self._micro_step - 1) % self.args.gradient_accumulation_steps) + 1
+        grad_norm_value = maybe_scalar_to_float(grad_norm)
+        peak_allocated_gib = self._current_peak_allocated_gib()
+        loss_total = float(metrics["loss_total"].detach().item())
+        loss_fm = float(metrics["loss_fm"].detach().item())
+        loss_trd = float(metrics["loss_trd"].detach().item())
+        lr = float(self.scheduler.get_last_lr()[0])
+
+        LOGGER.info(
+            "[PROGRESS] epoch=%s/%s global_step=%s/%s micro_step=%s accum=%s/%s loss_total=%.4f loss_fm=%.4f loss_trd=%.4f lr=%.3e peak_mem=%.2fGiB step_time=%.1fs eta=%s",
+            self.current_epoch,
+            self.args.num_epochs,
+            self.global_step,
+            self.total_optimizer_steps,
+            self._micro_step,
+            current_accum_slot,
+            self.args.gradient_accumulation_steps,
+            loss_total,
+            loss_fm,
+            loss_trd,
+            lr,
+            peak_allocated_gib,
+            optimizer_step_time,
+            format_eta(eta_seconds),
+        )
+
+        payload = {
+            "progress/epoch": self.current_epoch,
+            "progress/global_step": self.global_step,
+            "progress/micro_step": self._micro_step,
+            "progress/epochs_total": self.args.num_epochs,
+            "progress/optimizer_steps_per_epoch": self.optimizer_steps_per_epoch,
+            "progress/total_optimizer_steps": self.total_optimizer_steps,
+            "progress/percent_complete": progress_percent,
+            "runtime/optimizer/step_time_sec": optimizer_step_time,
+            "runtime/optimizer/avg_step_time_sec": average_step_time,
+            "runtime/optimizer/eta_hours": eta_seconds / 3600.0,
+            "runtime/optimizer/remaining_steps": remaining_steps,
+            "runtime/optimizer/peak_allocated_gib": peak_allocated_gib,
+        }
+        if grad_norm_value is not None:
+            payload["runtime/optimizer/grad_norm"] = grad_norm_value
+        log_dict(self.global_step, payload, accelerator=self.accelerator)
 
     def _log_student_sequence_geometry(self, *, num_frames: int, lat_f: int, lat_h: int, lat_w: int, seq_len: int) -> None:
         if self._logged_student_sequence_geometry or not self.accelerator.is_main_process:
@@ -1113,30 +1287,35 @@ class TRDTrainingRunner:
         grad_norm_value = maybe_scalar_to_float(grad_norm)
         if grad_norm_value is not None:
             payload["train/grad_norm"] = grad_norm_value
-        spatial_student = relation_matrix_image(
-            tensor_to_numpy_float32(metrics["_spatial_student"]),
-            "student_spatial",
+        should_log_relation_images = (
+            self.global_step == 1
+            or self.global_step % self.args.wandb_relation_image_every_steps == 0
         )
-        spatial_teacher = relation_matrix_image(
-            tensor_to_numpy_float32(metrics["_spatial_teacher"]),
-            "teacher_spatial",
-        )
-        temporal_student = relation_matrix_image(
-            tensor_to_numpy_float32(metrics["_temporal_student"]),
-            "student_temporal",
-        )
-        temporal_teacher = relation_matrix_image(
-            tensor_to_numpy_float32(metrics["_temporal_teacher"]),
-            "teacher_temporal",
-        )
-        if spatial_student is not None:
-            payload["train/spatial_relation_student"] = spatial_student
-        if spatial_teacher is not None:
-            payload["train/spatial_relation_teacher"] = spatial_teacher
-        if temporal_student is not None:
-            payload["train/temporal_relation_student"] = temporal_student
-        if temporal_teacher is not None:
-            payload["train/temporal_relation_teacher"] = temporal_teacher
+        if should_log_relation_images:
+            spatial_student = relation_matrix_image(
+                tensor_to_numpy_float32(metrics["_spatial_student"]),
+                "student_spatial",
+            )
+            spatial_teacher = relation_matrix_image(
+                tensor_to_numpy_float32(metrics["_spatial_teacher"]),
+                "teacher_spatial",
+            )
+            temporal_student = relation_matrix_image(
+                tensor_to_numpy_float32(metrics["_temporal_student"]),
+                "student_temporal",
+            )
+            temporal_teacher = relation_matrix_image(
+                tensor_to_numpy_float32(metrics["_temporal_teacher"]),
+                "teacher_temporal",
+            )
+            if spatial_student is not None:
+                payload["train/spatial_relation_student"] = spatial_student
+            if spatial_teacher is not None:
+                payload["train/spatial_relation_teacher"] = spatial_teacher
+            if temporal_student is not None:
+                payload["train/temporal_relation_student"] = temporal_student
+            if temporal_teacher is not None:
+                payload["train/temporal_relation_teacher"] = temporal_teacher
         log_dict(self.global_step, payload, accelerator=self.accelerator)
 
     def _log_epoch_summary(self, epoch: int, epoch_metrics: list[dict[str, float]], checkpoint_path: Path | None) -> None:
@@ -1347,6 +1526,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("lambda_temporal", 1.0)
     payload.setdefault("run_group", "trd_v1")
     payload.setdefault("wandb_mode", "online")
+    payload.setdefault("wandb_relation_image_every_steps", 25)
     payload.setdefault("distributed_timeout_hours", 8)
     payload.setdefault("validation_runtime_mode", "pause_external")
     payload.setdefault("allow_deepspeed_feature_hook_experimental", False)
@@ -1384,6 +1564,14 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         payload["student_ffn_chunk_size"] = 512
     else:
         payload["student_ffn_chunk_size"] = int(payload["student_ffn_chunk_size"])
+    if payload["wandb_relation_image_every_steps"] in ("", None):
+        payload["wandb_relation_image_every_steps"] = 25
+    else:
+        payload["wandb_relation_image_every_steps"] = int(payload["wandb_relation_image_every_steps"])
+    if payload["wandb_relation_image_every_steps"] <= 0:
+        raise ValueError(
+            f"wandb_relation_image_every_steps must be positive, got {payload['wandb_relation_image_every_steps']}"
+        )
 
     payload["output_dir"] = str(Path(payload["output_root"]) / "checkpoints" / payload["experiment_name"])
     payload.setdefault("teacher_checkpoint_path", "")
@@ -1465,6 +1653,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--student_lora_dropout", type=float, default=None)
     parser.add_argument("--student_memory_efficient_modulation", type=str, default="")
     parser.add_argument("--student_ffn_chunk_size", type=int, default=None)
+    parser.add_argument("--wandb_relation_image_every_steps", type=int, default=None)
     parser.add_argument("--validation_runtime_mode", type=str, default="")
     parser.add_argument("--allow_deepspeed_feature_hook_experimental", type=str, default="")
     return parser.parse_args()

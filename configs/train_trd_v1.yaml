@@ -2,6 +2,7 @@ experiment_name: exp_stage1_epoch2_trd_v1
 project_name: physical_consistency
 wandb_entity: ""
 run_group: trd_v1
+wandb_relation_image_every_steps: 25
 seed: 42
 model_type: dual
 base_model_dir: links/base_model

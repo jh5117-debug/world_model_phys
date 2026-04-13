@@ -1,6 +1,7 @@
 from physical_consistency.common.io import write_yaml
 from physical_consistency.trainers.trd_v1 import (
     build_args,
+    format_eta,
     maybe_scalar_to_float,
     should_apply_student_gradient_checkpointing,
     student_gradient_checkpointing_use_reentrant,
@@ -76,6 +77,7 @@ def test_build_args_supports_dual_training_defaults(tmp_path):
     assert args.student_lora_dropout == 0.0
     assert args.student_memory_efficient_modulation is True
     assert args.student_ffn_chunk_size == 512
+    assert args.wandb_relation_image_every_steps == 25
     assert args.num_frames == 69
 
 
@@ -171,6 +173,24 @@ def test_build_args_accepts_student_ffn_chunk_size_override(tmp_path):
     assert args.student_ffn_chunk_size == 2048
 
 
+def test_build_args_accepts_wandb_relation_image_every_steps_override(tmp_path):
+    config_path = tmp_path / "train.yaml"
+    env_path = tmp_path / "paths.env"
+    write_yaml(
+        config_path,
+        {
+            "experiment_name": "exp_wandb_images",
+            "model_type": "dual",
+            "wandb_relation_image_every_steps": 10,
+            "teacher_checkpoint_dir": str(tmp_path / "teacher"),
+        },
+    )
+    env_path.write_text("", encoding="utf-8")
+
+    args = build_args(_CliArgs(str(config_path), str(env_path)))
+    assert args.wandb_relation_image_every_steps == 10
+
+
 def test_build_args_accepts_student_lora_overrides(tmp_path):
     config_path = tmp_path / "train.yaml"
     env_path = tmp_path / "paths.env"
@@ -219,6 +239,14 @@ def test_student_gradient_checkpointing_use_reentrant_off_for_full():
     args = _CliArgs(config="", env_file="")
     args.student_tuning_mode = "full"
     assert student_gradient_checkpointing_use_reentrant(args) is False
+
+
+def test_format_eta_renders_compact_hours():
+    assert format_eta(7265) == "2h01m"
+
+
+def test_format_eta_handles_missing_values():
+    assert format_eta(None) == "unknown"
 
 
 def test_maybe_scalar_to_float_handles_none_and_tensor_inputs():

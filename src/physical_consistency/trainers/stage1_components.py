@@ -20,6 +20,11 @@ from torch.utils.data import DataLoader, Dataset
 
 LOGGER = logging.getLogger(__name__)
 
+
+def _should_log_rank_zero() -> bool:
+    rank = os.environ.get("RANK", "")
+    return rank in {"", "0"}
+
 MODEL_SUBFOLDERS = ("low_noise_model", "high_noise_model")
 MODEL_TYPE_TO_SUBFOLDER = {
     "low": "low_noise_model",
@@ -405,12 +410,13 @@ def apply_gradient_checkpointing(
 
         block.forward = _make_ckpt(original_forward)
         patched += 1
-    LOGGER.info(
-        "Gradient checkpointing patched %s blocks for %s (use_reentrant=%s)",
-        patched,
-        model_name,
-        use_reentrant,
-    )
+    if _should_log_rank_zero():
+        LOGGER.info(
+            "Gradient checkpointing patched %s blocks for %s (use_reentrant=%s)",
+            patched,
+            model_name,
+            use_reentrant,
+        )
 
 
 def apply_memory_efficient_wan_block_patch(
@@ -523,12 +529,13 @@ def apply_memory_efficient_wan_block_patch(
         patched += 1
 
     if patched:
-        LOGGER.info(
-            "Memory-efficient modulation patched %s blocks for %s (ffn_chunk_size=%s)",
-            patched,
-            model_name,
-            ffn_chunk_size or "disabled",
-        )
+        if _should_log_rank_zero():
+            LOGGER.info(
+                "Memory-efficient modulation patched %s blocks for %s (ffn_chunk_size=%s)",
+                patched,
+                model_name,
+                ffn_chunk_size or "disabled",
+            )
     else:
         LOGGER.warning("No Wan attention blocks matched modulation patch for %s", model_name)
 
@@ -634,16 +641,17 @@ def apply_lora_to_wan_model(
         "dropout": float(dropout),
         "target_prefixes": tuple(target_prefixes),
     }
-    LOGGER.info(
-        "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, trainable=%s/%s)",
-        replaced,
-        model_name,
-        rank,
-        alpha,
-        dropout,
-        trainable_params,
-        total_params,
-    )
+    if _should_log_rank_zero():
+        LOGGER.info(
+            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, trainable=%s/%s)",
+            replaced,
+            model_name,
+            rank,
+            alpha,
+            dropout,
+            trainable_params,
+            total_params,
+        )
 
 
 def extract_lora_state_dict(model: torch.nn.Module) -> dict[str, torch.Tensor]:
