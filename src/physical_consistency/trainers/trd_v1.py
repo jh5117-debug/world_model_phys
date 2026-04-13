@@ -1297,7 +1297,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("teacher_pretrained_frames", 16)
     payload.setdefault("teacher_input_frames", 49)
     payload.setdefault("teacher_drop_first_frame", True)
-    payload.setdefault("num_frames", 70)
+    payload.setdefault("num_frames", 69)
     payload.setdefault("teacher_model_variant", "vit_base_patch16_224")
     payload.setdefault("teacher_dtype", "bfloat16")
     payload.setdefault("teacher_offload_after_encode", True)

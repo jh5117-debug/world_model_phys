@@ -41,7 +41,7 @@ gradient_accumulation_steps: 4
 save_every_n_epochs: 0
 max_grad_norm: 1.0
 gradient_checkpointing: true
-num_frames: 70
+num_frames: 69
 height: 480
 width: 832
 dataset_repeat: 1
