@@ -173,6 +173,24 @@ def test_build_args_accepts_student_ffn_chunk_size_override(tmp_path):
     assert args.student_ffn_chunk_size == 2048
 
 
+def test_build_args_accepts_num_frames_override(tmp_path):
+    config_path = tmp_path / "train.yaml"
+    env_path = tmp_path / "paths.env"
+    write_yaml(
+        config_path,
+        {
+            "experiment_name": "exp_num_frames",
+            "model_type": "dual",
+            "num_frames": 81,
+            "teacher_checkpoint_dir": str(tmp_path / "teacher"),
+        },
+    )
+    env_path.write_text("", encoding="utf-8")
+
+    args = build_args(_CliArgs(str(config_path), str(env_path)))
+    assert args.num_frames == 81
+
+
 def test_build_args_accepts_wandb_relation_image_every_steps_override(tmp_path):
     config_path = tmp_path / "train.yaml"
     env_path = tmp_path / "paths.env"

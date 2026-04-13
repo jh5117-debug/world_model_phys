@@ -1642,6 +1642,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning_rate", type=float, default=None)
     parser.add_argument("--num_epochs", type=int, default=None)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=None)
+    parser.add_argument("--num_frames", type=int, default=None)
     parser.add_argument("--teacher_repo_dir", type=str, default="")
     parser.add_argument("--teacher_checkpoint_dir", type=str, default="")
     parser.add_argument("--teacher_checkpoint_path", type=str, default="")
