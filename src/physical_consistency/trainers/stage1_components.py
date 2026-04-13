@@ -417,18 +417,40 @@ def apply_memory_efficient_wan_block_patch(
         scale = _squeeze_gate(scale).to(device=normed.device, dtype=target_dtype)
         return normed * (1 + scale) + shift
 
+    def _slice_sequence(tensor: torch.Tensor, start: int, stop: int) -> torch.Tensor:
+        if tensor.ndim < 3 or tensor.shape[1] == 1:
+            return tensor
+        return tensor[:, start:stop]
+
     def _apply_gated_residual(base: torch.Tensor, value: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
         gate = _squeeze_gate(gate).to(device=value.device, dtype=value.dtype)
         return torch.addcmul(base, value, gate)
 
-    def _run_ffn(ffn: torch.nn.Module, ffn_input: torch.Tensor) -> torch.Tensor:
-        if ffn_chunk_size is None or ffn_input.shape[1] <= ffn_chunk_size:
-            return ffn(ffn_input)
-        outputs = []
-        for start in range(0, ffn_input.shape[1], ffn_chunk_size):
-            stop = min(start + ffn_chunk_size, ffn_input.shape[1])
-            outputs.append(ffn(ffn_input[:, start:stop]))
-        return torch.cat(outputs, dim=1)
+    def _run_ffn_residual(
+        ffn: torch.nn.Module,
+        norm: torch.nn.Module,
+        residual: torch.Tensor,
+        shift: torch.Tensor,
+        scale: torch.Tensor,
+        gate: torch.Tensor,
+        target_dtype: torch.dtype,
+    ) -> torch.Tensor:
+        if ffn_chunk_size is None or residual.shape[1] <= ffn_chunk_size:
+            ffn_input = _modulate(norm(residual), shift, scale, target_dtype)
+            y = ffn(ffn_input)
+            return _apply_gated_residual(residual, y, gate)
+
+        output = torch.empty_like(residual)
+        for start in range(0, residual.shape[1], ffn_chunk_size):
+            stop = min(start + ffn_chunk_size, residual.shape[1])
+            residual_chunk = residual[:, start:stop]
+            shift_chunk = _slice_sequence(shift, start, stop)
+            scale_chunk = _slice_sequence(scale, start, stop)
+            gate_chunk = _slice_sequence(gate, start, stop)
+            ffn_input_chunk = _modulate(norm(residual_chunk), shift_chunk, scale_chunk, target_dtype)
+            y_chunk = ffn(ffn_input_chunk)
+            output[:, start:stop] = _apply_gated_residual(residual_chunk, y_chunk, gate_chunk)
+        return output
 
     patched = 0
     block_container = getattr(model, "blocks", None)
@@ -457,9 +479,15 @@ def apply_memory_efficient_wan_block_patch(
             cross_input = self.norm3(x).to(target_dtype)
             x = x + self.cross_attn(cross_input, context, context_lens)
 
-            ffn_input = _modulate(self.norm2(x), e[3], e[4], target_dtype)
-            y = _run_ffn(self.ffn, ffn_input)
-            x = _apply_gated_residual(x, y, e[5])
+            x = _run_ffn_residual(
+                self.ffn,
+                self.norm2,
+                x,
+                e[3],
+                e[4],
+                e[5],
+                target_dtype,
+            )
             return x
 
         block.forward = MethodType(_forward, block)

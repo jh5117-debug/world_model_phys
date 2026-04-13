@@ -95,7 +95,7 @@ def test_apply_memory_efficient_wan_block_patch_chunks_ffn_sequence():
     apply_memory_efficient_wan_block_patch(model, "dummy", ffn_chunk_size=2)
 
     block = model.blocks[0]
-    x = torch.randn(1, 5, 4, dtype=torch.bfloat16)
+    x = torch.randn(1, 5, 4, dtype=torch.bfloat16, requires_grad=True)
     e = torch.zeros(1, 5, 6, 4, dtype=torch.bfloat16)
     context = torch.zeros(1, 2, 4, dtype=torch.bfloat16)
 
@@ -111,3 +111,6 @@ def test_apply_memory_efficient_wan_block_patch_chunks_ffn_sequence():
 
     assert out.shape == x.shape
     assert block.ffn.seen_seq_lens == [2, 2, 1]
+    out.float().sum().backward()
+    assert x.grad is not None
+    assert block.ffn.proj.weight.grad is not None
