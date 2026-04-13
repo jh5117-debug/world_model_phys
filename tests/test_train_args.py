@@ -1,5 +1,5 @@
 from physical_consistency.common.io import write_yaml
-from physical_consistency.trainers.trd_v1 import build_args
+from physical_consistency.trainers.trd_v1 import build_args, should_apply_student_gradient_checkpointing
 
 
 class _CliArgs:
@@ -184,3 +184,17 @@ def test_build_args_accepts_student_lora_overrides(tmp_path):
     assert args.student_lora_rank == 8
     assert args.student_lora_alpha == 32
     assert args.student_lora_dropout == 0.1
+
+
+def test_should_apply_student_gradient_checkpointing_skips_lora_mode():
+    args = _CliArgs(config="", env_file="")
+    args.gradient_checkpointing = True
+    args.student_tuning_mode = "lora"
+    assert should_apply_student_gradient_checkpointing(args) is False
+
+
+def test_should_apply_student_gradient_checkpointing_keeps_full_mode():
+    args = _CliArgs(config="", env_file="")
+    args.gradient_checkpointing = True
+    args.student_tuning_mode = "full"
+    assert should_apply_student_gradient_checkpointing(args) is True

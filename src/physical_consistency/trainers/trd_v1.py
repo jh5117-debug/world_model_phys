@@ -56,6 +56,19 @@ from physical_consistency.wandb_utils.session import init_wandb_run, log_dict
 LOGGER = logging.getLogger(__name__)
 
 
+def should_apply_student_gradient_checkpointing(args: argparse.Namespace) -> bool:
+    """Return whether block-level student checkpointing should be enabled."""
+    if not getattr(args, "gradient_checkpointing", False):
+        return False
+    if getattr(args, "student_tuning_mode", "full") == "lora":
+        LOGGER.info(
+            "Skipping block-level gradient checkpointing for LoRA student models to avoid "
+            "checkpoint metadata mismatches during backward recomputation."
+        )
+        return False
+    return True
+
+
 class StudentProjector(nn.Module):
     """Project student tokens to the teacher feature dimension."""
 
@@ -445,7 +458,7 @@ class TRDTrainingRunner:
             low_projector.load_state_dict(resume_state["low_projector"])
             high_projector.load_state_dict(resume_state["high_projector"])
 
-        if self.args.gradient_checkpointing:
+        if should_apply_student_gradient_checkpointing(self.args):
             apply_gradient_checkpointing(low_model, "low_noise_model")
             apply_gradient_checkpointing(high_model, "high_noise_model")
 
