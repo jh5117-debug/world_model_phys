@@ -4,8 +4,10 @@ from physical_consistency.trainers.trd_v1 import (
     maybe_scalar_to_float,
     should_apply_student_gradient_checkpointing,
     student_gradient_checkpointing_use_reentrant,
+    tensor_to_numpy_float32,
 )
 import torch
+import numpy as np
 
 
 class _CliArgs:
@@ -223,3 +225,13 @@ def test_maybe_scalar_to_float_handles_none_and_tensor_inputs():
     assert maybe_scalar_to_float(None) is None
     assert maybe_scalar_to_float(torch.tensor(1.5)) == 1.5
     assert maybe_scalar_to_float(2) == 2.0
+
+
+def test_tensor_to_numpy_float32_handles_bfloat16_tensors_and_numpy_inputs():
+    tensor_result = tensor_to_numpy_float32(torch.ones(2, 2, dtype=torch.bfloat16))
+    assert isinstance(tensor_result, np.ndarray)
+    assert tensor_result.dtype == np.float32
+
+    array_result = tensor_to_numpy_float32(np.ones((2, 2), dtype=np.float64))
+    assert isinstance(array_result, np.ndarray)
+    assert array_result.dtype == np.float32

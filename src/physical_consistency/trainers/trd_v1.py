@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import accelerate
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -75,6 +76,13 @@ def maybe_scalar_to_float(value: torch.Tensor | float | int | None) -> float | N
     if torch.is_tensor(value):
         return float(value.detach().item())
     return float(value)
+
+
+def tensor_to_numpy_float32(value: torch.Tensor | np.ndarray) -> np.ndarray:
+    """Convert tensors to float32 numpy arrays for logging utilities that don't support bf16."""
+    if isinstance(value, np.ndarray):
+        return value.astype(np.float32, copy=False)
+    return value.detach().float().cpu().numpy()
 
 
 class StudentProjector(nn.Module):
@@ -1105,10 +1113,22 @@ class TRDTrainingRunner:
         grad_norm_value = maybe_scalar_to_float(grad_norm)
         if grad_norm_value is not None:
             payload["train/grad_norm"] = grad_norm_value
-        spatial_student = relation_matrix_image(metrics["_spatial_student"].numpy(), "student_spatial")
-        spatial_teacher = relation_matrix_image(metrics["_spatial_teacher"].numpy(), "teacher_spatial")
-        temporal_student = relation_matrix_image(metrics["_temporal_student"].numpy(), "student_temporal")
-        temporal_teacher = relation_matrix_image(metrics["_temporal_teacher"].numpy(), "teacher_temporal")
+        spatial_student = relation_matrix_image(
+            tensor_to_numpy_float32(metrics["_spatial_student"]),
+            "student_spatial",
+        )
+        spatial_teacher = relation_matrix_image(
+            tensor_to_numpy_float32(metrics["_spatial_teacher"]),
+            "teacher_spatial",
+        )
+        temporal_student = relation_matrix_image(
+            tensor_to_numpy_float32(metrics["_temporal_student"]),
+            "student_temporal",
+        )
+        temporal_teacher = relation_matrix_image(
+            tensor_to_numpy_float32(metrics["_temporal_teacher"]),
+            "teacher_temporal",
+        )
         if spatial_student is not None:
             payload["train/spatial_relation_student"] = spatial_student
         if spatial_teacher is not None:
