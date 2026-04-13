@@ -133,14 +133,50 @@ TRAIN_CMD=(
 
 if [[ "${RUN_WITH_NOHUP}" == "1" ]]; then
   : > "${LOG_FILE}"
-  TRAIN_CMD_STRING="$(printf '%q ' "${TRAIN_CMD[@]}")"
-  if command -v setsid >/dev/null 2>&1; then
-    setsid bash -lc "cd $(printf '%q' "${PROJECT_ROOT}") && exec ${TRAIN_CMD_STRING}" </dev/null >>"${LOG_FILE}" 2>&1 &
+  if command -v python3 >/dev/null 2>&1; then
+    TRAIN_PID="$(
+      PROJECT_ROOT="${PROJECT_ROOT}" \
+      LOG_FILE="${LOG_FILE}" \
+      PID_FILE="${PID_FILE}" \
+      python3 - "${TRAIN_CMD[@]}" <<'PY'
+import os
+import subprocess
+import sys
+
+project_root = os.environ["PROJECT_ROOT"]
+log_file = os.environ["LOG_FILE"]
+pid_file = os.environ["PID_FILE"]
+cmd = sys.argv[1:]
+
+with open(log_file, "ab", buffering=0) as log_stream:
+    proc = subprocess.Popen(
+        cmd,
+        cwd=project_root,
+        env=os.environ.copy(),
+        stdin=subprocess.DEVNULL,
+        stdout=log_stream,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        close_fds=True,
+    )
+
+with open(pid_file, "w", encoding="utf-8") as handle:
+    handle.write(f"{proc.pid}\n")
+
+print(proc.pid)
+PY
+    )"
   else
-    nohup bash -lc "cd $(printf '%q' "${PROJECT_ROOT}") && exec ${TRAIN_CMD_STRING}" </dev/null >>"${LOG_FILE}" 2>&1 &
+    TRAIN_CMD_STRING="$(printf '%q ' "${TRAIN_CMD[@]}")"
+    if command -v setsid >/dev/null 2>&1; then
+      setsid bash -lc "cd $(printf '%q' "${PROJECT_ROOT}") && exec ${TRAIN_CMD_STRING}" </dev/null >>"${LOG_FILE}" 2>&1 &
+    else
+      nohup bash -lc "cd $(printf '%q' "${PROJECT_ROOT}") && exec ${TRAIN_CMD_STRING}" </dev/null >>"${LOG_FILE}" 2>&1 &
+    fi
+    TRAIN_PID=$!
+    printf '%s\n' "${TRAIN_PID}" > "${PID_FILE}"
   fi
-  TRAIN_PID=$!
-  printf '%s\n' "${TRAIN_PID}" > "${PID_FILE}"
+
   echo "[NOHUP] Started background training for ${MODEL_TYPE} with PID ${TRAIN_PID}"
   echo "[NOHUP] Full log: ${LOG_FILE}"
   echo "[NOHUP] PID file: ${PID_FILE}"
