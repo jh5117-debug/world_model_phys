@@ -1,9 +1,11 @@
 from physical_consistency.common.io import write_yaml
 from physical_consistency.trainers.trd_v1 import (
     build_args,
+    maybe_scalar_to_float,
     should_apply_student_gradient_checkpointing,
     student_gradient_checkpointing_use_reentrant,
 )
+import torch
 
 
 class _CliArgs:
@@ -215,3 +217,9 @@ def test_student_gradient_checkpointing_use_reentrant_off_for_full():
     args = _CliArgs(config="", env_file="")
     args.student_tuning_mode = "full"
     assert student_gradient_checkpointing_use_reentrant(args) is False
+
+
+def test_maybe_scalar_to_float_handles_none_and_tensor_inputs():
+    assert maybe_scalar_to_float(None) is None
+    assert maybe_scalar_to_float(torch.tensor(1.5)) == 1.5
+    assert maybe_scalar_to_float(2) == 2.0

@@ -68,6 +68,15 @@ def student_gradient_checkpointing_use_reentrant(args: argparse.Namespace) -> bo
     return getattr(args, "student_tuning_mode", "full") == "lora"
 
 
+def maybe_scalar_to_float(value: torch.Tensor | float | int | None) -> float | None:
+    """Convert scalar-like tensors and Python numbers to float while preserving missing values."""
+    if value is None:
+        return None
+    if torch.is_tensor(value):
+        return float(value.detach().item())
+    return float(value)
+
+
 class StudentProjector(nn.Module):
     """Project student tokens to the teacher feature dimension."""
 
@@ -1075,7 +1084,7 @@ class TRDTrainingRunner:
         metrics: dict[str, torch.Tensor],
         scheduler,
         epoch: int,
-        grad_norm: torch.Tensor,
+        grad_norm: torch.Tensor | float | None,
     ) -> None:
         payload = {
             "train/loss_total": float(metrics["loss_total"].detach().item()),
@@ -1084,7 +1093,6 @@ class TRDTrainingRunner:
             "train/loss_trd_spatial": float(metrics["loss_trd_spatial"].detach().item()),
             "train/loss_trd_temporal": float(metrics["loss_trd_temporal"].detach().item()),
             "train/lr": float(scheduler.get_last_lr()[0]),
-            "train/grad_norm": float(grad_norm.detach().item() if torch.is_tensor(grad_norm) else grad_norm),
             "train/global_step": self.global_step,
             "train/epoch": epoch + 1,
             "train/sample_sigma": float(metrics["sample_sigma"].detach().item()),
@@ -1094,6 +1102,9 @@ class TRDTrainingRunner:
             "train/pred_target_cosine": float(metrics["pred_target_cosine"].detach().item()),
             "train/active_branch_is_high": float(metrics["active_branch_is_high"].detach().item()),
         }
+        grad_norm_value = maybe_scalar_to_float(grad_norm)
+        if grad_norm_value is not None:
+            payload["train/grad_norm"] = grad_norm_value
         spatial_student = relation_matrix_image(metrics["_spatial_student"].numpy(), "student_spatial")
         spatial_teacher = relation_matrix_image(metrics["_spatial_teacher"].numpy(), "teacher_spatial")
         temporal_student = relation_matrix_image(metrics["_temporal_student"].numpy(), "student_temporal")
