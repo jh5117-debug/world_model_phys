@@ -367,7 +367,12 @@ class LingBotStage1Helper:
         return "high" if timestep_value >= boundary else "low"
 
 
-def apply_gradient_checkpointing(model, model_name: str = "model") -> None:
+def apply_gradient_checkpointing(
+    model,
+    model_name: str = "model",
+    *,
+    use_reentrant: bool = False,
+) -> None:
     """Apply the same DiT block checkpointing strategy as Stage-1."""
     from functools import wraps
     from torch.utils.checkpoint import checkpoint as torch_checkpoint
@@ -383,8 +388,11 @@ def apply_gradient_checkpointing(model, model_name: str = "model") -> None:
         def _make_ckpt(fn):
             @wraps(fn)
             def _wrapped(x, e, seq_lens, grid_sizes, freqs, context, context_lens, dit_cond_dict=None):
+                def _forward(*tensor_args):
+                    return fn(*tensor_args, dit_cond_dict=dit_cond_dict)
+
                 return torch_checkpoint(
-                    fn,
+                    _forward,
                     x,
                     e,
                     seq_lens,
@@ -392,15 +400,19 @@ def apply_gradient_checkpointing(model, model_name: str = "model") -> None:
                     freqs,
                     context,
                     context_lens,
-                    dit_cond_dict,
-                    use_reentrant=False,
+                    use_reentrant=use_reentrant,
                 )
 
             return _wrapped
 
         block.forward = _make_ckpt(original_forward)
         patched += 1
-    LOGGER.info("Gradient checkpointing patched %s blocks for %s", patched, model_name)
+    LOGGER.info(
+        "Gradient checkpointing patched %s blocks for %s (use_reentrant=%s)",
+        patched,
+        model_name,
+        use_reentrant,
+    )
 
 
 def apply_memory_efficient_wan_block_patch(

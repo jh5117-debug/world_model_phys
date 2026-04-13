@@ -60,13 +60,12 @@ def should_apply_student_gradient_checkpointing(args: argparse.Namespace) -> boo
     """Return whether block-level student checkpointing should be enabled."""
     if not getattr(args, "gradient_checkpointing", False):
         return False
-    if getattr(args, "student_tuning_mode", "full") == "lora":
-        LOGGER.info(
-            "Skipping block-level gradient checkpointing for LoRA student models to avoid "
-            "checkpoint metadata mismatches during backward recomputation."
-        )
-        return False
     return True
+
+
+def student_gradient_checkpointing_use_reentrant(args: argparse.Namespace) -> bool:
+    """Use the reentrant checkpoint path for LoRA to avoid non-reentrant metadata mismatches."""
+    return getattr(args, "student_tuning_mode", "full") == "lora"
 
 
 class StudentProjector(nn.Module):
@@ -468,8 +467,14 @@ class TRDTrainingRunner:
             high_projector.load_state_dict(resume_state["high_projector"])
 
         if should_apply_student_gradient_checkpointing(self.args):
-            apply_gradient_checkpointing(low_model, "low_noise_model")
-            apply_gradient_checkpointing(high_model, "high_noise_model")
+            use_reentrant = student_gradient_checkpointing_use_reentrant(self.args)
+            if self.accelerator.is_main_process:
+                LOGGER.info(
+                    "Applying block-level gradient checkpointing for student models (use_reentrant=%s)",
+                    use_reentrant,
+                )
+            apply_gradient_checkpointing(low_model, "low_noise_model", use_reentrant=use_reentrant)
+            apply_gradient_checkpointing(high_model, "high_noise_model", use_reentrant=use_reentrant)
 
         if self.args.student_tuning_mode == "lora" and resume_state:
             load_lora_state_dict(low_model, resume_state.get("low_lora", {}), model_name="low_noise_model")
@@ -1292,6 +1297,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("teacher_pretrained_frames", 16)
     payload.setdefault("teacher_input_frames", 49)
     payload.setdefault("teacher_drop_first_frame", True)
+    payload.setdefault("num_frames", 70)
     payload.setdefault("teacher_model_variant", "vit_base_patch16_224")
     payload.setdefault("teacher_dtype", "bfloat16")
     payload.setdefault("teacher_offload_after_encode", True)

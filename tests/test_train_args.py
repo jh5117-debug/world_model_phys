@@ -1,5 +1,9 @@
 from physical_consistency.common.io import write_yaml
-from physical_consistency.trainers.trd_v1 import build_args, should_apply_student_gradient_checkpointing
+from physical_consistency.trainers.trd_v1 import (
+    build_args,
+    should_apply_student_gradient_checkpointing,
+    student_gradient_checkpointing_use_reentrant,
+)
 
 
 class _CliArgs:
@@ -68,6 +72,7 @@ def test_build_args_supports_dual_training_defaults(tmp_path):
     assert args.student_lora_dropout == 0.0
     assert args.student_memory_efficient_modulation is True
     assert args.student_ffn_chunk_size == 512
+    assert args.num_frames == 70
 
 
 def test_build_args_accepts_wandb_entity_override(tmp_path):
@@ -186,11 +191,11 @@ def test_build_args_accepts_student_lora_overrides(tmp_path):
     assert args.student_lora_dropout == 0.1
 
 
-def test_should_apply_student_gradient_checkpointing_skips_lora_mode():
+def test_should_apply_student_gradient_checkpointing_keeps_lora_mode_enabled():
     args = _CliArgs(config="", env_file="")
     args.gradient_checkpointing = True
     args.student_tuning_mode = "lora"
-    assert should_apply_student_gradient_checkpointing(args) is False
+    assert should_apply_student_gradient_checkpointing(args) is True
 
 
 def test_should_apply_student_gradient_checkpointing_keeps_full_mode():
@@ -198,3 +203,15 @@ def test_should_apply_student_gradient_checkpointing_keeps_full_mode():
     args.gradient_checkpointing = True
     args.student_tuning_mode = "full"
     assert should_apply_student_gradient_checkpointing(args) is True
+
+
+def test_student_gradient_checkpointing_use_reentrant_for_lora():
+    args = _CliArgs(config="", env_file="")
+    args.student_tuning_mode = "lora"
+    assert student_gradient_checkpointing_use_reentrant(args) is True
+
+
+def test_student_gradient_checkpointing_use_reentrant_off_for_full():
+    args = _CliArgs(config="", env_file="")
+    args.student_tuning_mode = "full"
+    assert student_gradient_checkpointing_use_reentrant(args) is False

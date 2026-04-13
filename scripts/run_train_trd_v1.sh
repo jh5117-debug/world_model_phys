@@ -13,6 +13,7 @@ GPU_LIST="${GPU_LIST:-}"
 NUM_GPUS="${NUM_GPUS:-}"
 ULYSSES_SIZE="${ULYSSES_SIZE:-}"
 MODEL_TYPE="${MODEL_TYPE:-dual}"
+FORCE_CLEAR_GPUS_BEFORE_LAUNCH="${FORCE_CLEAR_GPUS_BEFORE_LAUNCH:-1}"
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -75,10 +76,41 @@ if [[ -z "${ULYSSES_SIZE}" ]]; then
   ULYSSES_SIZE="${NUM_GPUS}"
 fi
 
+force_clear_target_gpus() {
+  if [[ "${FORCE_CLEAR_GPUS_BEFORE_LAUNCH}" == "0" ]]; then
+    return
+  fi
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    echo "[WARN] nvidia-smi not found; skipping GPU cleanup" >&2
+    return
+  fi
+
+  local -a pids=()
+  local gpu
+  local pid
+  for gpu in "${GPU_ARRAY[@]}"; do
+    while IFS= read -r pid; do
+      pid="${pid//[[:space:]]/}"
+      [[ -n "${pid}" ]] && pids+=("${pid}")
+    done < <(nvidia-smi --id="${gpu}" --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null || true)
+  done
+
+  if [[ "${#pids[@]}" -eq 0 ]]; then
+    echo "[GPU RESET] No existing compute processes found on GPUs ${CUDA_VISIBLE_DEVICES}" >&2
+    return
+  fi
+
+  mapfile -t pids < <(printf '%s\n' "${pids[@]}" | sort -u)
+  echo "[GPU RESET] Force killing existing compute PIDs on GPUs ${CUDA_VISIBLE_DEVICES}: ${pids[*]}" >&2
+  kill -9 "${pids[@]}" 2>/dev/null || true
+  sleep 2
+}
+
 OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}}"
 mkdir -p "${OUTPUT_ROOT}/logs"
 
 cd "${PROJECT_ROOT}"
+force_clear_target_gpus
 
 accelerate launch \
   --config_file "${ACCELERATE_CONFIG}" \
