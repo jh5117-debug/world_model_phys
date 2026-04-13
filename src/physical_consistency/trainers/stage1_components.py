@@ -199,7 +199,11 @@ class LingBotStage1Helper:
             control_type="act",
         )
         if getattr(self.args, "student_memory_efficient_modulation", True):
-            apply_memory_efficient_wan_block_patch(model, subfolder)
+            apply_memory_efficient_wan_block_patch(
+                model,
+                subfolder,
+                ffn_chunk_size=getattr(self.args, "student_ffn_chunk_size", None),
+            )
         model.train()
         return model
 
@@ -391,8 +395,16 @@ def apply_gradient_checkpointing(model, model_name: str = "model") -> None:
     LOGGER.info("Gradient checkpointing patched %s blocks for %s", patched, model_name)
 
 
-def apply_memory_efficient_wan_block_patch(model, model_name: str = "model") -> None:
-    """Avoid full fp32 modulation tensors inside Wan attention blocks."""
+def apply_memory_efficient_wan_block_patch(
+    model,
+    model_name: str = "model",
+    *,
+    ffn_chunk_size: int | None = None,
+) -> None:
+    """Avoid full fp32 modulation tensors and optionally chunk FFN activations."""
+
+    if ffn_chunk_size is not None and ffn_chunk_size <= 0:
+        ffn_chunk_size = None
 
     def _squeeze_gate(tensor: torch.Tensor) -> torch.Tensor:
         if tensor.ndim >= 3 and tensor.shape[2] == 1:
@@ -405,8 +417,18 @@ def apply_memory_efficient_wan_block_patch(model, model_name: str = "model") -> 
         scale = _squeeze_gate(scale).to(device=normed.device, dtype=target_dtype)
         return normed * (1 + scale) + shift
 
-    def _gate(value: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
-        return value * _squeeze_gate(gate).to(device=value.device, dtype=value.dtype)
+    def _apply_gated_residual(base: torch.Tensor, value: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
+        gate = _squeeze_gate(gate).to(device=value.device, dtype=value.dtype)
+        return torch.addcmul(base, value, gate)
+
+    def _run_ffn(ffn: torch.nn.Module, ffn_input: torch.Tensor) -> torch.Tensor:
+        if ffn_chunk_size is None or ffn_input.shape[1] <= ffn_chunk_size:
+            return ffn(ffn_input)
+        outputs = []
+        for start in range(0, ffn_input.shape[1], ffn_chunk_size):
+            stop = min(start + ffn_chunk_size, ffn_input.shape[1])
+            outputs.append(ffn(ffn_input[:, start:stop]))
+        return torch.cat(outputs, dim=1)
 
     patched = 0
     block_container = getattr(model, "blocks", None)
@@ -430,14 +452,14 @@ def apply_memory_efficient_wan_block_patch(model, model_name: str = "model") -> 
 
             self_attn_input = _modulate(self.norm1(x), e[0], e[1], target_dtype)
             y = self.self_attn(self_attn_input, seq_lens, grid_sizes, freqs)
-            x = x + _gate(y, e[2])
+            x = _apply_gated_residual(x, y, e[2])
 
             cross_input = self.norm3(x).to(target_dtype)
             x = x + self.cross_attn(cross_input, context, context_lens)
 
             ffn_input = _modulate(self.norm2(x), e[3], e[4], target_dtype)
-            y = self.ffn(ffn_input)
-            x = x + _gate(y, e[5])
+            y = _run_ffn(self.ffn, ffn_input)
+            x = _apply_gated_residual(x, y, e[5])
             return x
 
         block.forward = MethodType(_forward, block)
@@ -445,7 +467,12 @@ def apply_memory_efficient_wan_block_patch(model, model_name: str = "model") -> 
         patched += 1
 
     if patched:
-        LOGGER.info("Memory-efficient modulation patched %s blocks for %s", patched, model_name)
+        LOGGER.info(
+            "Memory-efficient modulation patched %s blocks for %s (ffn_chunk_size=%s)",
+            patched,
+            model_name,
+            ffn_chunk_size or "disabled",
+        )
     else:
         LOGGER.warning("No Wan attention blocks matched modulation patch for %s", model_name)
 

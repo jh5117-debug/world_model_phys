@@ -34,11 +34,13 @@ class _TypedFFN(nn.Module):
         super().__init__()
         self.proj = nn.Linear(dim, dim, bias=False, dtype=torch.bfloat16)
         self.last_dtype = None
+        self.seen_seq_lens = []
         with torch.no_grad():
             self.proj.weight.copy_(torch.eye(dim, dtype=torch.bfloat16))
 
     def forward(self, x):
         self.last_dtype = x.dtype
+        self.seen_seq_lens.append(x.shape[1])
         return self.proj(x)
 
 
@@ -86,3 +88,26 @@ def test_apply_memory_efficient_wan_block_patch_keeps_bfloat16_activations():
     assert block.self_attn.last_dtype == torch.bfloat16
     assert block.cross_attn.last_dtype == torch.bfloat16
     assert block.ffn.last_dtype == torch.bfloat16
+
+
+def test_apply_memory_efficient_wan_block_patch_chunks_ffn_sequence():
+    model = _DummyWanModel(dim=4)
+    apply_memory_efficient_wan_block_patch(model, "dummy", ffn_chunk_size=2)
+
+    block = model.blocks[0]
+    x = torch.randn(1, 5, 4, dtype=torch.bfloat16)
+    e = torch.zeros(1, 5, 6, 4, dtype=torch.bfloat16)
+    context = torch.zeros(1, 2, 4, dtype=torch.bfloat16)
+
+    out = block(
+        x,
+        e,
+        seq_lens=torch.tensor([5], dtype=torch.int32),
+        grid_sizes=torch.tensor([[1, 1, 1]], dtype=torch.int32),
+        freqs=torch.zeros(1, 5, 4, dtype=torch.bfloat16),
+        context=context,
+        context_lens=torch.tensor([2], dtype=torch.int32),
+    )
+
+    assert out.shape == x.shape
+    assert block.ffn.seen_seq_lens == [2, 2, 1]
