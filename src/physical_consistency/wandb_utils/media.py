@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 from pathlib import Path
 
 import numpy as np
@@ -21,12 +20,11 @@ def relation_matrix_image(matrix: np.ndarray, title: str = "relation"):
     ax.set_title(title)
     ax.set_xticks([])
     ax.set_yticks([])
-    buffer = io.BytesIO()
     fig.tight_layout()
-    fig.savefig(buffer, format="png", dpi=160)
+    fig.canvas.draw()
+    image = np.asarray(fig.canvas.buffer_rgba())[..., :3]
     plt.close(fig)
-    buffer.seek(0)
-    return wandb.Image(buffer, caption=title)
+    return wandb.Image(image, caption=title)
 
 
 def safe_video(path: str | Path, caption: str = ""):
