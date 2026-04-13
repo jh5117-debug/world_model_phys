@@ -204,6 +204,14 @@ class LingBotStage1Helper:
                 subfolder,
                 ffn_chunk_size=getattr(self.args, "student_ffn_chunk_size", None),
             )
+        if getattr(self.args, "student_tuning_mode", "full") == "lora":
+            apply_lora_to_wan_model(
+                model,
+                model_name=subfolder,
+                rank=getattr(self.args, "student_lora_rank", 16),
+                alpha=getattr(self.args, "student_lora_alpha", 16),
+                dropout=getattr(self.args, "student_lora_dropout", 0.0),
+            )
         model.train()
         return model
 
@@ -513,6 +521,188 @@ def apply_memory_efficient_wan_block_patch(
         )
     else:
         LOGGER.warning("No Wan attention blocks matched modulation patch for %s", model_name)
+
+
+class LoRALinear(torch.nn.Module):
+    """Standard LoRA wrapper for nn.Linear."""
+
+    def __init__(
+        self,
+        base: torch.nn.Linear,
+        *,
+        rank: int,
+        alpha: int,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        if rank <= 0:
+            raise ValueError(f"LoRA rank must be positive, got {rank}")
+        self.base = base
+        self.rank = int(rank)
+        self.alpha = int(alpha)
+        self.scaling = float(self.alpha) / float(self.rank)
+        self.dropout = torch.nn.Dropout(float(dropout)) if dropout > 0 else torch.nn.Identity()
+        self.lora_A = torch.nn.Linear(
+            base.in_features,
+            self.rank,
+            bias=False,
+            device=base.weight.device,
+            dtype=base.weight.dtype,
+        )
+        self.lora_B = torch.nn.Linear(
+            self.rank,
+            base.out_features,
+            bias=False,
+            device=base.weight.device,
+            dtype=base.weight.dtype,
+        )
+        torch.nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
+        torch.nn.init.zeros_(self.lora_B.weight)
+        for parameter in self.base.parameters():
+            parameter.requires_grad = False
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        base_out = self.base(x)
+        lora_out = self.lora_B(self.lora_A(self.dropout(x)))
+        return base_out + lora_out * self.scaling
+
+
+def _iter_lora_modules(model: torch.nn.Module) -> list[tuple[str, LoRALinear]]:
+    return [(name, module) for name, module in model.named_modules() if isinstance(module, LoRALinear)]
+
+
+def apply_lora_to_wan_model(
+    model: torch.nn.Module,
+    *,
+    model_name: str = "model",
+    rank: int,
+    alpha: int,
+    dropout: float,
+    target_prefixes: tuple[str, ...] = ("blocks",),
+) -> None:
+    """Replace selected Wan linear layers with standard LoRA adapters."""
+
+    def _is_target_module(full_name: str) -> bool:
+        return any(full_name == prefix or full_name.startswith(f"{prefix}.") for prefix in target_prefixes)
+
+    replaced = 0
+    for full_name, module in list(model.named_modules()):
+        if not full_name or not _is_target_module(full_name):
+            continue
+        if ".base" in full_name or ".lora_" in full_name:
+            continue
+        if isinstance(module, LoRALinear) or not isinstance(module, torch.nn.Linear):
+            continue
+        parent_name, child_name = full_name.rsplit(".", 1)
+        parent = model.get_submodule(parent_name)
+        parent._modules[child_name] = LoRALinear(
+            module,
+            rank=rank,
+            alpha=alpha,
+            dropout=dropout,
+        )
+        replaced += 1
+
+    if replaced == 0:
+        raise RuntimeError(f"No linear layers matched LoRA targets for {model_name}")
+
+    for parameter in model.parameters():
+        parameter.requires_grad = False
+    trainable_params = 0
+    total_params = 0
+    for _, module in _iter_lora_modules(model):
+        module.lora_A.weight.requires_grad = True
+        module.lora_B.weight.requires_grad = True
+    for parameter in model.parameters():
+        total_params += parameter.numel()
+        if parameter.requires_grad:
+            trainable_params += parameter.numel()
+
+    model._pc_lora_config = {
+        "rank": int(rank),
+        "alpha": int(alpha),
+        "dropout": float(dropout),
+        "target_prefixes": tuple(target_prefixes),
+    }
+    LOGGER.info(
+        "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, trainable=%s/%s)",
+        replaced,
+        model_name,
+        rank,
+        alpha,
+        dropout,
+        trainable_params,
+        total_params,
+    )
+
+
+def extract_lora_state_dict(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    """Return just the trainable LoRA adapter tensors for one model."""
+    return {
+        key: value.detach().cpu()
+        for key, value in model.state_dict().items()
+        if ".lora_A.weight" in key or ".lora_B.weight" in key
+    }
+
+
+def load_lora_state_dict(model: torch.nn.Module, state_dict: dict[str, torch.Tensor], *, model_name: str = "model") -> None:
+    """Load adapter-only weights into a LoRA-patched model."""
+    if not state_dict:
+        LOGGER.warning("No LoRA weights provided for %s", model_name)
+        return
+    incompatible = model.load_state_dict(state_dict, strict=False)
+    if incompatible.unexpected_keys:
+        raise KeyError(f"Unexpected LoRA keys for {model_name}: {incompatible.unexpected_keys}")
+    loaded = len(state_dict)
+    LOGGER.info("Loaded %s LoRA tensors for %s", loaded, model_name)
+
+
+def export_pretrained_state_dict(
+    model: torch.nn.Module,
+    state_dict: dict[str, torch.Tensor],
+    *,
+    prefix: str = "",
+) -> dict[str, torch.Tensor]:
+    """Export a standard checkpoint state_dict, merging LoRA weights when present."""
+    exported: dict[str, torch.Tensor] = {}
+    lora_modules = dict(_iter_lora_modules(model))
+    skip_keys: set[str] = set()
+
+    for module_name, _module in lora_modules.items():
+        skip_keys.update(
+            {
+                f"{module_name}.base.weight",
+                f"{module_name}.base.bias",
+                f"{module_name}.lora_A.weight",
+                f"{module_name}.lora_B.weight",
+            }
+        )
+
+    for key, value in state_dict.items():
+        if not key.startswith(prefix):
+            continue
+        local_key = key[len(prefix) :]
+        if local_key in skip_keys:
+            continue
+        exported[local_key] = value.detach().cpu()
+
+    for module_name, module in lora_modules.items():
+        base_weight_key = f"{prefix}{module_name}.base.weight"
+        lora_a_key = f"{prefix}{module_name}.lora_A.weight"
+        lora_b_key = f"{prefix}{module_name}.lora_B.weight"
+        base_weight = state_dict[base_weight_key]
+        lora_a = state_dict[lora_a_key]
+        lora_b = state_dict[lora_b_key]
+        merged_weight = (
+            base_weight.float() + (lora_b.float() @ lora_a.float()) * module.scaling
+        ).to(dtype=base_weight.dtype)
+        exported[f"{module_name}.weight"] = merged_weight.detach().cpu()
+
+        base_bias_key = f"{prefix}{module_name}.base.bias"
+        if base_bias_key in state_dict:
+            exported[f"{module_name}.bias"] = state_dict[base_bias_key].detach().cpu()
+
+    return exported
 
 
 def get_model_subfolder(model_type: str) -> str:

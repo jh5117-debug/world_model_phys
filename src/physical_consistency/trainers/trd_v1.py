@@ -43,7 +43,10 @@ from physical_consistency.trainers.stage1_components import (
     apply_gradient_checkpointing,
     build_dataloader,
     compute_scheduler_total_steps,
+    export_pretrained_state_dict,
+    extract_lora_state_dict,
     get_model_subfolder,
+    load_lora_state_dict,
     move_optimizer_state,
     prune_checkpoint_dir,
 )
@@ -128,6 +131,25 @@ class DualBranchTrainingBundle(nn.Module):
             "high_projector": self.high_projector.state_dict(),
         }
 
+    def lora_state_dicts(self) -> dict[str, dict[str, torch.Tensor]]:
+        return {
+            "low_lora": extract_lora_state_dict(self.low_model),
+            "high_lora": extract_lora_state_dict(self.high_model),
+        }
+
+    def training_state_dicts(self) -> dict[str, dict[str, torch.Tensor]]:
+        payload = self.projector_state_dicts()
+        low_lora = extract_lora_state_dict(self.low_model)
+        high_lora = extract_lora_state_dict(self.high_model)
+        if low_lora or high_lora:
+            payload.update(
+                {
+                    "low_lora": low_lora,
+                    "high_lora": high_lora,
+                }
+            )
+        return payload
+
     def _active_components(self, branch: str) -> tuple[nn.Module, nn.Module, BlockFeatureHook]:
         if branch == "high":
             return self.high_model, self.high_projector, self.high_hook
@@ -164,7 +186,10 @@ def _save_branch_checkpoint(
     model_dir: Path,
 ) -> None:
     ensure_dir(model_dir)
-    torch.save(_extract_prefixed_state_dict(state_dict, prefix), model_dir / "diffusion_pytorch_model.bin")
+    torch.save(
+        export_pretrained_state_dict(branch_model, state_dict, prefix=prefix),
+        model_dir / "diffusion_pytorch_model.bin",
+    )
     if hasattr(branch_model, "save_config"):
         branch_model.save_config(model_dir)
 
@@ -344,7 +369,7 @@ class TRDTrainingRunner:
                     args=self.args,
                     tag=f"epoch_{self.current_epoch}",
                     extra_training_state={
-                        **self.accelerator.unwrap_model(self.model_bundle).projector_state_dicts(),
+                        **self.accelerator.unwrap_model(self.model_bundle).training_state_dicts(),
                         "global_step": self.global_step,
                         "epoch": self.current_epoch,
                     },
@@ -362,7 +387,7 @@ class TRDTrainingRunner:
             args=self.args,
             tag="final",
             extra_training_state={
-                **self.accelerator.unwrap_model(self.model_bundle).projector_state_dicts(),
+                **self.accelerator.unwrap_model(self.model_bundle).training_state_dicts(),
                 "global_step": self.global_step,
                 "epoch": self.current_epoch,
             },
@@ -424,6 +449,10 @@ class TRDTrainingRunner:
             apply_gradient_checkpointing(low_model, "low_noise_model")
             apply_gradient_checkpointing(high_model, "high_noise_model")
 
+        if self.args.student_tuning_mode == "lora" and resume_state:
+            load_lora_state_dict(low_model, resume_state.get("low_lora", {}), model_name="low_noise_model")
+            load_lora_state_dict(high_model, resume_state.get("high_lora", {}), model_name="high_noise_model")
+
         self.model_bundle = DualBranchTrainingBundle(
             low_model=low_model,
             high_model=high_model,
@@ -435,7 +464,7 @@ class TRDTrainingRunner:
         self._log_gpu_memory("after_dual_bundle_construct")
 
         optimizer = torch.optim.AdamW(
-            list(self.model_bundle.parameters()),
+            self._all_trainable_params(),
             lr=self.args.learning_rate,
             weight_decay=self.args.weight_decay,
         )
@@ -521,7 +550,7 @@ class TRDTrainingRunner:
         return getattr(self.optimizer, "optimizer", self.optimizer)
 
     def _all_trainable_params(self) -> list[torch.nn.Parameter]:
-        return list(self.model_bundle.parameters())
+        return [parameter for parameter in self.model_bundle.parameters() if parameter.requires_grad]
 
     def _set_train_mode(self) -> None:
         self.model_bundle.train()
@@ -631,7 +660,7 @@ class TRDTrainingRunner:
             args=self.args,
             tag=tag,
             extra_training_state={
-                **self.accelerator.unwrap_model(self.model_bundle).projector_state_dicts(),
+                **self.accelerator.unwrap_model(self.model_bundle).training_state_dicts(),
                 "global_step": self.global_step,
                 "tag": tag,
             },
@@ -687,7 +716,7 @@ class TRDTrainingRunner:
 
     def _build_resume_state_payload(self, tag: str) -> dict[str, Any]:
         unwrapped_bundle = self.accelerator.unwrap_model(self.model_bundle)
-        return {
+        payload = {
             **unwrapped_bundle.projector_state_dicts(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict(),
@@ -695,6 +724,10 @@ class TRDTrainingRunner:
             "epoch": self.current_epoch,
             "tag": tag,
         }
+        if self.args.student_tuning_mode == "lora":
+            payload.update(unwrapped_bundle.lora_state_dicts())
+            payload["student_base_checkpoint_dir"] = str(Path(self.args.stage1_ckpt_dir).resolve())
+        return payload
 
     def _release_training_runtime(self) -> None:
         self.teacher = None
@@ -720,7 +753,10 @@ class TRDTrainingRunner:
             checkpoint_path / "training_only" / "resume_state.pt",
             map_location="cpu",
         )
-        self._initialize_training_runtime(checkpoint_dir=checkpoint_path, resume_state=resume_state)
+        checkpoint_dir: str | Path = checkpoint_path
+        if self.args.student_tuning_mode == "lora":
+            checkpoint_dir = resume_state.get("student_base_checkpoint_dir", self.args.stage1_ckpt_dir)
+        self._initialize_training_runtime(checkpoint_dir=checkpoint_dir, resume_state=resume_state)
         self.global_step = int(resume_state.get("global_step", self.global_step))
         self.current_epoch = int(resume_state.get("epoch", self.current_epoch))
 
@@ -1208,8 +1244,12 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("teacher_model_variant", "vit_base_patch16_224")
     payload.setdefault("teacher_dtype", "bfloat16")
     payload.setdefault("teacher_offload_after_encode", True)
+    payload.setdefault("student_tuning_mode", "lora")
+    payload.setdefault("student_lora_rank", 16)
+    payload.setdefault("student_lora_alpha", 16)
+    payload.setdefault("student_lora_dropout", 0.0)
     payload.setdefault("student_memory_efficient_modulation", True)
-    payload.setdefault("student_ffn_chunk_size", 1024)
+    payload.setdefault("student_ffn_chunk_size", 2048)
     payload.setdefault("validation_every_steps", 300)
     payload.setdefault("mini_val_max_samples", 8)
     payload.setdefault("student_target_block", 20)
@@ -1227,9 +1267,33 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         payload["allow_deepspeed_feature_hook_experimental"]
     )
     payload["teacher_offload_after_encode"] = _coerce_bool(payload["teacher_offload_after_encode"])
+    payload["student_tuning_mode"] = str(payload["student_tuning_mode"]).strip().lower()
+    if payload["student_tuning_mode"] not in {"full", "lora"}:
+        raise ValueError(f"Unsupported student_tuning_mode: {payload['student_tuning_mode']}")
+    if payload["student_lora_rank"] in ("", None):
+        payload["student_lora_rank"] = 16
+    else:
+        payload["student_lora_rank"] = int(payload["student_lora_rank"])
+    if payload["student_lora_alpha"] in ("", None):
+        payload["student_lora_alpha"] = payload["student_lora_rank"]
+    else:
+        payload["student_lora_alpha"] = int(payload["student_lora_alpha"])
+    if payload["student_lora_dropout"] in ("", None):
+        payload["student_lora_dropout"] = 0.0
+    else:
+        payload["student_lora_dropout"] = float(payload["student_lora_dropout"])
+    if payload["student_tuning_mode"] == "lora":
+        if payload["student_lora_rank"] <= 0:
+            raise ValueError(f"student_lora_rank must be positive, got {payload['student_lora_rank']}")
+        if payload["student_lora_alpha"] <= 0:
+            raise ValueError(f"student_lora_alpha must be positive, got {payload['student_lora_alpha']}")
+        if not 0.0 <= payload["student_lora_dropout"] < 1.0:
+            raise ValueError(
+                f"student_lora_dropout must be in [0, 1), got {payload['student_lora_dropout']}"
+            )
     payload["student_memory_efficient_modulation"] = _coerce_bool(payload["student_memory_efficient_modulation"])
     if payload["student_ffn_chunk_size"] in ("", None):
-        payload["student_ffn_chunk_size"] = 1024
+        payload["student_ffn_chunk_size"] = 2048
     else:
         payload["student_ffn_chunk_size"] = int(payload["student_ffn_chunk_size"])
 
@@ -1307,6 +1371,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--teacher_checkpoint_path", type=str, default="")
     parser.add_argument("--teacher_dtype", type=str, default="")
     parser.add_argument("--teacher_offload_after_encode", type=str, default="")
+    parser.add_argument("--student_tuning_mode", type=str, default="")
+    parser.add_argument("--student_lora_rank", type=int, default=None)
+    parser.add_argument("--student_lora_alpha", type=int, default=None)
+    parser.add_argument("--student_lora_dropout", type=float, default=None)
     parser.add_argument("--student_memory_efficient_modulation", type=str, default="")
     parser.add_argument("--student_ffn_chunk_size", type=int, default=None)
     parser.add_argument("--validation_runtime_mode", type=str, default="")

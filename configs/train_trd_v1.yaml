@@ -23,8 +23,12 @@ teacher_image_size: 224
 teacher_dtype: bfloat16
 teacher_offload_after_encode: true
 teacher_feature_dim: 768
+student_tuning_mode: lora
+student_lora_rank: 16
+student_lora_alpha: 16
+student_lora_dropout: 0.0
 student_memory_efficient_modulation: true
-student_ffn_chunk_size: 1024
+student_ffn_chunk_size: 2048
 student_target_block: 20
 relation_tokens: 64
 lambda_trd: 0.1

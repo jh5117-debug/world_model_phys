@@ -62,8 +62,12 @@ def test_build_args_supports_dual_training_defaults(tmp_path):
     assert args.output_dir.endswith("checkpoints/exp_dual")
     assert args.teacher_dtype == "bfloat16"
     assert args.teacher_offload_after_encode is True
+    assert args.student_tuning_mode == "lora"
+    assert args.student_lora_rank == 16
+    assert args.student_lora_alpha == 16
+    assert args.student_lora_dropout == 0.0
     assert args.student_memory_efficient_modulation is True
-    assert args.student_ffn_chunk_size == 1024
+    assert args.student_ffn_chunk_size == 2048
 
 
 def test_build_args_accepts_wandb_entity_override(tmp_path):
@@ -156,3 +160,27 @@ def test_build_args_accepts_student_ffn_chunk_size_override(tmp_path):
 
     args = build_args(_CliArgs(str(config_path), str(env_path)))
     assert args.student_ffn_chunk_size == 2048
+
+
+def test_build_args_accepts_student_lora_overrides(tmp_path):
+    config_path = tmp_path / "train.yaml"
+    env_path = tmp_path / "paths.env"
+    write_yaml(
+        config_path,
+        {
+            "experiment_name": "exp_student_lora",
+            "model_type": "dual",
+            "student_tuning_mode": "full",
+            "student_lora_rank": 8,
+            "student_lora_alpha": 32,
+            "student_lora_dropout": 0.1,
+            "teacher_checkpoint_dir": str(tmp_path / "teacher"),
+        },
+    )
+    env_path.write_text("", encoding="utf-8")
+
+    args = build_args(_CliArgs(str(config_path), str(env_path)))
+    assert args.student_tuning_mode == "full"
+    assert args.student_lora_rank == 8
+    assert args.student_lora_alpha == 32
+    assert args.student_lora_dropout == 0.1

@@ -1,7 +1,14 @@
 import torch
 import torch.nn as nn
 
-from physical_consistency.trainers.stage1_components import apply_memory_efficient_wan_block_patch
+from physical_consistency.trainers.stage1_components import (
+    LoRALinear,
+    apply_lora_to_wan_model,
+    apply_memory_efficient_wan_block_patch,
+    export_pretrained_state_dict,
+    extract_lora_state_dict,
+    load_lora_state_dict,
+)
 
 
 class _FloatNorm(nn.Module):
@@ -68,6 +75,24 @@ class _DummyWanModel(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
         self.blocks = nn.ModuleList([_DummyWanBlock(dim)])
+
+
+class _TinyLoRABlock(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        self.linear = nn.Linear(dim, dim, bias=False)
+        self.ffn = nn.Sequential(
+            nn.Linear(dim, dim * 2, bias=False),
+            nn.GELU(),
+            nn.Linear(dim * 2, dim, bias=False),
+        )
+
+
+class _TinyLoRAModel(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        self.blocks = nn.ModuleList([_TinyLoRABlock(dim)])
+        self.outside = nn.Linear(dim, dim, bias=False)
 
 
 def test_apply_memory_efficient_wan_block_patch_keeps_bfloat16_activations():
@@ -146,3 +171,45 @@ def test_apply_memory_efficient_wan_block_patch_avoids_outer_sequential_forward(
     assert inner_ffn.seen_seq_lens == [2, 2, 1]
     out.float().sum().backward()
     assert inner_ffn.proj.weight.grad is not None
+
+
+def test_apply_lora_to_wan_model_replaces_block_linears_and_freezes_base_params():
+    model = _TinyLoRAModel(dim=4)
+    apply_lora_to_wan_model(model, model_name="tiny", rank=2, alpha=2, dropout=0.0)
+
+    assert isinstance(model.blocks[0].linear, LoRALinear)
+    assert isinstance(model.blocks[0].ffn[0], LoRALinear)
+    assert isinstance(model.blocks[0].ffn[2], LoRALinear)
+    assert not isinstance(model.outside, LoRALinear)
+
+    trainable_names = {name for name, param in model.named_parameters() if param.requires_grad}
+    assert trainable_names
+    assert all(".lora_" in name for name in trainable_names)
+    assert "outside.weight" not in trainable_names
+
+
+def test_lora_state_dict_round_trip_and_merge_export():
+    model = _TinyLoRAModel(dim=2)
+    apply_lora_to_wan_model(model, model_name="tiny", rank=1, alpha=1, dropout=0.0)
+    wrapped = model.blocks[0].linear
+
+    with torch.no_grad():
+        wrapped.base.weight.copy_(torch.eye(2))
+        wrapped.lora_A.weight.fill_(2.0)
+        wrapped.lora_B.weight.fill_(3.0)
+
+    lora_state = extract_lora_state_dict(model)
+    cloned = _TinyLoRAModel(dim=2)
+    apply_lora_to_wan_model(cloned, model_name="tiny", rank=1, alpha=1, dropout=0.0)
+    load_lora_state_dict(cloned, lora_state, model_name="tiny")
+
+    for key, value in lora_state.items():
+        assert torch.equal(cloned.state_dict()[key], value)
+
+    prefixed_state = {f"branch.{key}": value.clone() for key, value in model.state_dict().items()}
+    exported = export_pretrained_state_dict(model, prefixed_state, prefix="branch.")
+    assert "blocks.0.linear.weight" in exported
+    assert not any(".lora_" in key or ".base." in key for key in exported)
+
+    expected = torch.eye(2) + torch.full((2, 2), 6.0)
+    assert torch.allclose(exported["blocks.0.linear.weight"], expected)
