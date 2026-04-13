@@ -426,6 +426,16 @@ def apply_memory_efficient_wan_block_patch(
         gate = _squeeze_gate(gate).to(device=value.device, dtype=value.dtype)
         return torch.addcmul(base, value, gate)
 
+    def _run_module_layers(module: torch.nn.Module, inputs: torch.Tensor) -> torch.Tensor:
+        # Running nested Sequentials layer-by-layer avoids a large ZeRO-3 fetch on the
+        # outer container, which otherwise gathers the whole FFN at once.
+        if isinstance(module, torch.nn.Sequential):
+            value = inputs
+            for submodule in module:
+                value = _run_module_layers(submodule, value)
+            return value
+        return module(inputs)
+
     def _run_ffn_residual(
         ffn: torch.nn.Module,
         norm: torch.nn.Module,
@@ -437,7 +447,7 @@ def apply_memory_efficient_wan_block_patch(
     ) -> torch.Tensor:
         if ffn_chunk_size is None or residual.shape[1] <= ffn_chunk_size:
             ffn_input = _modulate(norm(residual), shift, scale, target_dtype)
-            y = ffn(ffn_input)
+            y = _run_module_layers(ffn, ffn_input)
             return _apply_gated_residual(residual, y, gate)
 
         output = torch.empty_like(residual)
@@ -448,7 +458,7 @@ def apply_memory_efficient_wan_block_patch(
             scale_chunk = _slice_sequence(scale, start, stop)
             gate_chunk = _slice_sequence(gate, start, stop)
             ffn_input_chunk = _modulate(norm(residual_chunk), shift_chunk, scale_chunk, target_dtype)
-            y_chunk = ffn(ffn_input_chunk)
+            y_chunk = _run_module_layers(ffn, ffn_input_chunk)
             output[:, start:stop] = _apply_gated_residual(residual_chunk, y_chunk, gate_chunk)
         return output
 

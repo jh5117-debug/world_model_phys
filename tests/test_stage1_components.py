@@ -44,6 +44,11 @@ class _TypedFFN(nn.Module):
         return self.proj(x)
 
 
+class _NoForwardSequential(nn.Sequential):
+    def forward(self, x):
+        raise AssertionError("patched code should run sequential children directly")
+
+
 class _DummyWanBlock(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
@@ -114,3 +119,30 @@ def test_apply_memory_efficient_wan_block_patch_chunks_ffn_sequence():
     out.float().sum().backward()
     assert x.grad is not None
     assert block.ffn.proj.weight.grad is not None
+
+
+def test_apply_memory_efficient_wan_block_patch_avoids_outer_sequential_forward():
+    model = _DummyWanModel(dim=4)
+    model.blocks[0].ffn = _NoForwardSequential(_TypedFFN(dim=4))
+    apply_memory_efficient_wan_block_patch(model, "dummy", ffn_chunk_size=2)
+
+    block = model.blocks[0]
+    x = torch.randn(1, 5, 4, dtype=torch.bfloat16, requires_grad=True)
+    e = torch.zeros(1, 5, 6, 4, dtype=torch.bfloat16)
+    context = torch.zeros(1, 2, 4, dtype=torch.bfloat16)
+
+    out = block(
+        x,
+        e,
+        seq_lens=torch.tensor([5], dtype=torch.int32),
+        grid_sizes=torch.tensor([[1, 1, 1]], dtype=torch.int32),
+        freqs=torch.zeros(1, 5, 4, dtype=torch.bfloat16),
+        context=context,
+        context_lens=torch.tensor([2], dtype=torch.int32),
+    )
+
+    assert out.shape == x.shape
+    inner_ffn = block.ffn[0]
+    assert inner_ffn.seen_seq_lens == [2, 2, 1]
+    out.float().sum().backward()
+    assert inner_ffn.proj.weight.grad is not None
