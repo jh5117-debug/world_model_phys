@@ -381,7 +381,6 @@ class TRDTrainingRunner:
             wandb.define_metric("progress/*", step_metric="progress/global_step")
             wandb.define_metric("runtime/optimizer/*", step_metric="progress/global_step")
             wandb.define_metric("runtime/gpu_mem/*", step_metric="progress/micro_step")
-            wandb.define_metric("runtime/setup_mem/*", step_metric="progress/global_step")
         except Exception:
             LOGGER.warning("Failed to define W&B metrics", exc_info=True)
 
@@ -681,17 +680,7 @@ class TRDTrainingRunner:
                 f"runtime/gpu_mem/{phase}/reserved_gib": reserved_gib,
                 f"runtime/gpu_mem/{phase}/max_allocated_gib": max_allocated_gib,
             }
-        else:
-            step = self.global_step
-            payload = {
-                "progress/micro_step": self._micro_step,
-                "progress/global_step": self.global_step,
-                "progress/epoch": self.current_epoch,
-                f"runtime/setup_mem/{label}/allocated_gib": allocated_gib,
-                f"runtime/setup_mem/{label}/reserved_gib": reserved_gib,
-                f"runtime/setup_mem/{label}/max_allocated_gib": max_allocated_gib,
-            }
-        log_dict(step, payload, accelerator=self.accelerator)
+            log_dict(step, payload, accelerator=self.accelerator)
 
     def _reset_gpu_peak_memory_stats(self) -> None:
         if not torch.cuda.is_available():
