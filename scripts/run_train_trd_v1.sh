@@ -14,6 +14,10 @@ NUM_GPUS="${NUM_GPUS:-}"
 ULYSSES_SIZE="${ULYSSES_SIZE:-}"
 MODEL_TYPE="${MODEL_TYPE:-dual}"
 FORCE_CLEAR_GPUS_BEFORE_LAUNCH="${FORCE_CLEAR_GPUS_BEFORE_LAUNCH:-1}"
+RUN_WITH_NOHUP="${RUN_WITH_NOHUP:-1}"
+TAIL_IMPORTANT_LOGS="${TAIL_IMPORTANT_LOGS:-1}"
+TAIL_LINES="${TAIL_LINES:-0}"
+IMPORTANT_LOG_REGEX="${IMPORTANT_LOG_REGEX:-(\[GPU RESET\]|\[SEQ GEOM\]|Gradient checkpointing patched|Applying block-level gradient checkpointing|\[GPU MEM\]|ERROR physical_consistency|Training aborted|OutOfMemoryError|Traceback)}"
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -108,11 +112,14 @@ force_clear_target_gpus() {
 
 OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}}"
 mkdir -p "${OUTPUT_ROOT}/logs"
+LOG_FILE="${OUTPUT_ROOT}/logs/train_trd_v1_${MODEL_TYPE}.log"
+PID_FILE="${OUTPUT_ROOT}/logs/train_trd_v1_${MODEL_TYPE}.pid"
 
 cd "${PROJECT_ROOT}"
 force_clear_target_gpus
 
-accelerate launch \
+TRAIN_CMD=(
+  accelerate launch
   --config_file "${ACCELERATE_CONFIG}" \
   --num_processes "${NUM_GPUS}" \
   -m physical_consistency.cli.train_trd_v1 \
@@ -121,4 +128,32 @@ accelerate launch \
   --model_type "${MODEL_TYPE}" \
   --num_gpus "${NUM_GPUS}" \
   --ulysses_size "${ULYSSES_SIZE}" \
-  "${EXTRA_ARGS[@]}" 2>&1 | tee "${OUTPUT_ROOT}/logs/train_trd_v1_${MODEL_TYPE}.log"
+  "${EXTRA_ARGS[@]}"
+)
+
+if [[ "${RUN_WITH_NOHUP}" == "1" ]]; then
+  : > "${LOG_FILE}"
+  TRAIN_CMD_STRING="$(printf '%q ' "${TRAIN_CMD[@]}")"
+  nohup bash -lc "cd $(printf '%q' "${PROJECT_ROOT}") && ${TRAIN_CMD_STRING}" >>"${LOG_FILE}" 2>&1 &
+  TRAIN_PID=$!
+  printf '%s\n' "${TRAIN_PID}" > "${PID_FILE}"
+  echo "[NOHUP] Started background training for ${MODEL_TYPE} with PID ${TRAIN_PID}"
+  echo "[NOHUP] Full log: ${LOG_FILE}"
+  echo "[NOHUP] PID file: ${PID_FILE}"
+
+  if [[ "${TAIL_IMPORTANT_LOGS}" != "1" ]]; then
+    exit 0
+  fi
+
+  echo "[TAIL] Monitoring important log lines from ${LOG_FILE}"
+  if tail --help 2>&1 | grep -q -- '--pid'; then
+    tail --pid="${TRAIN_PID}" -n "${TAIL_LINES}" -F "${LOG_FILE}" \
+      | stdbuf -oL -eL grep --line-buffered -E "${IMPORTANT_LOG_REGEX}"
+  else
+    tail -n "${TAIL_LINES}" -F "${LOG_FILE}" \
+      | stdbuf -oL -eL grep --line-buffered -E "${IMPORTANT_LOG_REGEX}"
+  fi
+  exit 0
+fi
+
+"${TRAIN_CMD[@]}" 2>&1 | tee "${LOG_FILE}"
