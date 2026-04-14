@@ -482,6 +482,35 @@ def _materialize_worker_view(
     return manifest_path, view_dir
 
 
+def _prepare_single_gpu_worker_env(base_env: dict[str, str], gpu_id: str) -> dict[str, str]:
+    """Drop inherited distributed-launch state for single-GPU eval workers."""
+    env = dict(base_env)
+    for key in [
+        "MASTER_ADDR",
+        "MASTER_PORT",
+        "WORLD_SIZE",
+        "RANK",
+        "LOCAL_RANK",
+        "LOCAL_WORLD_SIZE",
+        "GROUP_RANK",
+        "ROLE_RANK",
+        "ROLE_WORLD_SIZE",
+        "NODE_RANK",
+        "ACCELERATE_PROCESS_INDEX",
+        "ACCELERATE_USE_DEEPSPEED",
+        "ACCELERATE_MIXED_PRECISION",
+        "ACCELERATE_DYNAMO_BACKEND",
+        "DEEPSPEED_CONFIG_FILE",
+    ]:
+        env.pop(key, None)
+    env["TOKENIZERS_PARALLELISM"] = "false"
+    env["CUDA_VISIBLE_DEVICES"] = gpu_id
+    env["WORLD_SIZE"] = "1"
+    env["RANK"] = "0"
+    env["LOCAL_RANK"] = "0"
+    return env
+
+
 def _spawn_workers(
     *,
     cfg: FullvalConfig,
@@ -565,9 +594,7 @@ def _spawn_workers(
         ]
         if effective_ft_ckpt_dir:
             command.extend(["--ft_ckpt_dir", effective_ft_ckpt_dir])
-        env = os.environ.copy()
-        env["TOKENIZERS_PARALLELISM"] = "false"
-        env["CUDA_VISIBLE_DEVICES"] = gpu_id
+        env = _prepare_single_gpu_worker_env(os.environ.copy(), gpu_id)
         process = subprocess.Popen(
             command,
             cwd=path_cfg.finetune_code_dir,

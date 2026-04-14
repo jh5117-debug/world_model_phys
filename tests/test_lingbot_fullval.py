@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from physical_consistency.eval.lingbot_fullval import (
+    _prepare_single_gpu_worker_env,
     _build_config,
     build_progress_row,
     shard_rows,
@@ -119,3 +120,32 @@ def test_build_config_allows_missing_physics_config(monkeypatch: pytest.MonkeyPa
 
     assert cfg.physics_config == "/tmp/output/configs/physics_iq_dataset_eval.yaml"
     assert cfg.gpu_list == ["0", "1"]
+
+
+def test_prepare_single_gpu_worker_env_clears_distributed_launch_state():
+    prepared = _prepare_single_gpu_worker_env(
+        {
+            "MASTER_ADDR": "127.0.0.1",
+            "MASTER_PORT": "29500",
+            "WORLD_SIZE": "4",
+            "RANK": "2",
+            "LOCAL_RANK": "2",
+            "GROUP_RANK": "0",
+            "ROLE_RANK": "0",
+            "NODE_RANK": "0",
+            "ACCELERATE_USE_DEEPSPEED": "true",
+            "TOKENIZERS_PARALLELISM": "true",
+            "UNCHANGED": "ok",
+        },
+        "7",
+    )
+
+    assert prepared["CUDA_VISIBLE_DEVICES"] == "7"
+    assert prepared["WORLD_SIZE"] == "1"
+    assert prepared["RANK"] == "0"
+    assert prepared["LOCAL_RANK"] == "0"
+    assert prepared["TOKENIZERS_PARALLELISM"] == "false"
+    assert prepared["UNCHANGED"] == "ok"
+    assert "MASTER_ADDR" not in prepared
+    assert "MASTER_PORT" not in prepared
+    assert "ACCELERATE_USE_DEEPSPEED" not in prepared
