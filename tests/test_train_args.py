@@ -3,6 +3,7 @@ from physical_consistency.trainers.stage1_components import compute_scheduler_to
 from physical_consistency.trainers import trd_v1 as trd_v1_module
 from physical_consistency.trainers.trd_v1 import (
     TRDTrainingRunner,
+    _build_training_state_payload_from_bundle_state,
     _resolve_teacher_checkpoint,
     build_args,
     format_eta,
@@ -463,3 +464,51 @@ def test_resolve_teacher_checkpoint_accepts_pt_files(tmp_path):
 
 def test_compute_scheduler_total_steps_uses_ceil_for_tail_accumulation():
     assert compute_scheduler_total_steps(dataset_len=1670, num_processes=8, grad_accum=4, num_epochs=5) == 265
+
+
+def test_build_training_state_payload_from_bundle_state_uses_full_lora_tensors(tmp_path):
+    stage1_dir = tmp_path / "stage1_ckpt"
+    stage1_dir.mkdir()
+    bundle_state = {
+        "low_projector.proj.weight": torch.randn(768, 16),
+        "low_projector.proj.bias": torch.randn(768),
+        "high_projector.proj.weight": torch.randn(768, 16),
+        "high_projector.proj.bias": torch.randn(768),
+        "low_model.blocks.0.self_attn.q.lora_A.weight": torch.randn(16, 5120),
+        "low_model.blocks.0.self_attn.q.lora_B.weight": torch.randn(5120, 16),
+        "high_model.blocks.1.self_attn.k.lora_A.weight": torch.randn(16, 5120),
+        "high_model.blocks.1.self_attn.k.lora_B.weight": torch.randn(5120, 16),
+        "low_model.blocks.0.self_attn.q.weight": torch.randn(5120, 5120),
+    }
+
+    payload = _build_training_state_payload_from_bundle_state(
+        bundle_state=bundle_state,
+        student_tuning_mode="lora",
+        global_step=105,
+        epoch=1,
+        tag="epoch_1",
+        optimizer_state={"state": {"dummy": 1}},
+        scheduler_state={"last_epoch": 105},
+        student_base_checkpoint_dir=stage1_dir,
+    )
+
+    assert payload["global_step"] == 105
+    assert payload["epoch"] == 1
+    assert payload["tag"] == "epoch_1"
+    assert payload["optimizer"] == {"state": {"dummy": 1}}
+    assert payload["scheduler"] == {"last_epoch": 105}
+    assert payload["student_base_checkpoint_dir"] == str(stage1_dir.resolve())
+    assert payload["low_projector"]["proj.weight"].shape == (768, 16)
+    assert payload["high_projector"]["proj.bias"].shape == (768,)
+    assert set(payload["low_lora"]) == {
+        "blocks.0.self_attn.q.lora_A.weight",
+        "blocks.0.self_attn.q.lora_B.weight",
+    }
+    assert set(payload["high_lora"]) == {
+        "blocks.1.self_attn.k.lora_A.weight",
+        "blocks.1.self_attn.k.lora_B.weight",
+    }
+    assert payload["low_lora"]["blocks.0.self_attn.q.lora_A.weight"].shape == (16, 5120)
+    assert payload["high_lora"]["blocks.1.self_attn.k.lora_B.weight"].shape == (5120, 16)
+    assert all(tensor.numel() > 0 for tensor in payload["low_lora"].values())
+    assert all(tensor.numel() > 0 for tensor in payload["high_lora"].values())

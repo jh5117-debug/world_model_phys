@@ -13,7 +13,7 @@ import time
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 
 import accelerate
 import numpy as np
@@ -255,14 +255,73 @@ class DualBranchTrainingBundle(nn.Module):
         return tokens.view(1, lat_f, pooled_h * pooled_w, channels)
 
 
-def _extract_prefixed_state_dict(state_dict: dict[str, torch.Tensor], prefix: str) -> dict[str, torch.Tensor]:
+def _extract_prefixed_state_dict(
+    state_dict: dict[str, torch.Tensor],
+    prefix: str,
+    *,
+    key_filter: Callable[[str], bool] | None = None,
+    required: bool = True,
+) -> dict[str, torch.Tensor]:
     extracted: dict[str, torch.Tensor] = {}
     for key, value in state_dict.items():
         if key.startswith(prefix):
-            extracted[key[len(prefix) :]] = value.cpu()
-    if not extracted:
+            stripped_key = key[len(prefix) :]
+            if key_filter is not None and not key_filter(stripped_key):
+                continue
+            extracted[stripped_key] = value.cpu()
+    if required and not extracted:
         raise KeyError(f"No state_dict entries matched prefix={prefix!r}")
     return extracted
+
+
+def _is_lora_adapter_key(key: str) -> bool:
+    return ".lora_A.weight" in key or ".lora_B.weight" in key
+
+
+def _build_training_state_payload_from_bundle_state(
+    *,
+    bundle_state: dict[str, torch.Tensor],
+    student_tuning_mode: str,
+    global_step: int,
+    epoch: int,
+    tag: str | None = None,
+    optimizer_state: dict[str, Any] | None = None,
+    scheduler_state: dict[str, Any] | None = None,
+    student_base_checkpoint_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "low_projector": _extract_prefixed_state_dict(bundle_state, "low_projector."),
+        "high_projector": _extract_prefixed_state_dict(bundle_state, "high_projector."),
+        "global_step": global_step,
+        "epoch": epoch,
+    }
+    if tag is not None:
+        payload["tag"] = tag
+    if optimizer_state is not None:
+        payload["optimizer"] = optimizer_state
+    if scheduler_state is not None:
+        payload["scheduler"] = scheduler_state
+
+    if student_tuning_mode == "lora":
+        low_lora = _extract_prefixed_state_dict(
+            bundle_state,
+            "low_model.",
+            key_filter=_is_lora_adapter_key,
+            required=False,
+        )
+        high_lora = _extract_prefixed_state_dict(
+            bundle_state,
+            "high_model.",
+            key_filter=_is_lora_adapter_key,
+            required=False,
+        )
+        if low_lora or high_lora:
+            payload["low_lora"] = low_lora
+            payload["high_lora"] = high_lora
+        if student_base_checkpoint_dir is not None:
+            payload["student_base_checkpoint_dir"] = str(Path(student_base_checkpoint_dir).resolve())
+
+    return payload
 
 
 def _save_branch_checkpoint(
@@ -287,7 +346,7 @@ def save_dual_bundle_checkpoint(
     model_bundle: nn.Module,
     args,
     tag: str,
-    extra_training_state: dict[str, Any] | None = None,
+    extra_training_state: dict[str, Any] | Callable[[dict[str, torch.Tensor], nn.Module], dict[str, Any] | None] | None = None,
     training_state_filename: str = "resume_state.pt",
 ) -> Path:
     """Save a dual-branch checkpoint from one wrapped container model."""
@@ -303,6 +362,9 @@ def save_dual_bundle_checkpoint(
         if bundle_state is None:
             raise RuntimeError("Accelerator returned no state_dict for the dual bundle on the main process")
         unwrapped = accelerator.unwrap_model(model_bundle)
+        resolved_training_state = extra_training_state
+        if callable(extra_training_state):
+            resolved_training_state = extra_training_state(bundle_state, unwrapped)
         _save_branch_checkpoint(
             branch_model=unwrapped.low_model,
             state_dict=bundle_state,
@@ -315,10 +377,10 @@ def save_dual_bundle_checkpoint(
             prefix="high_model.",
             model_dir=save_dir / "high_noise_model",
         )
-        if extra_training_state:
+        if resolved_training_state is not None:
             training_only = save_dir / "training_only"
             training_only.mkdir(parents=True, exist_ok=True)
-            torch.save(extra_training_state, training_only / training_state_filename)
+            torch.save(resolved_training_state, training_only / training_state_filename)
     accelerator.wait_for_everyone()
     return save_dir
 
@@ -494,11 +556,7 @@ class TRDTrainingRunner:
                     model_bundle=self.model_bundle,
                     args=self.args,
                     tag=f"epoch_{self.current_epoch}",
-                    extra_training_state={
-                        **self.accelerator.unwrap_model(self.model_bundle).training_state_dicts(),
-                        "global_step": self.global_step,
-                        "epoch": self.current_epoch,
-                    },
+                    extra_training_state=self._training_state_payload_factory(),
                     training_state_filename="projectors.pt",
                 )
                 if self.accelerator.is_main_process:
@@ -515,11 +573,7 @@ class TRDTrainingRunner:
             model_bundle=self.model_bundle,
             args=self.args,
             tag="final",
-            extra_training_state={
-                **self.accelerator.unwrap_model(self.model_bundle).training_state_dicts(),
-                "global_step": self.global_step,
-                "epoch": self.current_epoch,
-            },
+            extra_training_state=self._training_state_payload_factory(),
             training_state_filename="projectors.pt",
         )
         if self.accelerator.is_main_process:
@@ -928,11 +982,7 @@ class TRDTrainingRunner:
             model_bundle=self.model_bundle,
             args=self.args,
             tag=tag,
-            extra_training_state={
-                **self.accelerator.unwrap_model(self.model_bundle).training_state_dicts(),
-                "global_step": self.global_step,
-                "tag": tag,
-            },
+            extra_training_state=self._training_state_payload_factory(tag=tag),
             training_state_filename="projectors.pt",
         )
         if self.accelerator.is_main_process:
@@ -948,7 +998,11 @@ class TRDTrainingRunner:
             model_bundle=self.model_bundle,
             args=self.args,
             tag=candidate_tag,
-            extra_training_state=self._build_resume_state_payload(tag),
+            extra_training_state=self._training_state_payload_factory(
+                tag=tag,
+                include_optimizer=True,
+                include_scheduler=True,
+            ),
             training_state_filename="resume_state.pt",
         )
         if self.accelerator.is_main_process:
@@ -983,20 +1037,29 @@ class TRDTrainingRunner:
             self._retain_candidate_checkpoint(candidate_path, tag, summary)
         self.accelerator.wait_for_everyone()
 
-    def _build_resume_state_payload(self, tag: str) -> dict[str, Any]:
-        unwrapped_bundle = self.accelerator.unwrap_model(self.model_bundle)
-        payload = {
-            **unwrapped_bundle.projector_state_dicts(),
-            "optimizer": self.optimizer.state_dict(),
-            "scheduler": self.scheduler.state_dict(),
-            "global_step": self.global_step,
-            "epoch": self.current_epoch,
-            "tag": tag,
-        }
-        if self.args.student_tuning_mode == "lora":
-            payload.update(unwrapped_bundle.lora_state_dicts())
-            payload["student_base_checkpoint_dir"] = str(Path(self.args.stage1_ckpt_dir).resolve())
-        return payload
+    def _training_state_payload_factory(
+        self,
+        *,
+        tag: str | None = None,
+        include_optimizer: bool = False,
+        include_scheduler: bool = False,
+    ) -> Callable[[dict[str, torch.Tensor], nn.Module], dict[str, Any]]:
+        optimizer_state = self.optimizer.state_dict() if include_optimizer else None
+        scheduler_state = self.scheduler.state_dict() if include_scheduler else None
+
+        def _factory(bundle_state: dict[str, torch.Tensor], _unwrapped: nn.Module) -> dict[str, Any]:
+            return _build_training_state_payload_from_bundle_state(
+                bundle_state=bundle_state,
+                student_tuning_mode=self.args.student_tuning_mode,
+                global_step=self.global_step,
+                epoch=self.current_epoch,
+                tag=tag,
+                optimizer_state=optimizer_state,
+                scheduler_state=scheduler_state,
+                student_base_checkpoint_dir=self.args.stage1_ckpt_dir,
+            )
+
+        return _factory
 
     def _release_training_runtime(self) -> None:
         self.teacher = None
