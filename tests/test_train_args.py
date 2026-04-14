@@ -1,6 +1,8 @@
 from physical_consistency.common.io import write_yaml
 from physical_consistency.trainers.stage1_components import compute_scheduler_total_steps
+from physical_consistency.trainers import trd_v1 as trd_v1_module
 from physical_consistency.trainers.trd_v1 import (
+    TRDTrainingRunner,
     _resolve_teacher_checkpoint,
     build_args,
     format_eta,
@@ -11,6 +13,7 @@ from physical_consistency.trainers.trd_v1 import (
 )
 import torch
 import numpy as np
+from pathlib import Path
 
 
 class _CliArgs:
@@ -144,6 +147,142 @@ def test_build_args_accepts_teacher_offload_override(tmp_path):
 
     args = build_args(_CliArgs(str(config_path), str(env_path)))
     assert args.teacher_offload_after_encode is False
+
+
+class _DummyAccumulation:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _DummyAccelerator:
+    def __init__(self) -> None:
+        self.is_main_process = True
+        self.num_processes = 1
+        self.sync_gradients = True
+        self.device = torch.device("cpu")
+
+    def wait_for_everyone(self) -> None:
+        return None
+
+    def accumulate(self, model):
+        del model
+        return _DummyAccumulation()
+
+    def backward(self, loss) -> None:
+        del loss
+
+    def clip_grad_norm_(self, params, max_norm):
+        del params, max_norm
+        return torch.tensor(0.0)
+
+    def unwrap_model(self, model):
+        return model
+
+    def end_training(self) -> None:
+        return None
+
+
+class _DummyBundle(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor(1.0))
+
+    def training_state_dicts(self) -> dict[str, dict]:
+        return {}
+
+
+def test_train_runs_validation_at_each_epoch_end(tmp_path, monkeypatch):
+    runner = object.__new__(TRDTrainingRunner)
+    runner.args = _CliArgs(config="", env_file="")
+    runner.args.output_dir = str(tmp_path / "checkpoints" / "exp")
+    runner.args.stage1_ckpt_dir = "links/stage1_epoch2"
+    runner.args.model_type = "dual"
+    runner.args.num_epochs = 2
+    runner.args.validation_every_steps = 0
+    runner.args.validation_every_epochs = 1
+    runner.args.save_every_n_epochs = 0
+    runner.args.max_grad_norm = 1.0
+    runner.args.gradient_accumulation_steps = 4
+    runner.args.best_checkpoint_name = "best_videophy2"
+    runner.accelerator = _DummyAccelerator()
+    runner.global_step = 0
+    runner.current_epoch = 0
+    runner.run = None
+    runner.teacher_checkpoint_path = ""
+    runner.train_loader = None
+    runner.val_loader = None
+    runner.model_bundle = None
+    runner.optimizer = None
+    runner.scheduler = None
+    runner.best_metrics_path = tmp_path / "best_videophy2.json"
+    runner.best_checkpoint_path = tmp_path / "best_videophy2"
+    runner._micro_step = 0
+    runner.micro_steps_per_epoch = 1
+    runner.optimizer_steps_per_epoch = 1
+    runner.total_optimizer_steps = 2
+    runner._train_start_time = None
+    runner._last_optimizer_step_time = None
+
+    validation_tags: list[str] = []
+
+    def _fake_build_loaders():
+        runner.train_loader = [{"video": torch.zeros(1)}]
+        runner.val_loader = []
+        runner.train_dataset_len = 1
+        runner.micro_steps_per_epoch = 1
+        runner.optimizer_steps_per_epoch = 1
+        runner.total_optimizer_steps = 2
+
+    def _fake_initialize_runtime(*, checkpoint_dir, resume_state):
+        del checkpoint_dir, resume_state
+        runner.model_bundle = _DummyBundle()
+        runner.optimizer = torch.optim.SGD(runner.model_bundle.parameters(), lr=0.1)
+        runner.scheduler = torch.optim.lr_scheduler.LambdaLR(runner.optimizer, lambda _: 1.0)
+
+    def _fake_training_step(batch):
+        del batch
+        return {
+            "loss_total": torch.tensor(1.0, requires_grad=True),
+            "loss_fm": torch.tensor(0.8),
+            "loss_trd": torch.tensor(0.2),
+            "loss_trd_spatial": torch.tensor(0.1),
+            "loss_trd_temporal": torch.tensor(0.1),
+            "sample_sigma": torch.tensor(0.9),
+            "sample_timestep": torch.tensor(900.0),
+            "teacher_feat_norm": torch.tensor(1.0),
+            "student_feat_norm": torch.tensor(1.0),
+            "pred_target_cosine": torch.tensor(0.95),
+            "active_branch_is_high": torch.tensor(0.0),
+        }
+
+    monkeypatch.setattr(trd_v1_module, "_resolve_teacher_checkpoint", lambda *_: "teacher.pt")
+    monkeypatch.setattr(
+        trd_v1_module,
+        "save_dual_bundle_checkpoint",
+        lambda **kwargs: Path(kwargs["args"].output_dir) / str(kwargs["tag"]),
+    )
+
+    runner.validate_runtime_stack = lambda: None
+    runner._build_train_and_val_loaders = _fake_build_loaders
+    runner._log_train_plan = lambda: None
+    runner._initialize_training_runtime = _fake_initialize_runtime
+    runner._set_train_mode = lambda: None
+    runner._reset_gpu_peak_memory_stats = lambda: None
+    runner._log_gpu_memory = lambda *args, **kwargs: None
+    runner.training_step = _fake_training_step
+    runner._log_progress = lambda *args, **kwargs: None
+    runner._log_train_metrics = lambda *args, **kwargs: None
+    runner._log_epoch_summary = lambda *args, **kwargs: None
+    runner._write_lineage = lambda *args, **kwargs: None
+    runner._write_pending_eval_commands = lambda *args, **kwargs: None
+    runner.run_validation_cycle = lambda tag: validation_tags.append(tag)
+
+    runner.train()
+
+    assert validation_tags == ["epoch_1", "epoch_2"]
 
 
 def test_build_args_accepts_teacher_backend_and_validation_epoch_overrides(tmp_path):
