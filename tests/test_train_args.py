@@ -1,5 +1,7 @@
 from physical_consistency.common.io import write_yaml
+from physical_consistency.trainers.stage1_components import compute_scheduler_total_steps
 from physical_consistency.trainers.trd_v1 import (
+    _resolve_teacher_checkpoint,
     build_args,
     format_eta,
     maybe_scalar_to_float,
@@ -69,8 +71,13 @@ def test_build_args_supports_dual_training_defaults(tmp_path):
     args = build_args(_CliArgs(str(config_path), str(env_path)))
     assert args.model_type == "dual"
     assert args.output_dir.endswith("checkpoints/exp_dual")
+    assert args.teacher_backend == "vjepa2"
     assert args.teacher_dtype == "bfloat16"
     assert args.teacher_offload_after_encode is True
+    assert args.teacher_model_variant == "vjepa2_1_vit_base_384"
+    assert args.teacher_input_frames == 64
+    assert args.teacher_drop_first_frame is False
+    assert args.teacher_image_size == 384
     assert args.student_tuning_mode == "lora"
     assert args.student_lora_rank == 16
     assert args.student_lora_alpha == 16
@@ -78,7 +85,9 @@ def test_build_args_supports_dual_training_defaults(tmp_path):
     assert args.student_memory_efficient_modulation is True
     assert args.student_ffn_chunk_size == 512
     assert args.wandb_relation_image_every_steps == 25
-    assert args.num_frames == 69
+    assert args.num_frames == 81
+    assert args.validation_every_steps == 0
+    assert args.validation_every_epochs == 1
 
 
 def test_build_args_accepts_wandb_entity_override(tmp_path):
@@ -135,6 +144,28 @@ def test_build_args_accepts_teacher_offload_override(tmp_path):
 
     args = build_args(_CliArgs(str(config_path), str(env_path)))
     assert args.teacher_offload_after_encode is False
+
+
+def test_build_args_accepts_teacher_backend_and_validation_epoch_overrides(tmp_path):
+    config_path = tmp_path / "train.yaml"
+    env_path = tmp_path / "paths.env"
+    write_yaml(
+        config_path,
+        {
+            "experiment_name": "exp_teacher_backend",
+            "model_type": "dual",
+            "teacher_backend": "VideoMAEv2",
+            "teacher_drop_first_frame": "true",
+            "validation_every_epochs": 2,
+            "teacher_checkpoint_dir": str(tmp_path / "teacher"),
+        },
+    )
+    env_path.write_text("", encoding="utf-8")
+
+    args = build_args(_CliArgs(str(config_path), str(env_path)))
+    assert args.teacher_backend == "videomaev2"
+    assert args.teacher_drop_first_frame is True
+    assert args.validation_every_epochs == 2
 
 
 def test_build_args_accepts_student_modulation_override(tmp_path):
@@ -281,3 +312,15 @@ def test_tensor_to_numpy_float32_handles_bfloat16_tensors_and_numpy_inputs():
     array_result = tensor_to_numpy_float32(np.ones((2, 2), dtype=np.float64))
     assert isinstance(array_result, np.ndarray)
     assert array_result.dtype == np.float32
+
+
+def test_resolve_teacher_checkpoint_accepts_pt_files(tmp_path):
+    checkpoint_dir = tmp_path / "teacher"
+    checkpoint_dir.mkdir()
+    checkpoint_path = checkpoint_dir / "vjepa2_1_vitb_dist_vitG_384.pt"
+    checkpoint_path.write_bytes(b"checkpoint")
+    assert _resolve_teacher_checkpoint(str(checkpoint_dir)) == str(checkpoint_path)
+
+
+def test_compute_scheduler_total_steps_uses_ceil_for_tail_accumulation():
+    assert compute_scheduler_total_steps(dataset_len=1670, num_processes=8, grad_accum=4, num_epochs=5) == 265

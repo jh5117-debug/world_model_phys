@@ -40,6 +40,7 @@ from physical_consistency.eval.checkpoint_bundle import materialize_eval_checkpo
 from physical_consistency.lineage.contract import LineageRecord, verify_stage1_checkpoint
 from physical_consistency.losses.trd import TokenRelationDistillationLoss
 from physical_consistency.teachers.videomaev2 import VideoMAEv2Teacher
+from physical_consistency.teachers.vjepa2 import VJEPA21Teacher
 from physical_consistency.trainers.hooks import BlockFeatureHook
 from physical_consistency.trainers.stage1_components import (
     MODEL_SUBFOLDERS,
@@ -103,6 +104,43 @@ def format_eta(seconds: float | None) -> str:
     if minutes > 0:
         return f"{minutes:d}m{seconds:02d}s"
     return f"{seconds:d}s"
+
+
+def _build_teacher_encoder(
+    *,
+    args: argparse.Namespace,
+    checkpoint_path: str,
+    device: torch.device,
+):
+    """Instantiate the configured frozen teacher with minimal trainer branching."""
+    teacher_backend = str(getattr(args, "teacher_backend", "external")).strip().lower()
+    if teacher_backend in {"external", "videomaev2", "videomae", "videorepa"}:
+        return VideoMAEv2Teacher(
+            repo_dir=args.teacher_repo_dir,
+            checkpoint_path=checkpoint_path,
+            device=device,
+            model_dtype=args.teacher_dtype,
+            offload_after_encode=args.teacher_offload_after_encode,
+            model_variant=args.teacher_model_variant,
+            image_size=args.teacher_image_size,
+            align_video_resolution=(args.teacher_height, args.teacher_width),
+            pretrained_num_frames=args.teacher_pretrained_frames,
+            teacher_input_frames=args.teacher_input_frames,
+            drop_first_frame=args.teacher_drop_first_frame,
+        )
+    if teacher_backend in {"vjepa2", "v-jepa2", "vjepa2.1", "v-jepa-2.1", "vjepa_2_1"}:
+        return VJEPA21Teacher(
+            repo_dir=args.teacher_repo_dir,
+            checkpoint_path=checkpoint_path,
+            device=device,
+            model_dtype=args.teacher_dtype,
+            offload_after_encode=args.teacher_offload_after_encode,
+            model_variant=args.teacher_model_variant,
+            image_size=args.teacher_image_size,
+            teacher_input_frames=args.teacher_input_frames,
+            drop_first_frame=args.teacher_drop_first_frame,
+        )
+    raise ValueError(f"Unsupported teacher_backend: {args.teacher_backend}")
 
 
 class StudentProjector(nn.Module):
@@ -469,6 +507,9 @@ class TRDTrainingRunner:
             elif self.accelerator.is_main_process:
                 self._log_epoch_summary(epoch, epoch_metrics, None)
 
+            if self.args.validation_every_epochs > 0 and self.current_epoch % self.args.validation_every_epochs == 0:
+                self.run_validation_cycle(tag=f"epoch_{self.current_epoch}")
+
         final_path = save_dual_bundle_checkpoint(
             accelerator=self.accelerator,
             model_bundle=self.model_bundle,
@@ -510,7 +551,7 @@ class TRDTrainingRunner:
         self.train_dataset_len = len(train_loader.dataset)
         self.micro_steps_per_epoch = math.ceil(self.train_dataset_len / self.accelerator.num_processes)
         self.optimizer_steps_per_epoch = max(
-            self.micro_steps_per_epoch // self.args.gradient_accumulation_steps,
+            math.ceil(self.micro_steps_per_epoch / self.args.gradient_accumulation_steps),
             1,
         )
         self.total_optimizer_steps = max(self.optimizer_steps_per_epoch * self.args.num_epochs, 1)
@@ -628,18 +669,10 @@ class TRDTrainingRunner:
                 move_optimizer_state(wrapped_optimizer, self.accelerator.device)
             self.scheduler.load_state_dict(resume_state["scheduler"])
 
-        self.teacher = VideoMAEv2Teacher(
-            repo_dir=self.args.teacher_repo_dir,
+        self.teacher = _build_teacher_encoder(
+            args=self.args,
             checkpoint_path=self.teacher_checkpoint_path,
             device=self.accelerator.device,
-            model_dtype=self.args.teacher_dtype,
-            offload_after_encode=self.args.teacher_offload_after_encode,
-            model_variant=self.args.teacher_model_variant,
-            image_size=self.args.teacher_image_size,
-            align_video_resolution=(self.args.teacher_height, self.args.teacher_width),
-            pretrained_num_frames=self.args.teacher_pretrained_frames,
-            teacher_input_frames=self.args.teacher_input_frames,
-            drop_first_frame=self.args.teacher_drop_first_frame,
         )
         if self.teacher.feature_dim != self.args.teacher_feature_dim:
             raise ValueError(
@@ -1493,15 +1526,17 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
 
     payload.setdefault("wandb_entity", "")
     payload.setdefault("margin", 0.1)
+    payload.setdefault("teacher_backend", "vjepa2")
     payload.setdefault("teacher_feature_dim", 768)
     payload.setdefault("teacher_height", 160)
     payload.setdefault("teacher_width", 240)
-    payload.setdefault("teacher_pretrained_frames", 16)
-    payload.setdefault("teacher_input_frames", 49)
-    payload.setdefault("teacher_drop_first_frame", True)
-    payload.setdefault("num_frames", 69)
-    payload.setdefault("teacher_model_variant", "vit_base_patch16_224")
+    payload.setdefault("teacher_pretrained_frames", 64)
+    payload.setdefault("teacher_input_frames", 64)
+    payload.setdefault("teacher_drop_first_frame", False)
+    payload.setdefault("num_frames", 81)
+    payload.setdefault("teacher_model_variant", "vjepa2_1_vit_base_384")
     payload.setdefault("teacher_dtype", "bfloat16")
+    payload.setdefault("teacher_image_size", 384)
     payload.setdefault("teacher_offload_after_encode", True)
     payload.setdefault("student_tuning_mode", "lora")
     payload.setdefault("student_lora_rank", 16)
@@ -1509,7 +1544,8 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("student_lora_dropout", 0.0)
     payload.setdefault("student_memory_efficient_modulation", True)
     payload.setdefault("student_ffn_chunk_size", 512)
-    payload.setdefault("validation_every_steps", 300)
+    payload.setdefault("validation_every_steps", 0)
+    payload.setdefault("validation_every_epochs", 1)
     payload.setdefault("mini_val_max_samples", 8)
     payload.setdefault("student_target_block", 20)
     payload.setdefault("relation_tokens", 64)
@@ -1527,6 +1563,8 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         payload["allow_deepspeed_feature_hook_experimental"]
     )
     payload["teacher_offload_after_encode"] = _coerce_bool(payload["teacher_offload_after_encode"])
+    payload["teacher_drop_first_frame"] = _coerce_bool(payload["teacher_drop_first_frame"])
+    payload["teacher_backend"] = str(payload["teacher_backend"]).strip().lower()
     payload["student_tuning_mode"] = str(payload["student_tuning_mode"]).strip().lower()
     if payload["student_tuning_mode"] not in {"full", "lora"}:
         raise ValueError(f"Unsupported student_tuning_mode: {payload['student_tuning_mode']}")
@@ -1583,9 +1621,11 @@ def _resolve_teacher_checkpoint(teacher_dir: str, teacher_checkpoint_path: str =
     path = Path(teacher_dir)
     if path.is_file():
         return str(path)
-    candidates = sorted(path.rglob("*.pth"))
+    candidates = sorted(
+        list(path.rglob("*.pt")) + list(path.rglob("*.pth"))
+    )
     if not candidates:
-        raise FileNotFoundError(f"No teacher checkpoint .pth found under {teacher_dir}")
+        raise FileNotFoundError(f"No teacher checkpoint .pt/.pth found under {teacher_dir}")
     if len(candidates) > 1:
         raise FileNotFoundError(
             "Multiple teacher checkpoints found. "
@@ -1635,9 +1675,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_epochs", type=int, default=None)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=None)
     parser.add_argument("--num_frames", type=int, default=None)
+    parser.add_argument("--teacher_backend", type=str, default="")
     parser.add_argument("--teacher_repo_dir", type=str, default="")
     parser.add_argument("--teacher_checkpoint_dir", type=str, default="")
     parser.add_argument("--teacher_checkpoint_path", type=str, default="")
+    parser.add_argument("--teacher_model_variant", type=str, default="")
+    parser.add_argument("--teacher_input_frames", type=int, default=None)
+    parser.add_argument("--teacher_image_size", type=int, default=None)
+    parser.add_argument("--teacher_feature_dim", type=int, default=None)
+    parser.add_argument("--teacher_drop_first_frame", type=str, default="")
     parser.add_argument("--teacher_dtype", type=str, default="")
     parser.add_argument("--teacher_offload_after_encode", type=str, default="")
     parser.add_argument("--student_tuning_mode", type=str, default="")
@@ -1647,6 +1693,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--student_memory_efficient_modulation", type=str, default="")
     parser.add_argument("--student_ffn_chunk_size", type=int, default=None)
     parser.add_argument("--wandb_relation_image_every_steps", type=int, default=None)
+    parser.add_argument("--validation_every_steps", type=int, default=None)
+    parser.add_argument("--validation_every_epochs", type=int, default=None)
     parser.add_argument("--validation_runtime_mode", type=str, default="")
     parser.add_argument("--allow_deepspeed_feature_hook_experimental", type=str, default="")
     return parser.parse_args()

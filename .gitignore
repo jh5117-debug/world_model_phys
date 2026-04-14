@@ -46,6 +46,7 @@ third_party/videophy/asset/
 third_party/videophy/examples/
 third_party/videophy/VIDEOPHY2/examples/
 third_party/videophy/VIDEOPHY2/*.png
+third_party/vjepa2_official/
 
 # W&B
 wandb/

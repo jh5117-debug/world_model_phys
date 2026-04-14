@@ -826,5 +826,5 @@ def build_dataloader(
 def compute_scheduler_total_steps(dataset_len: int, num_processes: int, grad_accum: int, num_epochs: int) -> int:
     """Mirror the optimizer-step counting logic from Stage-1."""
     iters_per_epoch = math.ceil(dataset_len / num_processes)
-    steps_per_epoch = max(iters_per_epoch // grad_accum, 1)
+    steps_per_epoch = max(math.ceil(iters_per_epoch / grad_accum), 1)
     return max(num_epochs * steps_per_epoch, 1)

@@ -1296,3 +1296,895 @@ Overall
 - `LingBot-Stage1` 相比 `LingBot-base` 有稳定但温和的提升
 - 当前两者的主要短板都不是 `SA`，而是 `PC`
 - 也就是说，模型在“视频内容是否符合描述”上做得比“视频运动和交互是否足够物理合理”更好
+
+## 20. H20 上 Stage1/TRD 双 Student 训练排障与当前稳定方案
+
+这一节用于单独记录我们在 H20 上启动 `Stage1 / TRD / dual` 训练时遇到的全部关键问题、修复过程和当前稳定做法。
+
+### 20.1 当前训练目标与入口
+
+当前训练入口为：
+
+- [run_train_trd_v1_dual.sh](/home/hj/Multi-View-Physically-Consistent-World-Model/Physical_Consistency/scripts/run_train_trd_v1_dual.sh)
+- [run_train_trd_v1.sh](/home/hj/Multi-View-Physically-Consistent-World-Model/Physical_Consistency/scripts/run_train_trd_v1.sh)
+
+H20 上的实际启动目录为：
+
+- `/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys`
+
+当前常用命令为：
+
+```bash
+cd /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys
+git pull origin main
+
+GPU_LIST=0,1,2,3,4,5,6,7 \
+bash scripts/run_train_trd_v1_dual.sh \
+  --project_name intro-example \
+  --wandb_entity WorldModel_11 \
+  --num_frames 81
+```
+
+日志与 PID 文件位置为：
+
+- 完整日志：
+  - `/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/logs/train_trd_v1_dual.log`
+- PID 文件：
+  - `/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/logs/train_trd_v1_dual.pid`
+
+重新登录后建议的监控命令为：
+
+```bash
+tail -n 200 -F /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/logs/train_trd_v1_dual.log
+```
+
+### 20.2 Student、Teacher 与当前蒸馏链路
+
+当前这套训练不是“VideoREPA 提供 student backbone，再由我们套壳训练”，而是：
+
+- `student`：
+  - LingBot / Wan 自带的 `WanModel`
+- `teacher`：
+  - VideoREPA 侧的 `VideoMAEv2Teacher`
+- `distillation target`：
+  - student 中间 block token 与 teacher 输出 token 的 relation distillation
+
+更具体地说：
+
+- student 主干来自 `LingBot/Wan`
+- teacher 来自 `VideoREPA`
+- 当前默认从 student 的 `student_target_block = 20` 提取中间特征
+- loss 由两部分组成：
+  - `loss_fm`
+  - `loss_trd`
+- 总 loss 为：
+  - `loss_total = loss_fm + lambda_trd * loss_trd`
+
+### 20.3 `epoch`、`micro_step`、`optimizer step` 到底是什么意思
+
+当前配置中：
+
+- `num_epochs = 5`
+- `gradient_accumulation_steps = 4`
+
+因此训练时有两套“步数”：
+
+- `micro_step`
+  - 每处理一个 micro-batch 就加 `1`
+- `global_step`
+  - 只有累计满 `4` 个 micro-step，真正执行一次 `optimizer.step()` 时才加 `1`
+
+所以：
+
+- `4 micro-steps = 1 optimizer step = 1 global_step`
+
+H20 上当前训练计划日志会打印：
+
+```text
+[TRAIN PLAN] epochs=5 micro_steps_per_epoch=209 optimizer_steps_per_epoch=52 total_optimizer_steps=260 grad_accum=4 dataset_samples=1670 world_size=8
+```
+
+这意味着：
+
+- 总共训练 `5` 个 epoch
+- 每个 epoch 大约 `209` 个 micro-step
+- 每个 epoch 大约 `52` 个真正参数更新 step
+- 整个 run 总共大约 `260` 个 optimizer steps
+
+### 20.4 训练开始阶段最早遇到的两个核心问题
+
+#### 20.4.1 `LoRA + ZeRO-3 + block-level checkpointing` 的 metadata mismatch
+
+最初在引入 LoRA 以解决显存压力之后，训练会在 backward 重计算时直接报错：
+
+```text
+torch.utils.checkpoint: Recomputed values for the following tensors have different metadata than during the forward pass
+```
+
+根因是：
+
+- `LoRA`
+- `ZeRO-3`
+- 原始 block 级 `gradient checkpointing`
+
+三者组合后，在 backward 重算时 tensor metadata 不一致，导致 `checkpoint` 直接失败。
+
+第一阶段修复思路是：
+
+- LoRA 模式下先暂时跳过 student block 级 checkpointing
+
+对应修复 commit：
+
+- `c034245` Skip block checkpointing for LoRA student path
+
+#### 20.4.2 关闭 checkpointing 后立刻转成 OOM
+
+LoRA 生效之后，`after_accelerator_prepare` 的显存明显下降，但训练真正开始时又会报 CUDA OOM。
+
+典型表现为：
+
+- `after_accelerator_prepare` 只有 `9.68 GiB`
+- 但首个真实前向后，单卡会涨到 `88+ GiB`
+- 最终在 `54 MiB` 或 `136 MiB` 的额外分配上爆掉
+
+这不是 LoRA 失效，而是：
+
+- LoRA 主要节省的是可训练参数、梯度、优化器状态
+- 并不自动节省长时空序列的 activation
+- 一旦关闭 block 级 checkpointing，`81` 帧长序列 activation 会直接成为新的显存主因
+
+### 20.5 为什么 96G H20 之前还会 OOM
+
+最初 OOM 阶段，用户最关心的问题是：
+
+- H20 明明有 `96G`
+- 已经用了 `LoRA + ZeRO-3 + 一堆 trick`
+- 为什么还是会爆
+
+当前已经确认的解释如下。
+
+#### 20.5.1 `81` 帧下的 student 序列长度
+
+对于早期的 `81` 帧配置，student 的时空几何大致是：
+
+- `num_frames = 81`
+- latent grid:
+  - `T = 21`
+  - `H = 60`
+  - `W = 104`
+- patch size:
+  - `(1, 2, 2)`
+- 最终序列长度：
+  - `seq_len = 21 * 30 * 52 = 32760`
+
+#### 20.5.2 激活量级的直观估算
+
+以 hidden size 约 `5120`、`bf16` 为例，一个最基础的主激活张量：
+
+- `[1, 32760, 5120]`
+
+其大小约为：
+
+- `32760 * 5120 * 2 bytes ≈ 0.312 GiB`
+
+也就是说，仅一个主 `[B, S, D]` 级别张量就有三百多 MiB。
+
+而早期日志中反复出现的两个关键数字：
+
+- `54 MiB`
+- `136 MiB`
+
+也是能精确对应上的：
+
+- `54 MiB`
+  - 约对应 `student_ffn_chunk_size = 2048` 时，FFN 中间 chunk `[1, 2048, 13824]`
+- `136 MiB`
+  - 约对应 FFN 基座线性层一个 `bf16` 权重矩阵 `[13824, 5120]`
+
+因此，早期 OOM 的本质不是“LoRA 没起作用”，而是：
+
+- `long-sequence activation + ZeRO-3 参数 gather 峰值`
+
+### 20.6 中间加过的所有排障与省显存 trick
+
+这一路实际加过的关键手段如下。
+
+#### 20.6.1 显存与序列诊断日志
+
+为了先看清到底在哪一步炸，我们先后加入了：
+
+- `[SEQ GEOM]`
+  - 直接打印 `num_frames -> latent_grid -> seq_len`
+- `[GPU MEM]`
+  - `after_low_model_load`
+  - `after_high_model_load`
+  - `before_accelerator_prepare`
+  - `after_accelerator_prepare`
+  - `after_teacher_load`
+  - `after_teacher_encode`
+  - `step_*_start / after_forward / after_backward / after_optimizer_step / after_zero_grad`
+
+对应相关 commit：
+
+- `143d819` Add sequence geometry and per-step memory logs
+
+#### 20.6.2 减小 `student_ffn_chunk_size`
+
+为了减小 FFN 前向峰值，我们将：
+
+- `student_ffn_chunk_size: 2048 -> 512`
+
+这主要影响速度和单次前向分块，不是训练目标本身的改动。
+
+#### 20.6.3 重新开启兼容 LoRA 的 checkpointing
+
+后续为了把 activation 再压下去，我们没有回到原始那种会报 metadata mismatch 的路径，而是改成了更兼容的 reentrant checkpointing 方案。
+
+对应相关 commit：
+
+- `21213a6` Re-enable student checkpointing in a more compatible path
+
+#### 20.6.4 ZeRO-3 与 CPU param offload
+
+当前稳定路径中保留了：
+
+- `ZeRO-3`
+- `CPU param offload`
+
+注意：
+
+- 没有重新开启 `optimizer offload`
+- 因为之前它与当前 CUDA / torch / deepspeed 环境存在 CPUAdam 构建冲突风险
+
+#### 20.6.5 启动前强制清卡
+
+当前训练脚本会在启动前：
+
+- 检查目标 GPU 上已有 compute 进程
+- 直接强制 kill 掉这些进程
+
+相关日志形式为：
+
+```text
+[GPU RESET] Force killing existing compute PIDs on GPUs ...
+```
+
+这一步的目的不是“温柔恢复训练”，而是：
+
+- 强制结束旧训练
+- 释放 GPU 显存
+- 再启动新的 run
+
+### 20.7 `70` 帧与 `69` 帧问题：为什么后来默认变成了 `69`
+
+在前一轮省显存实验里，我们曾经尝试将帧数降低到 `70` 帧。
+
+结果出现了新的 shape 报错：
+
+```text
+shape '[1, 18, 4, 60, 104]' is invalid for input of size ...
+```
+
+根因是：
+
+- 旧版 `prepare_y()` 中一条 mask / temporal reshape 逻辑默认假设原始帧数满足 `1 + 4k`
+- `81 = 1 + 4 * 20`
+- `69 = 1 + 4 * 17`
+- `70` 不满足这个模式
+
+因此后来默认帧数先改成了：
+
+- `69`
+
+对应相关 commit：
+
+- `7e90c33` Make temporal mask construction robust
+- `28a0896` Default to `69` frames to satisfy `1 + 4k`
+
+### 20.8 这里的 `mask` 到底是什么
+
+这里的 `mask` 不是常见图像 inpainting 里的“黑色遮挡区域”。
+
+它更准确地说是一个：
+
+- `temporal conditioning mask`
+
+含义是：
+
+- 第一个时间步对应的 latent 条件是已知的
+- 后面时间步的条件是未知的
+
+也就是说，它表达的是：
+
+- “首帧我看见了”
+- “后面帧我没看见，你自己往后生成”
+
+它不是：
+
+- 在原图上遮一块黑色区域让模型补洞
+
+而是：
+
+- 在时间轴上指明“哪一帧是已知条件，哪一帧需要模型继续外推”
+
+### 20.9 后续遇到的运行期 / 日志期错误
+
+在显存问题被压住之后，后续报错主要不再是训练主体问题，而是日志、可视化和 CLI 兼容问题。
+
+按时间顺序，主要有以下几类。
+
+#### 20.9.1 `grad_norm is None`
+
+报错形式：
+
+```text
+float() argument must be a string or a real number, not 'NoneType'
+```
+
+根因：
+
+- 某些 deepspeed 路径下 `clip_grad_norm_()` 可能返回 `None`
+- 日志代码里直接 `float(None)` 导致崩溃
+
+对应修复 commit：
+
+- `845b717` Guard `grad_norm=None`
+
+#### 20.9.2 `bf16 tensor -> numpy` 失败
+
+报错形式：
+
+```text
+Got unsupported ScalarType BFloat16
+```
+
+根因：
+
+- relation matrix 可视化时直接对 `cpu + bf16` tensor 调用 `.numpy()`
+
+对应修复 commit：
+
+- `c11aa54` Convert relation matrices to `float32` before NumPy
+
+#### 20.9.3 `wandb.Image(BytesIO)` 失败
+
+报错形式：
+
+```text
+'_io.BytesIO' object has no attribute 'ndim'
+```
+
+根因：
+
+- 当前环境下的 wandb 版本不接受 `BytesIO` 直接作为 image data
+
+对应修复 commit：
+
+- `2fe9b0e` Convert matplotlib output to NumPy RGB before `wandb.Image`
+
+#### 20.9.4 `--num_frames 81` 一开始不能从 CLI 覆盖
+
+报错形式：
+
+```text
+error: unrecognized arguments: --num_frames 81
+```
+
+根因：
+
+- 训练 CLI 最初没有暴露 `--num_frames`
+
+对应修复 commit：
+
+- `5a0198a` Add `--num_frames` CLI override
+
+### 20.10 W&B 面板爆炸、loss 丢失与后续整理
+
+W&B 部分先后出现过三个独立问题。
+
+#### 20.10.1 面板从几十张裂变成 `321` 张
+
+根因：
+
+- 早期把 `step_9_after_forward_*` 这种“带步号的 metric 名称”直接写进了 W&B
+- W&B 会把每个新 metric 名都当作一个全新 panel
+
+对应修复 commit：
+
+- `25a9f46` Replace step-embedded metric names with stable progress/runtime metrics
+
+#### 20.10.2 `setup_mem` 图表几乎没意义
+
+这些图通常只有单个点，例如：
+
+- `after_low_model_load`
+- `after_accelerator_prepare`
+- `after_teacher_load`
+
+它们对排障有意义，但对日常盯训练几乎没有意义，因为：
+
+- 不形成趋势
+- 视觉噪音很大
+
+后续处理方式是：
+
+- 继续保留这些信息在日志里
+- 不再把它们放进 W&B
+
+对应修复 commit：
+
+- `acdaf11` Keep setup memory in logs only
+
+#### 20.10.3 训练 loss 明明在终端里变，但 W&B 里没有 `train/loss_*`
+
+这也是最容易误导人的一个问题。
+
+现象是：
+
+- 终端 `[PROGRESS]` 明明在打印：
+  - `loss_total`
+  - `loss_fm`
+  - `loss_trd`
+- 但 W&B 里却搜不到 `train/loss_total`
+
+根因已经定位清楚：
+
+- `runtime/gpu_mem/*` 一度按 `micro_step` 作为 W&B 内部 `step`
+- `train/*` 又按 `global_step` 作为 W&B 内部 `step`
+- W&B 要求内部 `step` 单调递增
+- 所以后写入的 `train/*` 被认为“step 倒退”，直接忽略
+
+对应修复 commit：
+
+- `558d888` Fix W&B train metric step ordering
+
+必须强调：
+
+- 这个修复只对 **新启动的 run** 生效
+- 已经开始跑的旧 run 不会自动补回缺失的 `train/loss_*`
+
+### 20.11 `nohup` 为什么还会被 SIGHUP 打断
+
+我们在一次 81 帧训练中，明明已经用了 `nohup`，但日志最后仍然出现：
+
+```text
+Received Signals.SIGHUP death signal, shutting down workers
+SignalException: Process ... got signal: 1
+```
+
+这不是：
+
+- OOM
+- 模型 forward / backward 出错
+- 别的训练抢占 GPU
+
+而是：
+
+- `accelerate launch`
+- `torch.distributed.run`
+- `torch elastic`
+
+这整条进程树没有真正完全脱离原始终端会话
+
+因此即使外层 shell 看起来用了 `nohup`，只要：
+
+- SSH 会话断开
+- 或终端控制会话发出 `SIGHUP`
+
+elastic 主进程仍可能收到 hangup 信号，然后主动把所有 worker 一起关掉。
+
+也就是说：
+
+- `nohup` 往往只能挡住一层
+- 但不一定能完全挡住 `accelerate + elastic` 整条进程树
+
+### 20.12 后台启动链路的最终加固
+
+为了解决上面的 `SIGHUP` 问题，后台启动脚本后来经历了两轮加固。
+
+#### 20.12.1 第一轮：`setsid + exec + </dev/null`
+
+对应 commit：
+
+- `b97e87a` Detach TRD launches from terminal session
+
+#### 20.12.2 第二轮：Python launcher + `start_new_session=True`
+
+最终更稳的版本不再只是把 `accelerate` 当作当前 shell 的后台 job，而是：
+
+- 先启动一个很短命的 Python launcher
+- 再由它派生真正训练进程
+
+新派生出的训练进程会：
+
+- `stdin = /dev/null`
+- `stdout/stderr -> log file`
+- `close_fds = True`
+- `start_new_session = True`
+
+对应 commit：
+
+- `2143f60` Harden detached TRD launcher against SSH hangups
+
+当前推荐理解是：
+
+- 旧版 `nohup`：
+  - 对普通单进程脚本通常够用
+- 当前加固版 detached launcher：
+  - 更适合 `accelerate + deepspeed + torch elastic` 这种多层训练栈
+
+### 20.13 当前已经稳定跑起来的结论
+
+截至目前，我们已经确认：
+
+- 训练可以在 H20 上稳定进入真正的 optimizer step
+- 不再卡在最早的 metadata mismatch
+- 不再卡在最早的 `88+ GiB` OOM
+- 不再卡在 `70` 帧的 shape mismatch
+- 不再卡在 `grad_norm=None`
+- 不再卡在 `bf16 -> numpy`
+- 不再卡在 `wandb.Image(BytesIO)`
+- 启动方式也已经加强到更抗 `SIGHUP`
+
+当前在 `81` 帧下的典型日志如下：
+
+```text
+[TRAIN PLAN] epochs=5 micro_steps_per_epoch=209 optimizer_steps_per_epoch=52 total_optimizer_steps=260 grad_accum=4 dataset_samples=1670 world_size=8
+[SEQ GEOM] num_frames=81 latent_grid=(21,60,104) patch_size=(1, 2, 2) seq_len=32760
+[PROGRESS] epoch=1/5 global_step=19/260 micro_step=76 accum=4/4 loss_total=... loss_fm=... loss_trd=... peak_mem=... eta=...
+```
+
+在目前这条稳定路径下，`81` 帧训练的单步峰值显存大约为：
+
+- `16.6 GiB ~ 19.2 GiB`
+
+这和最开始的 OOM 阶段差很多，根因不是 H20 变了，而是训练策略已经改变为：
+
+- LoRA
+- ZeRO-3
+- CPU param offload
+- 兼容 LoRA 的 checkpointing
+- 更小的 FFN chunk
+- 额外的 memory-oriented patch
+
+这些组合起来，已经把最初的 activation / parameter 双重显存压力一起拆掉了。
+
+### 20.14 这些 trick 对精度的影响边界
+
+当前加过的 trick 并不都一样。
+
+#### 20.14.1 基本只影响速度 / 显存，不直接改变训练目标的
+
+- `ZeRO-3`
+- `CPU param offload`
+- `gradient checkpointing`
+- `student_ffn_chunk_size`
+- `nohup / setsid / detached launcher`
+- W&B / 日志重构
+
+这些通常只改变：
+
+- 显存占用
+- 前向 / 反向分块方式
+- 日志与可观测性
+
+理论上不应显著改变最终优化目标。
+
+#### 20.14.2 会真正影响训练上限或任务定义的
+
+- `LoRA`
+- 历史上把 `81` 帧改成 `69` 帧这件事
+
+其中：
+
+- `LoRA`
+  - 把“全量微调”改成“低秩适配”
+  - 更省显存，但最终容量上限可能低于 full fine-tune
+- `81 -> 69`
+  - 会改变时间范围与 temporal relation 建模范围
+
+当前最新稳定实验已经重新把帧数切回：
+
+- `81`
+
+因此现在与最初原设定相比，最大的保守项主要还剩：
+
+- `LoRA` 仍然存在
+
+### 20.15 当前最推荐的终端监控方式
+
+当前终端最有用的日志不是刷屏式进度条，而是这几类：
+
+- `[TRAIN PLAN]`
+- `[SEQ GEOM]`
+- `[PROGRESS]`
+- 关键阶段的 `[GPU MEM]`
+- 错误与 traceback
+
+其中：
+
+- `[PROGRESS]` 已经等价于“文字版进度条”
+- 会直接告诉你：
+  - 当前第几个 epoch
+  - 当前 `global_step / total_optimizer_steps`
+  - 当前 `micro_step`
+  - 当前 `loss_total / loss_fm / loss_trd`
+  - 当前 `lr`
+  - 当前 step 耗时
+  - 当前 ETA
+
+例如：
+
+```text
+[PROGRESS] epoch=1/5 global_step=19/260 micro_step=76 accum=4/4 loss_total=... lr=... peak_mem=... eta=11h45m
+```
+
+这条日志本身就已经能回答：
+
+- “现在走到哪了”
+- “loss 在不在更新”
+- “还要多久跑完”
+- “显存是否稳定”
+
+### 20.16 当前最推荐的操作性结论
+
+如果目标是：
+
+- H20 上真正把 `Stage1 / TRD / dual` 稳定跑起来
+- 并且尽可能接近最初想测的 `81` 帧设定
+
+那么当前最推荐做法是：
+
+1. 使用最新主线脚本启动
+2. 用 `--num_frames 81` 明确覆盖
+3. 启动后允许脚本在后台 detached 运行
+4. 重新登录后用 `tail -F` 看日志
+5. 把 `W&B train/loss_*` 的可视化检查放在“新启动且包含 `558d888` 之后的 run”上
+
+推荐命令如下：
+
+```bash
+cd /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys
+git pull origin main
+
+GPU_LIST=0,1,2,3,4,5,6,7 \
+bash scripts/run_train_trd_v1_dual.sh \
+  --project_name intro-example \
+  --wandb_entity WorldModel_11 \
+  --num_frames 81
+```
+
+之后重新登录查看：
+
+```bash
+tail -n 200 -F /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/logs/train_trd_v1_dual.log
+```
+
+如果要手动停掉当前 run，优先使用：
+
+```bash
+kill "$(cat /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/logs/train_trd_v1_dual.pid)"
+```
+
+如果发现 PID 已不存在，再结合：
+
+```bash
+ps -ef | grep physical_consistency.cli.train_trd_v1 | grep -v grep
+nvidia-smi
+```
+
+判断是否其实已经退出。
+
+### 20.17 这一轮 H20 训练问题对应的关键 commit 列表
+
+本轮 `Stage1 / TRD / dual` 训练排障过程中，最关键的提交包括：
+
+- `c034245`
+  - LoRA 模式下先跳过 student block checkpointing，绕开 metadata mismatch
+- `143d819`
+  - 增加 `[SEQ GEOM]`、per-step `[GPU MEM]`、降低 `student_ffn_chunk_size`
+- `21213a6`
+  - 恢复更兼容的 student checkpointing、保留 ZeRO-3 与 CPU param offload、启动前清卡
+- `7e90c33`
+  - 让 temporal mask / `prepare_y()` 对边界帧数更稳
+- `28a0896`
+  - 默认切到 `69` 帧以满足 `1 + 4k`
+- `845b717`
+  - 修复 `grad_norm=None`
+- `c11aa54`
+  - 修复 `bf16` relation matrix 转 `numpy`
+- `2f7c362`
+  - 引入 `nohup + full log + tail` 的启动方式
+- `2fe9b0e`
+  - 修复 `wandb.Image(BytesIO)` 问题
+- `25a9f46`
+  - 引入 `[TRAIN PLAN]` / `[PROGRESS]`，重构 runtime/progress 监控
+- `5a0198a`
+  - 增加 `--num_frames` CLI 覆盖
+- `acdaf11`
+  - `setup_mem` 仅写日志，不再污染 W&B
+- `558d888`
+  - 修复 `train/loss_*` 因 W&B step 冲突而丢失的问题
+- `b97e87a`
+  - 第一轮：让训练尽量脱离终端 session
+- `2143f60`
+  - 第二轮：使用 Python launcher + `start_new_session=True` 强化抗 `SIGHUP`
+
+### 20.18 最终一句话总结
+
+这轮 H20 训练链路目前已经从“最初几乎必炸的 OOM / checkpoint / wandb / SIGHUP 混合状态”，收敛到了：
+
+- `81` 帧可启动
+- 多卡 `dual` 训练可进入稳定 optimizer step
+- 终端日志可直接看到 loss、步数、ETA、显存
+- 后台 detached 启动方式更稳
+
+当前真正需要持续关注的，已经不再是“这套链路能不能跑”，而是：
+
+- `LoRA` 路线下最终精度上限如何
+- `train/loss_*` 与后续验证结果是否收敛稳定
+- 是否要进一步回到更接近 full fine-tune 的原始训练设定
+
+## 21. V-JEPA 2.1 官方 Teacher 替换方案
+
+### 21.1 变更目标
+
+在不破坏当前已经稳定跑通的 `Stage1 / TRD / dual` 主训练骨架前提下，将 frozen teacher 从 `VideoMAEv2` 切换为 **官方 V-JEPA 2.1**。
+
+约束：
+
+- 必须使用官方代码
+- 必须使用官方权重
+- 不直接 `git clone` 官方 repo 到 `third_party`，避免嵌套 git
+- 仍然保留现有 `TeacherEncoder -> TeacherFeatures -> TRD loss` 框架
+- 验证从“按 step 触发”改成“每个 epoch 结束触发一次”
+
+### 21.2 采用的官方来源
+
+代码：
+
+- 官方 GitHub：`https://github.com/facebookresearch/vjepa2`
+
+权重：
+
+- 官方公开权重下载域：`https://dl.fbaipublicfiles.com/vjepa2/`
+
+当前默认采用的 teacher 变体：
+
+- `vjepa2_1_vit_base_384`
+- 对应权重：`vjepa2_1_vitb_dist_vitG_384.pt`
+
+选择这个 base 版本的原因：
+
+- 官方
+- `feature_dim = 768`，能直接兼容现有 projector / `teacher_feature_dim`
+- 当前环境没有 `xformers`，base 版本风险最低
+
+### 21.3 代码改动概览
+
+新增：
+
+- `src/physical_consistency/teachers/vjepa2.py`
+  - 新增 `VJEPA21Teacher`
+  - 使用官方 `src/hub/backbones.py`
+  - 只加载 encoder，不改动现有 TRD teacher 接口
+
+修改：
+
+- `src/physical_consistency/trainers/trd_v1.py`
+  - 新增 `teacher_backend` 分发
+  - `teacher_backend=vjepa2` 时实例化 `VJEPA21Teacher`
+  - 支持 `.pt` 权重解析
+  - 训练改为每个 epoch 结束触发验证
+  - `optimizer_steps_per_epoch` 改为按 `ceil` 计算，更贴近真实更新次数
+
+- `src/physical_consistency/trainers/stage1_components.py`
+  - `compute_scheduler_total_steps()` 改为按 `ceil` 计算，避免调度器步数比真实 optimizer step 少
+
+- `configs/train_trd_v1.yaml`
+  - teacher 默认从 `VideoMAEv2` 切到 `V-JEPA 2.1`
+  - 默认 `num_frames` 保持为当前稳定跑通的 `81`
+  - 验证改为 `validation_every_epochs: 1`
+
+- `scripts/fetch_vjepa2_official.sh`
+  - 下载官方 source archive 到 `third_party/vjepa2_official`
+  - 下载官方 checkpoint 到 `../weight/vjepa2_1`
+  - 无嵌套 `.git`
+
+### 21.4 当前默认路径
+
+相对于 `world_model_phys` 项目根目录：
+
+- teacher 代码目录：
+  - `third_party/vjepa2_official`
+
+- teacher 权重目录：
+  - `../weight/vjepa2_1`
+
+在 H20 上对应的目标路径就是：
+
+- 代码：
+  - `/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/third_party/vjepa2_official`
+
+- 权重：
+  - `/home/nvme03/workspace/world_model_phys/PHYS/weight/vjepa2_1`
+
+### 21.5 当前默认 teacher 配置
+
+- `teacher_backend: vjepa2`
+- `teacher_model_variant: vjepa2_1_vit_base_384`
+- `teacher_checkpoint_dir: ../weight/vjepa2_1`
+- `teacher_image_size: 384`
+- `teacher_input_frames: 64`
+- `teacher_drop_first_frame: false`
+- `teacher_feature_dim: 768`
+
+对应关系是：
+
+- student 仍然吃当前训练视频帧数（当前默认 `81`）
+- teacher 会从这段视频里均匀采样 `64` 帧
+- teacher 输出 token 后，TRD loss 仍通过现有 `_match_time()` 自动对齐时间维
+
+### 21.6 验证触发方式
+
+之前：
+
+- `validation_every_steps: 300`
+
+现在：
+
+- `validation_every_steps: 0`
+- `validation_every_epochs: 1`
+
+也就是：
+
+- 不再按 step 触发验证
+- 每个 epoch 结束后触发一次验证流程
+
+### 21.7 H20 上的推荐执行顺序
+
+先停当前旧 teacher 训练：
+
+```bash
+kill "$(cat /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/logs/train_trd_v1_dual.pid)" 2>/dev/null || true
+pkill -u "$USER" -f "physical_consistency.cli.train_trd_v1" 2>/dev/null || true
+nvidia-smi
+```
+
+拉最新代码：
+
+```bash
+cd /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys
+git pull origin main
+```
+
+下载官方 V-JEPA 2.1 代码与权重：
+
+```bash
+cd /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys
+bash scripts/fetch_vjepa2_official.sh
+```
+
+如外网不稳，可先尝试：
+
+```bash
+bash /home/nvme01/clash-for-linux/start.sh
+source /home/nvme01/clash-for-linux/clash.sh && proxy_on
+```
+
+然后重启训练：
+
+```bash
+cd /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys
+
+GPU_LIST=0,1,2,3,4,5,6,7 \
+bash scripts/run_train_trd_v1_dual.sh \
+  --project_name intro-example \
+  --wandb_entity WorldModel_11
+```
+
+重新登录后查看日志：
+
+```bash
+tail -n 200 -F /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/logs/train_trd_v1_dual.log
+```
