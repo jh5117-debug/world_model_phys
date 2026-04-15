@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -129,7 +130,7 @@ def run_videophy2_for_seed(
         )
         output_csv = output_root / f"output_{task.lower()}.csv"
         cmd = [
-            "python",
+            sys.executable,
             "inference.py",
             "--input_csv",
             str(input_csv),

@@ -3,6 +3,8 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
+# shellcheck disable=SC1091
+source "${PROJECT_ROOT}/scripts/lib_videophy2_env.sh"
 ENV_FILE="${ENV_FILE:-${PROJECT_ROOT}/configs/path_config_cluster.env}"
 set -a
 if [[ -f "${ENV_FILE}" ]]; then
@@ -16,6 +18,7 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}}"
 CONFIG_PATH="${PROJECT_ROOT}/configs/videophy2_eval.yaml"
 EXPERIMENT_NAME=""
 GENERATED_ROOT=""
+VIDEOPHY2_PYTHON="${VIDEOPHY2_PYTHON:-$(resolve_videophy2_python "${PROJECT_ROOT}")}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,13 +48,18 @@ done
 run_one() {
   local experiment_name="$1"
   local generated_root="$2"
-  python -m physical_consistency.cli.run_videophy2 \
+  "${VIDEOPHY2_PYTHON}" -m physical_consistency.cli.run_videophy2 \
     --config "${CONFIG_PATH}" \
     --env_file "${ENV_FILE}" \
     --experiment_name "${experiment_name}" \
     --manifest_csv "${MANIFEST}" \
     --generated_root "${generated_root}"
 }
+
+if ! verify_videophy2_python "${VIDEOPHY2_PYTHON}" "${PROJECT_ROOT}"; then
+  echo "[ERROR] VideoPhy-2 python preflight failed: ${VIDEOPHY2_PYTHON}" >&2
+  exit 1
+fi
 
 if [[ -n "${EXPERIMENT_NAME}" ]]; then
   if [[ -z "${GENERATED_ROOT}" ]]; then

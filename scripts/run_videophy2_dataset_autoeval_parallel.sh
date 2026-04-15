@@ -3,6 +3,8 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
+# shellcheck disable=SC1091
+source "${PROJECT_ROOT}/scripts/lib_videophy2_env.sh"
 
 declare -A PRESERVED_ENV_VARS=()
 PRESERVE_KEYS=(
@@ -26,6 +28,7 @@ PRESERVE_KEYS=(
   MAX_ROWS_PER_GPU
   VIDEOPHY2_QUIET
   VIDEOPHY2_SUMMARY_STDOUT
+  VIDEOPHY2_PYTHON
 )
 for key in "${PRESERVE_KEYS[@]}"; do
   if [[ -v "${key}" ]]; then
@@ -80,6 +83,7 @@ KILL_GRACE_SEC="${KILL_GRACE_SEC:-5}"
 MAX_ROWS_PER_GPU="${MAX_ROWS_PER_GPU:-0}"
 VIDEOPHY2_QUIET="${VIDEOPHY2_QUIET:-0}"
 VIDEOPHY2_SUMMARY_STDOUT="${VIDEOPHY2_SUMMARY_STDOUT:-1}"
+VIDEOPHY2_PYTHON="${VIDEOPHY2_PYTHON:-$(resolve_videophy2_python "${PROJECT_ROOT}")}"
 
 if [[ ! -f "${MANIFEST}" ]]; then
   echo "[ERROR] Manifest not found: ${MANIFEST}" >&2
@@ -95,6 +99,11 @@ if [[ ! -f "${VIDEOPHY_REPO_DIR}/VIDEOPHY2/inference.py" ]]; then
 fi
 if [[ ! -d "${VIDEOPHY2_CKPT_DIR}" ]]; then
   echo "[ERROR] VideoPhy-2 checkpoint dir not found at ${VIDEOPHY2_CKPT_DIR}" >&2
+  exit 1
+fi
+if ! verify_videophy2_python "${VIDEOPHY2_PYTHON}" "${PROJECT_ROOT}"; then
+  echo "[ERROR] VideoPhy-2 python preflight failed: ${VIDEOPHY2_PYTHON}" >&2
+  echo "[ERROR] Install missing deps in the dedicated eval env or override VIDEOPHY2_PYTHON." >&2
   exit 1
 fi
 
@@ -139,6 +148,7 @@ log "Manifest video column: ${MANIFEST_VIDEO_COLUMN}"
 log "Manifest caption column: ${MANIFEST_CAPTION_COLUMN}"
 log "VideoPhy torch dtype: ${VIDEOPHY_TORCH_DTYPE}"
 log "Checkpoint dir: ${VIDEOPHY2_CKPT_DIR}"
+log "VideoPhy-2 python: ${VIDEOPHY2_PYTHON}"
 log "GPU list: ${GPU_LIST}"
 log "Experiment: ${EXPERIMENT_NAME}"
 if [[ "${VIDEOPHY2_QUIET}" != "1" ]]; then
@@ -247,7 +257,7 @@ for shard_idx in "${!GPUS[@]}"; do
   if [[ "${VIDEOPHY2_QUIET}" == "1" ]]; then
     runner_log="${OUTPUT_ROOT}/runs/eval/videophy2/${shard_experiment}/seed_${SEED}/videophy2_runner.log"
     mkdir -p "$(dirname "${runner_log}")"
-    CUDA_VISIBLE_DEVICES="${gpu}" python -m physical_consistency.cli.run_videophy2 \
+    CUDA_VISIBLE_DEVICES="${gpu}" "${VIDEOPHY2_PYTHON}" -m physical_consistency.cli.run_videophy2 \
       --config "${CONFIG_PATH}" \
       --env_file "${ENV_FILE}" \
       --experiment_name "${shard_experiment}" \
@@ -262,7 +272,7 @@ for shard_idx in "${!GPUS[@]}"; do
       --output_root "${OUTPUT_ROOT}" \
       --seed "${SEED}" >"${runner_log}" 2>&1 &
   else
-    CUDA_VISIBLE_DEVICES="${gpu}" python -m physical_consistency.cli.run_videophy2 \
+    CUDA_VISIBLE_DEVICES="${gpu}" "${VIDEOPHY2_PYTHON}" -m physical_consistency.cli.run_videophy2 \
       --config "${CONFIG_PATH}" \
       --env_file "${ENV_FILE}" \
       --experiment_name "${shard_experiment}" \
@@ -378,7 +388,7 @@ PY
 
 if [[ "${VIDEOPHY2_SUMMARY_STDOUT}" == "1" ]]; then
   log "[SUMMARY] Writing aggregate summary for ${EXPERIMENT_NAME}"
-  python -m physical_consistency.cli.run_videophy2 \
+  "${VIDEOPHY2_PYTHON}" -m physical_consistency.cli.run_videophy2 \
     --config "${CONFIG_PATH}" \
     --env_file "${ENV_FILE}" \
     --experiment_name "${EXPERIMENT_NAME}" \
@@ -387,7 +397,7 @@ if [[ "${VIDEOPHY2_SUMMARY_STDOUT}" == "1" ]]; then
 
   log "[DONE] Parallel VideoPhy-2 AutoEval summary written to ${BASE_OUTPUT}/summary.json"
 else
-  python -m physical_consistency.cli.run_videophy2 \
+  "${VIDEOPHY2_PYTHON}" -m physical_consistency.cli.run_videophy2 \
     --config "${CONFIG_PATH}" \
     --env_file "${ENV_FILE}" \
     --experiment_name "${EXPERIMENT_NAME}" \

@@ -3,6 +3,8 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
+# shellcheck disable=SC1091
+source "${PROJECT_ROOT}/scripts/lib_videophy2_env.sh"
 
 log() {
   printf '[%s] %s\n' "$(date '+%F %T')" "$*"
@@ -28,6 +30,7 @@ STAGE1_GENERATED_ROOT="${STAGE1_GENERATED_ROOT:-${OUTPUT_ROOT}/runs/eval/exp_sta
 STATUS_EVERY_SEC="${STATUS_EVERY_SEC:-30}"
 KILL_EXISTING_GPU_PIDS="${KILL_EXISTING_GPU_PIDS:-0}"
 KILL_GRACE_SEC="${KILL_GRACE_SEC:-5}"
+VIDEOPHY2_PYTHON="${VIDEOPHY2_PYTHON:-$(resolve_videophy2_python "${PROJECT_ROOT}")}"
 
 if [[ ! -f "${MANIFEST}" ]]; then
   echo "[INFO] ${MANIFEST} missing, building fixed validation manifests..."
@@ -41,6 +44,10 @@ fi
 
 if [[ ! -d "${VIDEOPHY2_CKPT_DIR}" ]]; then
   echo "[ERROR] VideoPhy-2 checkpoint dir not found at ${VIDEOPHY2_CKPT_DIR}" >&2
+  exit 1
+fi
+if ! verify_videophy2_python "${VIDEOPHY2_PYTHON}" "${PROJECT_ROOT}"; then
+  echo "[ERROR] VideoPhy-2 python preflight failed: ${VIDEOPHY2_PYTHON}" >&2
   exit 1
 fi
 
@@ -79,6 +86,7 @@ log "Project root: ${PROJECT_ROOT}"
 log "Config: ${CONFIG_PATH}"
 log "Manifest: ${MANIFEST}"
 log "Checkpoint dir: ${VIDEOPHY2_CKPT_DIR}"
+log "VideoPhy-2 python: ${VIDEOPHY2_PYTHON}"
 log "GPU list: ${GPU_LIST}"
 log "Target GPU processes before launch:"
 print_target_gpu_processes "${GPU_LIST}" || true
@@ -121,7 +129,7 @@ run_one_seed() {
   fi
 
   log "[RUN][GPU ${gpu}] ${experiment_name} seed=${seed}"
-  CUDA_VISIBLE_DEVICES="${gpu}" python -m physical_consistency.cli.run_videophy2 \
+  CUDA_VISIBLE_DEVICES="${gpu}" "${VIDEOPHY2_PYTHON}" -m physical_consistency.cli.run_videophy2 \
     --config "${CONFIG_PATH}" \
     --env_file "${ENV_FILE}" \
     --experiment_name "${experiment_name}" \
@@ -200,7 +208,7 @@ fi
 
 for experiment_name in exp_base_zeroshot exp_stage1_epoch2; do
   log "[SUMMARY] Writing aggregate summary for ${experiment_name}"
-  python -m physical_consistency.cli.run_videophy2 \
+  "${VIDEOPHY2_PYTHON}" -m physical_consistency.cli.run_videophy2 \
     --config "${CONFIG_PATH}" \
     --env_file "${ENV_FILE}" \
     --experiment_name "${experiment_name}" \
