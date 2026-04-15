@@ -4,6 +4,35 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
 
+declare -A PRESERVED_ENV_VARS=()
+PRESERVE_KEYS=(
+  CONFIG_PATH
+  EXPERIMENT_NAME
+  MANIFEST
+  VIDEO_SOURCE_ROOT
+  VIDEO_SOURCE_MODE
+  MANIFEST_VIDEO_COLUMN
+  MANIFEST_CAPTION_COLUMN
+  VIDEOPHY_TORCH_DTYPE
+  OUTPUT_ROOT
+  VIDEOPHY_REPO_DIR
+  VIDEOPHY2_CKPT_DIR
+  VIDEO_FILENAME
+  GPU_LIST
+  SEED
+  STATUS_EVERY_SEC
+  KILL_EXISTING_GPU_PIDS
+  KILL_GRACE_SEC
+  MAX_ROWS_PER_GPU
+  VIDEOPHY2_QUIET
+  VIDEOPHY2_SUMMARY_STDOUT
+)
+for key in "${PRESERVE_KEYS[@]}"; do
+  if [[ -v "${key}" ]]; then
+    PRESERVED_ENV_VARS["${key}"]="${!key}"
+  fi
+done
+
 log() {
   local message="$*"
   if [[ "${VIDEOPHY2_QUIET:-0}" == "1" ]]; then
@@ -25,6 +54,11 @@ if [[ -f "${ENV_FILE}" ]]; then
   source "${ENV_FILE}"
   set +a
 fi
+
+for key in "${!PRESERVED_ENV_VARS[@]}"; do
+  printf -v "${key}" '%s' "${PRESERVED_ENV_VARS[${key}]}"
+  export "${key}"
+done
 
 CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/configs/videophy2_dataset_autoeval.yaml}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-exp_dataset_val_autoeval_parallel}"
