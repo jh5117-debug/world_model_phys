@@ -72,6 +72,9 @@ def test_materialize_dataset_view_keeps_test_split_symlink(tmp_path: Path):
     dataset_dir = tmp_path / "processed_csgo_v3"
     for split in ["train", "val", "test"]:
         (dataset_dir / split).mkdir(parents=True)
+    clip_dir = dataset_dir / "test" / "clips" / "clip_0000"
+    clip_dir.mkdir(parents=True)
+    (clip_dir / "image.jpg").write_text("image", encoding="utf-8")
     rows = [
         {
             "prompt": "demo",
