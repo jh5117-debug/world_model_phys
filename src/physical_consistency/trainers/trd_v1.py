@@ -20,6 +20,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
 from accelerate import DistributedType
 from accelerate.utils import (
     DataLoaderConfiguration,
@@ -1044,7 +1045,7 @@ class TRDTrainingRunner:
         include_optimizer: bool = False,
         include_scheduler: bool = False,
     ) -> Callable[[dict[str, torch.Tensor], nn.Module], dict[str, Any]]:
-        optimizer_state = self.optimizer.state_dict() if include_optimizer else None
+        optimizer_state = self._gather_optimizer_resume_state() if include_optimizer else None
         scheduler_state = self.scheduler.state_dict() if include_scheduler else None
 
         def _factory(bundle_state: dict[str, torch.Tensor], _unwrapped: nn.Module) -> dict[str, Any]:
@@ -1060,6 +1061,23 @@ class TRDTrainingRunner:
             )
 
         return _factory
+
+    def _gather_optimizer_resume_state(self) -> dict[str, Any] | list[dict[str, Any]]:
+        optimizer_state = self.optimizer.state_dict()
+        if self.accelerator.distributed_type != DistributedType.DEEPSPEED:
+            return optimizer_state
+        if not dist.is_available() or not dist.is_initialized() or self.accelerator.num_processes <= 1:
+            return [optimizer_state]
+
+        gathered_states: list[dict[str, Any]] | None = [None] * self.accelerator.num_processes if self.accelerator.is_main_process else None
+        dist.gather_object(
+            optimizer_state,
+            object_gather_list=gathered_states,
+            dst=0,
+        )
+        if self.accelerator.is_main_process:
+            return gathered_states
+        return [optimizer_state]
 
     def _release_training_runtime(self) -> None:
         self.teacher = None

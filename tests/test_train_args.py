@@ -512,3 +512,35 @@ def test_build_training_state_payload_from_bundle_state_uses_full_lora_tensors(t
     assert payload["high_lora"]["blocks.1.self_attn.k.lora_B.weight"].shape == (5120, 16)
     assert all(tensor.numel() > 0 for tensor in payload["low_lora"].values())
     assert all(tensor.numel() > 0 for tensor in payload["high_lora"].values())
+
+
+def test_gather_optimizer_resume_state_collects_all_deepspeed_ranks(monkeypatch):
+    runner = object.__new__(TRDTrainingRunner)
+    runner.accelerator = _DummyAccelerator()
+    runner.accelerator.distributed_type = trd_v1_module.DistributedType.DEEPSPEED
+    runner.accelerator.num_processes = 4
+    runner.accelerator.is_main_process = True
+    runner.optimizer = type(
+        "_DummyOptimizer",
+        (),
+        {"state_dict": lambda self: {"rank": 0, "state": {"dummy": 1}}},
+    )()
+
+    monkeypatch.setattr(trd_v1_module.dist, "is_available", lambda: True)
+    monkeypatch.setattr(trd_v1_module.dist, "is_initialized", lambda: True)
+
+    def _fake_gather_object(obj, object_gather_list, dst):
+        del dst
+        object_gather_list[:] = [
+            obj,
+            {"rank": 1, "state": {"dummy": 2}},
+            {"rank": 2, "state": {"dummy": 3}},
+            {"rank": 3, "state": {"dummy": 4}},
+        ]
+
+    monkeypatch.setattr(trd_v1_module.dist, "gather_object", _fake_gather_object)
+
+    gathered = runner._gather_optimizer_resume_state()
+
+    assert isinstance(gathered, list)
+    assert [item["rank"] for item in gathered] == [0, 1, 2, 3]
