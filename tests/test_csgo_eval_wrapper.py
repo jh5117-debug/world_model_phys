@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 from physical_consistency.eval import csgo_metrics
 
@@ -27,6 +28,7 @@ def test_single_gpu_eval_disables_fsdp_and_passs_control_type(tmp_path, monkeypa
 
     monkeypatch.setattr(csgo_metrics, "materialize_dataset_view", fake_materialize_dataset_view)
     monkeypatch.setattr(csgo_metrics, "run_command", fake_run_command)
+    monkeypatch.setattr(csgo_metrics, "_find_free_port", lambda: 45678)
 
     cfg = csgo_metrics.CSGOEvalConfig(
         experiment_name="exp_base_smoke_one",
@@ -61,7 +63,15 @@ def test_single_gpu_eval_disables_fsdp_and_passs_control_type(tmp_path, monkeypa
     )
 
     cmd = captured["cmd"]
-    assert cmd[:3] == ["torchrun", "--nproc_per_node=1", "eval_batch.py"]
+    assert cmd[:7] == [
+        sys.executable,
+        "-m",
+        "torch.distributed.run",
+        "--nproc_per_node=1",
+        "--master_port",
+        "45678",
+        "eval_batch.py",
+    ]
     assert "--control_type" in cmd
     assert cmd[cmd.index("--control_type") + 1] == "act"
     assert "--ulysses_size" in cmd

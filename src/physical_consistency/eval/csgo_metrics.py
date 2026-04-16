@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import socket
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +26,13 @@ from physical_consistency.eval.checkpoint_bundle import materialize_eval_checkpo
 from physical_consistency.datasets.manifest_builder import hash_manifest, materialize_dataset_view
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _find_free_port() -> int:
+    """Ask the OS for an unused local TCP port for torchrun rendezvous."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("", 0))
+        return int(sock.getsockname()[1])
 
 
 @dataclass(slots=True)
@@ -141,10 +150,15 @@ def run_single_seed_eval(
     )
     effective_num_gpus = max(1, cfg.num_gpus)
     effective_ulysses_size = max(1, min(cfg.ulysses_size, effective_num_gpus))
+    master_port = int(os.environ.get("EVAL_MASTER_PORT", "0") or 0) or _find_free_port()
 
     batch_cmd = [
-        "torchrun",
+        sys.executable,
+        "-m",
+        "torch.distributed.run",
         f"--nproc_per_node={effective_num_gpus}",
+        "--master_port",
+        str(master_port),
         "eval_batch.py",
         "--ckpt_dir",
         base_model_dir,
