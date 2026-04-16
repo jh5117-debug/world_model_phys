@@ -42,14 +42,14 @@ def materialize_eval_checkpoint_bundle(
     allow_stage1_fallback: bool = False,
 ) -> Path:
     """Create a full two-branch eval directory and make branch provenance explicit."""
-    ft_root = Path(ft_ckpt_dir)
-    stage1_root = Path(stage1_ckpt_dir) if stage1_ckpt_dir else None
+    ft_root = Path(ft_ckpt_dir).resolve()
+    stage1_root = Path(stage1_ckpt_dir).resolve() if stage1_ckpt_dir else None
 
     bundle_key = hashlib.sha256(
         "|".join(
             [
-                str(ft_root.resolve()),
-                str(stage1_root.resolve()) if stage1_root else "",
+                str(ft_root),
+                str(stage1_root) if stage1_root else "",
                 experiment_name,
                 str(int(allow_stage1_fallback)),
             ]

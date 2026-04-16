@@ -27,3 +27,23 @@ def test_materialize_eval_checkpoint_bundle_with_stage1_fallback(tmp_path):
     assert (bundle_dir / "low_noise_model").is_symlink()
     assert (bundle_dir / "high_noise_model").is_symlink()
     assert (bundle_dir / "bundle_manifest.json").exists()
+
+
+def test_materialize_eval_checkpoint_bundle_supports_relative_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    ft_ckpt = tmp_path / "checkpoints" / "exp" / "epoch_1"
+    output_root = tmp_path / "relative_out"
+
+    _write_branch(ft_ckpt, "low_noise_model")
+    _write_branch(ft_ckpt, "high_noise_model")
+
+    bundle_dir = materialize_eval_checkpoint_bundle(
+        ft_ckpt_dir="checkpoints/exp/epoch_1",
+        output_root="relative_out",
+        experiment_name="exp_epoch_1",
+        allow_stage1_fallback=False,
+    )
+
+    assert (bundle_dir / "low_noise_model").exists()
+    assert (bundle_dir / "high_noise_model").exists()
+    assert (bundle_dir / "low_noise_model" / "diffusion_pytorch_model.bin").exists()
