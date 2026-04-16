@@ -39,9 +39,9 @@ def test_format_physics_iq_summary_renders_markdown_tables():
 
     assert "Physics-IQ Summary: demo" in rendered
     assert "| Metric | Mean | Count |" in rendered
-    assert "| Score | 43.65 | 1 |" in rendered
+    assert "| Score | 43.6500 | 1 |" in rendered
     assert "| Seed | Samples | Score |" in rendered
-    assert "| 0 | 1 | 43.65 |" in rendered
+    assert "| 0 | 1 | 43.6500 |" in rendered
 
 
 def test_format_csgo_metrics_summary_omits_missing_metrics():
@@ -84,6 +84,10 @@ def test_format_videophy2_summary_renders_joint_score():
 
     assert "VideoPhy-2 Summary: demo" in rendered
     assert "Joint >= 4" in rendered
+    assert "| SA Mean | 4.2000 | 1 |" in rendered
+    assert "| PC Mean | 3.8000 | 1 |" in rendered
+    assert "| Joint >= 4 | 0.5000 | 1 |" in rendered
+    assert "| 0 | 4 | 4.2000 | 3.8000 | 0.5000 |" in rendered
 
 
 def test_format_videophy2_summary_can_hide_per_seed_block():
@@ -115,6 +119,9 @@ def test_format_videophy2_summary_can_hide_per_seed_block():
     assert "Lingbot_VideoREPA" in rendered
     assert "Overall" in rendered
     assert "Per Seed" not in rendered
+    assert "| SA Mean | 4.2000 | 1 |" in rendered
+    assert "| PC Mean | 3.8000 | 1 |" in rendered
+    assert "| Joint >= 4 | 0.5000 | 1 |" in rendered
 
 
 def test_format_lingbot_progress_summary_renders_combined_table():
@@ -140,8 +147,8 @@ def test_format_lingbot_progress_summary_renders_combined_table():
 
     assert "LingBot Full-Val Final Summary" in rendered
     assert "| Model | Processed | Total | Mean Physics-IQ Score | Mean PSNR |" in rendered
-    assert "| LingBot-base | 10 | 405 | 43.65 | 9.6551 |" in rendered
-    assert "| LingBot-Stage1 | 10 | 405 | 59.25 | 11.5251 |" in rendered
+    assert "| LingBot-base | 10 | 405 | 43.6500 | 9.6551 |" in rendered
+    assert "| LingBot-Stage1 | 10 | 405 | 59.2500 | 11.5251 |" in rendered
 
 
 def test_format_lingbot_generation_summary_renders_basic_table():

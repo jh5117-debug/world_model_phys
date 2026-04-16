@@ -15,6 +15,7 @@ from physical_consistency.trainers.trd_v1 import (
 import torch
 import numpy as np
 from pathlib import Path
+from types import SimpleNamespace
 
 
 class _CliArgs:
@@ -92,6 +93,7 @@ def test_build_args_supports_dual_training_defaults(tmp_path):
     assert args.num_frames == 81
     assert args.validation_every_steps == 0
     assert args.validation_every_epochs == 1
+    assert args.validation_sample_steps == 70
 
 
 def test_build_args_accepts_wandb_entity_override(tmp_path):
@@ -342,6 +344,69 @@ def test_build_args_accepts_student_ffn_chunk_size_override(tmp_path):
 
     args = build_args(_CliArgs(str(config_path), str(env_path)))
     assert args.student_ffn_chunk_size == 2048
+
+
+def test_build_args_defaults_validation_sample_steps_to_sample_steps(tmp_path):
+    config_path = tmp_path / "train.yaml"
+    env_path = tmp_path / "paths.env"
+    write_yaml(
+        config_path,
+        {
+            "experiment_name": "exp_val_sample_steps_default",
+            "model_type": "dual",
+            "sample_steps": 42,
+            "teacher_checkpoint_dir": str(tmp_path / "teacher"),
+        },
+    )
+    env_path.write_text("", encoding="utf-8")
+
+    args = build_args(_CliArgs(str(config_path), str(env_path)))
+    assert args.validation_sample_steps == 42
+
+
+def test_build_args_accepts_validation_sample_steps_override(tmp_path):
+    config_path = tmp_path / "train.yaml"
+    env_path = tmp_path / "paths.env"
+    write_yaml(
+        config_path,
+        {
+            "experiment_name": "exp_val_sample_steps_override",
+            "model_type": "dual",
+            "sample_steps": 70,
+            "validation_sample_steps": 35,
+            "teacher_checkpoint_dir": str(tmp_path / "teacher"),
+        },
+    )
+    env_path.write_text("", encoding="utf-8")
+
+    args = build_args(_CliArgs(str(config_path), str(env_path)))
+    assert args.sample_steps == 70
+    assert args.validation_sample_steps == 35
+
+
+def test_validation_generation_command_uses_validation_sample_steps(tmp_path):
+    runner = object.__new__(TRDTrainingRunner)
+    runner.args = SimpleNamespace(
+        env_file="paths.env",
+        manifest_mini_val="mini.csv",
+        dataset_dir="dataset",
+        base_model_dir="base",
+        num_frames=81,
+        validation_sample_steps=35,
+        guide_scale=5.0,
+        height=480,
+        width=832,
+        num_gpus=4,
+        ulysses_size=4,
+    )
+
+    command = runner._validation_generation_command(
+        tmp_path / "checkpoint",
+        tmp_path / "generated",
+        validation_seed=42,
+    )
+
+    assert command[command.index("--sample_steps") + 1] == "35"
 
 
 def test_build_args_accepts_num_frames_override(tmp_path):

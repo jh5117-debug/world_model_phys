@@ -7,9 +7,7 @@ from typing import Any
 
 def _fmt_value(value: Any) -> str:
     if isinstance(value, float):
-        if value.is_integer():
-            return str(int(value))
-        return f"{value:.4f}".rstrip("0").rstrip(".")
+        return f"{value:.4f}"
     return str(value)
 
 

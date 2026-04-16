@@ -523,6 +523,7 @@ class TRDTrainingRunner:
                 self._micro_step += 1
                 self._reset_gpu_peak_memory_stats()
                 self._log_gpu_memory(f"step_{self._micro_step}_start", emit_console=False)
+                metrics: dict[str, torch.Tensor] | None = None
                 with self.accelerator.accumulate(self.model_bundle):
                     metrics = self.training_step(batch)
                     self._log_gpu_memory(f"step_{self._micro_step}_after_forward", emit_console=False)
@@ -554,6 +555,9 @@ class TRDTrainingRunner:
                         self._log_train_metrics(metrics, self.scheduler, epoch, grad_norm)
                     if self.args.validation_every_steps > 0 and self.global_step % self.args.validation_every_steps == 0:
                         self.run_validation_cycle(tag=f"step_{self.global_step}")
+
+                del metrics
+                del batch
 
             if self.args.save_every_n_epochs > 0 and self.current_epoch % self.args.save_every_n_epochs == 0:
                 epoch_path = save_dual_bundle_checkpoint(
@@ -959,10 +963,10 @@ class TRDTrainingRunner:
                 1 if timestep_sample.branch == "high" else 0,
                 device=self.accelerator.device,
             ),
-            "_spatial_student": trd_output.spatial_student,
-            "_spatial_teacher": trd_output.spatial_teacher,
-            "_temporal_student": trd_output.temporal_student,
-            "_temporal_teacher": trd_output.temporal_teacher,
+            "_spatial_student": trd_output.spatial_student.detach(),
+            "_spatial_teacher": trd_output.spatial_teacher.detach(),
+            "_temporal_student": trd_output.temporal_student.detach(),
+            "_temporal_teacher": trd_output.temporal_teacher.detach(),
         }
         return metrics
 
@@ -1180,7 +1184,7 @@ class TRDTrainingRunner:
             "--frame_num",
             str(self.args.num_frames),
             "--sample_steps",
-            str(self.args.sample_steps),
+            str(self.args.validation_sample_steps),
             "--guide_scale",
             str(self.args.guide_scale),
             "--height",
@@ -1642,6 +1646,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("wandb_relation_image_every_steps", 25)
     payload.setdefault("distributed_timeout_hours", 8)
     payload.setdefault("validation_runtime_mode", "pause_external")
+    payload.setdefault("validation_sample_steps", payload.get("sample_steps", 70))
     payload.setdefault("allow_deepspeed_feature_hook_experimental", False)
     payload.setdefault("best_checkpoint_name", "best_videophy2")
     payload["allow_deepspeed_feature_hook_experimental"] = _coerce_bool(
@@ -1687,6 +1692,12 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         raise ValueError(
             f"wandb_relation_image_every_steps must be positive, got {payload['wandb_relation_image_every_steps']}"
         )
+    if payload["validation_sample_steps"] in ("", None):
+        payload["validation_sample_steps"] = int(payload.get("sample_steps", 70))
+    else:
+        payload["validation_sample_steps"] = int(payload["validation_sample_steps"])
+    if payload["validation_sample_steps"] <= 0:
+        raise ValueError(f"validation_sample_steps must be positive, got {payload['validation_sample_steps']}")
 
     payload["output_dir"] = str(Path(payload["output_root"]) / "checkpoints" / payload["experiment_name"])
     payload.setdefault("teacher_checkpoint_path", "")
@@ -1780,6 +1791,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb_relation_image_every_steps", type=int, default=None)
     parser.add_argument("--validation_every_steps", type=int, default=None)
     parser.add_argument("--validation_every_epochs", type=int, default=None)
+    parser.add_argument("--validation_sample_steps", type=int, default=None)
     parser.add_argument("--validation_runtime_mode", type=str, default="")
     parser.add_argument("--allow_deepspeed_feature_hook_experimental", type=str, default="")
     return parser.parse_args()

@@ -30,7 +30,7 @@ student_lora_rank: 16
 student_lora_alpha: 16
 student_lora_dropout: 0.0
 student_memory_efficient_modulation: true
-student_ffn_chunk_size: 2048
+student_ffn_chunk_size: 4096
 student_target_block: 20
 relation_tokens: 64
 lambda_trd: 0.1
@@ -58,6 +58,7 @@ distributed_timeout_hours: 8
 validation_runtime_mode: pause_external
 allow_deepspeed_feature_hook_experimental: true
 sample_steps: 70
+validation_sample_steps: 35
 guide_scale: 5.0
 num_gpus: 8
 ulysses_size: 8

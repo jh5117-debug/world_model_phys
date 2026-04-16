@@ -18,6 +18,7 @@ RUN_WITH_NOHUP="${RUN_WITH_NOHUP:-1}"
 TAIL_IMPORTANT_LOGS="${TAIL_IMPORTANT_LOGS:-1}"
 TAIL_LINES="${TAIL_LINES:-0}"
 IMPORTANT_LOG_REGEX="${IMPORTANT_LOG_REGEX:-(\[GPU RESET\]|\[TRAIN PLAN\]|\[PROGRESS\]|\[SEQ GEOM\]|Gradient checkpointing patched|Applying block-level gradient checkpointing|\[GPU MEM\] (after_|before_)|ERROR physical_consistency|Training aborted|OutOfMemoryError|Traceback)}"
+REQUIRE_TRAIN_FLASH_ATTN="${REQUIRE_TRAIN_FLASH_ATTN:-0}"
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -63,6 +64,7 @@ if [[ -f "${ENV_FILE}" ]]; then
   source "${ENV_FILE}"
   set +a
 fi
+REQUIRE_TRAIN_FLASH_ATTN="${REQUIRE_TRAIN_FLASH_ATTN:-0}"
 
 if [[ -z "${GPU_LIST}" ]]; then
   GPU_LIST="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
@@ -110,12 +112,39 @@ force_clear_target_gpus() {
   sleep 2
 }
 
+require_train_flash_attn() {
+  if [[ "${REQUIRE_TRAIN_FLASH_ATTN}" != "1" ]]; then
+    return
+  fi
+  python - <<'PY'
+import importlib
+import sys
+
+missing = []
+for name in ("flash_attn", "flash_attn.flash_attn_interface"):
+    try:
+        importlib.import_module(name)
+    except Exception as exc:
+        missing.append(f"{name}: {exc!r}")
+
+if missing:
+    print("[ERROR] REQUIRE_TRAIN_FLASH_ATTN=1 but flash-attn is not importable in the active training Python.", file=sys.stderr)
+    print("[ERROR] Activate phys-main and install/repair flash-attn before launching training.", file=sys.stderr)
+    for item in missing:
+        print(f"[ERROR] {item}", file=sys.stderr)
+    raise SystemExit(1)
+
+print("[FLASH_ATTN] Training Python can import flash-attn.", file=sys.stderr)
+PY
+}
+
 OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}}"
 mkdir -p "${OUTPUT_ROOT}/logs"
 LOG_FILE="${OUTPUT_ROOT}/logs/train_trd_v1_${MODEL_TYPE}.log"
 PID_FILE="${OUTPUT_ROOT}/logs/train_trd_v1_${MODEL_TYPE}.pid"
 
 cd "${PROJECT_ROOT}"
+require_train_flash_attn
 force_clear_target_gpus
 
 TRAIN_CMD=(
