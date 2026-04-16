@@ -1,4 +1,4 @@
-from physical_consistency.common.io import write_yaml
+from physical_consistency.common.io import read_yaml, write_yaml
 from physical_consistency.trainers.stage1_components import compute_scheduler_total_steps
 from physical_consistency.trainers import trd_v1 as trd_v1_module
 from physical_consistency.trainers.trd_v1 import (
@@ -180,6 +180,10 @@ class _DummyAccelerator:
     def clip_grad_norm_(self, params, max_norm):
         del params, max_norm
         return torch.tensor(0.0)
+
+    def log(self, payload, step=None) -> None:
+        del payload, step
+        return None
 
     def unwrap_model(self, model):
         return model
@@ -407,6 +411,43 @@ def test_validation_generation_command_uses_validation_sample_steps(tmp_path):
     )
 
     assert command[command.index("--sample_steps") + 1] == "35"
+
+
+def test_snapshot_validation_export_uses_validation_sample_steps(tmp_path, monkeypatch):
+    runner = object.__new__(TRDTrainingRunner)
+    runner.args = SimpleNamespace(
+        output_root=str(tmp_path),
+        experiment_name="exp",
+        stage1_ckpt_dir=str(tmp_path / "stage1"),
+        manifest_mini_val="mini.csv",
+        validation_seed_list=[42],
+        num_frames=81,
+        sample_steps=70,
+        validation_sample_steps=35,
+        guide_scale=5.0,
+        height=480,
+        width=832,
+        num_gpus=4,
+        ulysses_size=4,
+        base_model_dir="base",
+        dataset_dir="dataset",
+    )
+    runner.global_step = 123
+    runner.accelerator = _DummyAccelerator()
+    checkpoint_path = tmp_path / "checkpoint"
+    checkpoint_path.mkdir()
+    bundle_dir = tmp_path / "bundle"
+
+    monkeypatch.setattr(
+        trd_v1_module,
+        "materialize_eval_checkpoint_bundle",
+        lambda **kwargs: bundle_dir,
+    )
+
+    runner._export_validation_request(checkpoint_path, "epoch_1")
+
+    eval_config = read_yaml(checkpoint_path / "validation_export" / "eval_trd_snapshot.yaml")
+    assert eval_config["sample_steps"] == 35
 
 
 def test_build_args_accepts_num_frames_override(tmp_path):
