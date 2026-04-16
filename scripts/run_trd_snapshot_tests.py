@@ -195,6 +195,7 @@ def _run_one_checkpoint(
 
     common_env = os.environ.copy()
     common_env["PYTHONPATH"] = f"{SRC_ROOT}:{common_env.get('PYTHONPATH', '')}"
+    common_env["PATH"] = f"{Path(sys.executable).parent}:{common_env.get('PATH', '')}"
     common_env["CUDA_VISIBLE_DEVICES"] = gpu_list
     common_env["GPU_LIST"] = gpu_list
     common_env["TOKENIZERS_PARALLELISM"] = "false"
@@ -207,6 +208,7 @@ def _run_one_checkpoint(
         "experiment_name": experiment_name,
         "env_file": str(env_file.resolve()),
         "train_python": sys.executable,
+        "train_bin_dir": str(Path(sys.executable).parent),
         "videophy_python": videophy_python,
         "gpu_list": gpu_list,
         "videophy_gpu": videophy_gpu,
