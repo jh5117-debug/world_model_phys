@@ -527,6 +527,10 @@ class TRDTrainingRunner:
                     metrics = self.training_step(batch)
                     self._log_gpu_memory(f"step_{self._micro_step}_after_forward", emit_console=False)
                     self.accelerator.backward(metrics["loss_total"])
+                    # The non-detached loss keeps the autograd graph alive, which
+                    # can retain old DeepSpeed parameters across pause_external
+                    # validation/restoration cycles.
+                    metrics["loss_total"] = metrics["loss_total"].detach()
                     self._log_gpu_memory(f"step_{self._micro_step}_after_backward", emit_console=False)
                     if self.accelerator.sync_gradients:
                         grad_norm = self.accelerator.clip_grad_norm_(
