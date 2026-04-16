@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
+
+import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -22,6 +25,20 @@ from physical_consistency.trainers.trd_v1 import (
     parse_args,
     save_dual_bundle_checkpoint,
 )
+
+
+def _assert_runtime_released(runner: TRDTrainingRunner, label: str) -> None:
+    """Fail the smoke test if a released runtime still owns large CUDA tensors."""
+    if not torch.cuda.is_available():
+        return
+    max_gib = float(os.environ.get("TRD_SMOKE_RELEASE_MAX_GIB", "5"))
+    allocated_gib = torch.cuda.memory_allocated(runner.accelerator.device) / (1024**3)
+    if runner.accelerator.is_main_process:
+        print(f"[SMOKE] {label} release_allocated={allocated_gib:.2f}GiB max_allowed={max_gib:.2f}GiB")
+    if allocated_gib > max_gib:
+        raise RuntimeError(
+            f"{label} release left {allocated_gib:.2f}GiB allocated; expected <= {max_gib:.2f}GiB"
+        )
 
 
 def main() -> None:
@@ -66,8 +83,12 @@ def main() -> None:
         training_state_filename="resume_state.pt",
     )
     runner._release_training_runtime()
+    runner.accelerator.wait_for_everyone()
+    _assert_runtime_released(runner, "initial")
     runner._restore_training_runtime(candidate_path)
     runner._release_training_runtime()
+    runner.accelerator.wait_for_everyone()
+    _assert_runtime_released(runner, "restored")
     runner.accelerator.end_training()
     if runner.accelerator.is_main_process:
         print(f"[SMOKE OK] restored runtime successfully from {candidate_path}")

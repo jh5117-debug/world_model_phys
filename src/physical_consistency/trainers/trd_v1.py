@@ -83,6 +83,93 @@ def maybe_scalar_to_float(value: torch.Tensor | float | int | None) -> float | N
     return float(value)
 
 
+def _safe_call_runtime_method(obj: Any, method_name: str, label: str) -> None:
+    """Best-effort cleanup for optional DeepSpeed/optimizer teardown hooks."""
+    if obj is None:
+        return
+    method = getattr(obj, method_name, None)
+    if not callable(method):
+        return
+    try:
+        method()
+    except Exception:
+        LOGGER.debug("Failed to call %s.%s during runtime release", label, method_name, exc_info=True)
+
+
+def _safe_clear_attr(obj: Any, attr_name: str, label: str) -> None:
+    """Break common reference cycles without depending on a specific DeepSpeed version."""
+    if obj is None or not hasattr(obj, attr_name):
+        return
+    try:
+        setattr(obj, attr_name, None)
+    except Exception:
+        LOGGER.debug("Failed to clear %s.%s during runtime release", label, attr_name, exc_info=True)
+
+
+def _candidate_deepspeed_engines(accelerator: accelerate.Accelerator, model_bundle: Any) -> list[Any]:
+    """Collect DeepSpeed engine objects that may hold old ZeRO partitions."""
+    candidates: list[Any] = []
+    wrapped = getattr(accelerator, "deepspeed_engine_wrapped", None)
+    candidates.append(getattr(wrapped, "engine", None))
+    candidates.append(model_bundle)
+    candidates.extend(getattr(accelerator, "_models", []) or [])
+
+    engines: list[Any] = []
+    seen: set[int] = set()
+    for candidate in candidates:
+        engine = getattr(candidate, "engine", candidate)
+        if engine is None:
+            continue
+        if not (
+            hasattr(engine, "destroy")
+            or hasattr(engine, "optimizer")
+            or engine.__class__.__name__.lower().startswith("deepspeed")
+        ):
+            continue
+        ident = id(engine)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        engines.append(engine)
+    return engines
+
+
+def _destroy_deepspeed_engines(accelerator: accelerate.Accelerator, model_bundle: Any) -> None:
+    """Aggressively release DeepSpeed engine references before rebuilding a runtime."""
+    for engine in _candidate_deepspeed_engines(accelerator, model_bundle):
+        optimizer = getattr(engine, "optimizer", None)
+        _safe_call_runtime_method(optimizer, "release_ipg_buffers", "deepspeed_optimizer")
+        _safe_call_runtime_method(optimizer, "destroy", "deepspeed_optimizer")
+        _safe_call_runtime_method(engine, "destroy", "deepspeed_engine")
+        for attr_name in (
+            "optimizer",
+            "client_optimizer",
+            "lr_scheduler",
+            "module",
+            "module_parameters",
+            "fp16_groups",
+            "fp32_groups",
+        ):
+            _safe_clear_attr(engine, attr_name, "deepspeed_engine")
+
+    if hasattr(accelerator, "deepspeed_engine_wrapped"):
+        accelerator.deepspeed_engine_wrapped = None
+    for attr_name in ("_models", "_optimizers", "_schedulers", "_dataloaders"):
+        if hasattr(accelerator, attr_name):
+            setattr(accelerator, attr_name, [])
+
+
+def _clear_torch_cuda_cache() -> None:
+    gc.collect()
+    if not torch.cuda.is_available():
+        return
+    torch.cuda.empty_cache()
+    try:
+        torch.cuda.ipc_collect()
+    except Exception:
+        LOGGER.debug("torch.cuda.ipc_collect failed during runtime release", exc_info=True)
+
+
 def tensor_to_numpy_float32(value: torch.Tensor | np.ndarray) -> np.ndarray:
     """Convert tensors to float32 numpy arrays for logging utilities that don't support bf16."""
     if isinstance(value, np.ndarray):
@@ -1088,22 +1175,28 @@ class TRDTrainingRunner:
         return [optimizer_state]
 
     def _release_training_runtime(self) -> None:
+        old_teacher = self.teacher
+        old_model_bundle = self.model_bundle
+        old_optimizer = self.optimizer
+        old_train_loader = self.train_loader
+        old_scheduler = self.scheduler
         self.teacher = None
         self.helper.release_runtime_components()
+        _destroy_deepspeed_engines(self.accelerator, old_model_bundle)
         (
             self.model_bundle,
             self.optimizer,
             self.train_loader,
             self.scheduler,
         ) = self.accelerator.free_memory(
-            self.model_bundle,
-            self.optimizer,
-            self.train_loader,
-            self.scheduler,
+            old_model_bundle,
+            old_optimizer,
+            old_train_loader,
+            old_scheduler,
         )
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        del old_teacher, old_model_bundle, old_optimizer, old_train_loader, old_scheduler
+        _destroy_deepspeed_engines(self.accelerator, self.model_bundle)
+        _clear_torch_cuda_cache()
         self._log_gpu_memory("after_runtime_release")
 
     def _restore_training_runtime(self, checkpoint_path: Path) -> None:
