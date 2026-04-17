@@ -880,11 +880,10 @@ def apply_memory_efficient_wan_block_patch(
         if chunk_size is None or x.shape[1] <= chunk_size:
             return _run_chunk(x, c2ws, 0, int(x.shape[1]))
 
-        outputs = []
+        output = torch.empty_like(x)
         for start in range(0, x.shape[1], chunk_size):
             stop = min(start + chunk_size, x.shape[1])
-            outputs.append(_run_chunk(x[:, start:stop], c2ws[:, start:stop], start, stop))
-        output = torch.cat(outputs, dim=1)
+            output[:, start:stop] = _run_chunk(x[:, start:stop], c2ws[:, start:stop], start, stop)
         _wan_trace("camera_exit", block=block, tensors={"output": output}, sync=True)
         return output
 
