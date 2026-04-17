@@ -17,7 +17,7 @@ FORCE_CLEAR_GPUS_BEFORE_LAUNCH="${FORCE_CLEAR_GPUS_BEFORE_LAUNCH:-1}"
 RUN_WITH_NOHUP="${RUN_WITH_NOHUP:-1}"
 TAIL_IMPORTANT_LOGS="${TAIL_IMPORTANT_LOGS:-1}"
 TAIL_LINES="${TAIL_LINES:-0}"
-IMPORTANT_LOG_REGEX="${IMPORTANT_LOG_REGEX:-(\[GPU RESET\]|\[TRAIN PLAN\]|\[PROGRESS\]|\[SEQ GEOM\]|Gradient checkpointing patched|Applying block-level gradient checkpointing|\[GPU MEM\] (after_|before_)|ERROR physical_consistency|Training aborted|OutOfMemoryError|Traceback)}"
+IMPORTANT_LOG_REGEX="${IMPORTANT_LOG_REGEX:-(\[GPU RESET\]|\[TRAIN PLAN\]|\[PROGRESS\]|\[MEM PROBE\]|\[SEQ GEOM\]|Gradient checkpointing patched|Applying block-level gradient checkpointing|\[GPU MEM\] (after_|before_)|ERROR physical_consistency|Training aborted|OutOfMemoryError|Traceback)}"
 REQUIRE_TRAIN_FLASH_ATTN="${REQUIRE_TRAIN_FLASH_ATTN:-0}"
 EXTRA_ARGS=()
 

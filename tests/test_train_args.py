@@ -44,6 +44,7 @@ class _CliArgs:
     allow_deepspeed_feature_hook_experimental = ""
     student_lora_block_start = None
     student_lora_chunk_size = None
+    max_train_micro_steps = None
 
     def __init__(self, config: str, env_file: str) -> None:
         self.config = config
@@ -188,6 +189,7 @@ def test_build_args_supports_dual_training_defaults(tmp_path):
     assert args.num_frames == 81
     assert args.validation_every_steps == 0
     assert args.validation_every_epochs == 1
+    assert args.max_train_micro_steps == 0
     assert args.validation_sample_steps == 70
 
 
@@ -499,6 +501,24 @@ def test_build_args_accepts_validation_sample_steps_override(tmp_path):
     args = build_args(_CliArgs(str(config_path), str(env_path)))
     assert args.sample_steps == 70
     assert args.validation_sample_steps == 35
+
+
+def test_build_args_accepts_max_train_micro_steps_override(tmp_path):
+    config_path = tmp_path / "train.yaml"
+    env_path = tmp_path / "paths.env"
+    write_yaml(
+        config_path,
+        {
+            "experiment_name": "exp_mem_probe",
+            "model_type": "dual",
+            "max_train_micro_steps": 1,
+            "teacher_checkpoint_dir": str(tmp_path / "teacher"),
+        },
+    )
+    env_path.write_text("", encoding="utf-8")
+
+    args = build_args(_CliArgs(str(config_path), str(env_path)))
+    assert args.max_train_micro_steps == 1
 
 
 def test_validation_generation_command_uses_validation_sample_steps(tmp_path):

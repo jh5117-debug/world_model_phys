@@ -648,6 +648,17 @@ class TRDTrainingRunner:
 
                 del metrics
                 del batch
+                if self.args.max_train_micro_steps > 0 and self._micro_step >= self.args.max_train_micro_steps:
+                    if self.accelerator.is_main_process:
+                        LOGGER.info(
+                            "[MEM PROBE] reached max_train_micro_steps=%s global_step=%s micro_step=%s peak_mem=%.2fGiB; exiting before checkpoint/validation",
+                            self.args.max_train_micro_steps,
+                            self.global_step,
+                            self._micro_step,
+                            self._current_peak_allocated_gib(),
+                        )
+                    self.accelerator.wait_for_everyone()
+                    return
 
             if self.args.save_every_n_epochs > 0 and self.current_epoch % self.args.save_every_n_epochs == 0:
                 epoch_path = save_dual_bundle_checkpoint(
@@ -1738,6 +1749,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("gradient_checkpointing", True)
     payload.setdefault("validation_every_steps", 0)
     payload.setdefault("validation_every_epochs", 1)
+    payload.setdefault("max_train_micro_steps", 0)
     payload.setdefault("mini_val_max_samples", 8)
     payload.setdefault("student_target_block", 20)
     payload.setdefault("relation_tokens", 64)
@@ -1832,6 +1844,12 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         payload["validation_sample_steps"] = int(payload["validation_sample_steps"])
     if payload["validation_sample_steps"] <= 0:
         raise ValueError(f"validation_sample_steps must be positive, got {payload['validation_sample_steps']}")
+    if payload["max_train_micro_steps"] in ("", None):
+        payload["max_train_micro_steps"] = 0
+    else:
+        payload["max_train_micro_steps"] = int(payload["max_train_micro_steps"])
+    if payload["max_train_micro_steps"] < 0:
+        raise ValueError(f"max_train_micro_steps must be non-negative, got {payload['max_train_micro_steps']}")
 
     payload["output_dir"] = str(Path(payload["output_root"]) / "checkpoints" / payload["experiment_name"])
     payload.setdefault("teacher_checkpoint_path", "")
@@ -1932,6 +1950,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb_relation_image_every_steps", type=int, default=None)
     parser.add_argument("--validation_every_steps", type=int, default=None)
     parser.add_argument("--validation_every_epochs", type=int, default=None)
+    parser.add_argument("--max_train_micro_steps", type=int, default=None)
     parser.add_argument("--validation_sample_steps", type=int, default=None)
     parser.add_argument("--validation_runtime_mode", type=str, default="")
     parser.add_argument("--allow_deepspeed_feature_hook_experimental", type=str, default="")
