@@ -26,6 +26,94 @@ def _should_log_rank_zero() -> bool:
     return rank in {"", "0"}
 
 
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_list_allows(name: str, value: str | None) -> bool:
+    spec = os.environ.get(name, "").strip()
+    if not spec or spec.lower() in {"all", "*"}:
+        return True
+    if value is None:
+        return False
+    allowed = {part.strip() for part in spec.split(",") if part.strip()}
+    return value in allowed
+
+
+def _wan_trace_enabled(block: torch.nn.Module | None = None) -> bool:
+    if not _env_flag("PC_WAN_BLOCK_TRACE"):
+        return False
+    rank = os.environ.get("RANK")
+    local_rank = os.environ.get("LOCAL_RANK")
+    if not (
+        _env_list_allows("PC_WAN_BLOCK_TRACE_RANKS", rank)
+        or _env_list_allows("PC_WAN_BLOCK_TRACE_RANKS", local_rank)
+    ):
+        return False
+    if block is None:
+        return True
+    block_index = getattr(block, "_pc_wan_block_index", None)
+    return _env_list_allows(
+        "PC_WAN_BLOCK_TRACE_BLOCKS",
+        None if block_index is None else str(block_index),
+    )
+
+
+def _wan_trace_tensor(tensor: torch.Tensor) -> str:
+    return (
+        f"shape={tuple(tensor.shape)} dtype={tensor.dtype} "
+        f"device={tensor.device} requires_grad={tensor.requires_grad}"
+    )
+
+
+def _wan_trace_memory(device: torch.device | None) -> str:
+    if device is None or device.type != "cuda" or not torch.cuda.is_available():
+        return ""
+    try:
+        allocated = torch.cuda.memory_allocated(device) / (1024**3)
+        reserved = torch.cuda.memory_reserved(device) / (1024**3)
+        max_allocated = torch.cuda.max_memory_allocated(device) / (1024**3)
+    except Exception:
+        return ""
+    return f" mem_alloc={allocated:.2f}GiB mem_reserved={reserved:.2f}GiB mem_max={max_allocated:.2f}GiB"
+
+
+def _wan_trace(
+    event: str,
+    *,
+    block: torch.nn.Module | None = None,
+    tensors: dict[str, torch.Tensor] | None = None,
+    detail: str = "",
+    sync: bool = False,
+) -> None:
+    if not _wan_trace_enabled(block):
+        return
+
+    device = None
+    if tensors:
+        device = next((tensor.device for tensor in tensors.values() if torch.is_tensor(tensor)), None)
+    if sync and _env_flag("PC_WAN_BLOCK_TRACE_SYNC") and device is not None and device.type == "cuda" and torch.cuda.is_available():
+        torch.cuda.synchronize(device)
+
+    rank = os.environ.get("RANK", "?")
+    local_rank = os.environ.get("LOCAL_RANK", "?")
+    block_index = getattr(block, "_pc_wan_block_index", "?") if block is not None else "?"
+    parts = [
+        "[PC_WAN_TRACE]",
+        f"rank={rank}",
+        f"local_rank={local_rank}",
+        f"pid={os.getpid()}",
+        f"block={block_index}",
+        f"event={event}",
+    ]
+    if detail:
+        parts.append(detail)
+    if tensors:
+        parts.extend(f"{name}:{_wan_trace_tensor(tensor)}" for name, tensor in tensors.items())
+    parts.append(_wan_trace_memory(device))
+    print(" ".join(part for part in parts if part), file=sys.stderr, flush=True)
+
+
 def _patch_wan_rope_apply_to_preserve_dtype(wan_model_module) -> None:
     """Patch Wan RoPE to avoid a large fp32 q/k tensor before flash-attn."""
 
@@ -691,8 +779,15 @@ def apply_memory_efficient_wan_block_patch(
     def _run_camera_injection(block: torch.nn.Module, x: torch.Tensor, dit_cond_dict, target_dtype: torch.dtype) -> torch.Tensor:
         c2ws = _extract_control_tensor(dit_cond_dict)
         if c2ws is None:
+            _wan_trace("camera_skip_no_control", block=block, tensors={"x": x})
             return x
         if c2ws.ndim < 3:
+            _wan_trace(
+                "camera_skip_bad_control_rank",
+                block=block,
+                tensors={"x": x, "c2ws": c2ws},
+                detail=f"c2ws_ndim={c2ws.ndim}",
+            )
             return x
         required_cam_attrs = (
             "cam_injector_layer1",
@@ -701,26 +796,97 @@ def apply_memory_efficient_wan_block_patch(
             "cam_shift_layer",
         )
         if not all(hasattr(block, attr) for attr in required_cam_attrs):
+            _wan_trace("camera_skip_missing_layers", block=block, tensors={"x": x, "c2ws": c2ws})
             return x
 
         c2ws = c2ws.to(device=x.device, dtype=target_dtype)
+        _wan_trace("camera_enter", block=block, tensors={"x": x, "c2ws": c2ws}, sync=True)
 
-        def _run_chunk(x_chunk: torch.Tensor, c2ws_chunk: torch.Tensor) -> torch.Tensor:
-            hidden = block.cam_injector_layer2(F.silu(block.cam_injector_layer1(c2ws_chunk)))
+        def _run_chunk(x_chunk: torch.Tensor, c2ws_chunk: torch.Tensor, start: int, stop: int) -> torch.Tensor:
+            detail = f"chunk={start}:{stop}"
+            _wan_trace(
+                "camera_chunk_before_injector1",
+                block=block,
+                tensors={"x": x_chunk, "c2ws": c2ws_chunk},
+                detail=detail,
+                sync=True,
+            )
+            hidden = block.cam_injector_layer1(c2ws_chunk)
+            _wan_trace(
+                "camera_chunk_after_injector1",
+                block=block,
+                tensors={"hidden": hidden},
+                detail=detail,
+                sync=True,
+            )
+            hidden = F.silu(hidden)
+            _wan_trace(
+                "camera_chunk_after_silu",
+                block=block,
+                tensors={"hidden": hidden},
+                detail=detail,
+                sync=True,
+            )
+            hidden = block.cam_injector_layer2(hidden)
+            _wan_trace(
+                "camera_chunk_after_injector2",
+                block=block,
+                tensors={"hidden": hidden},
+                detail=detail,
+                sync=True,
+            )
             hidden = hidden + c2ws_chunk
+            _wan_trace(
+                "camera_chunk_before_scale",
+                block=block,
+                tensors={"hidden": hidden},
+                detail=detail,
+                sync=True,
+            )
             cam_scale = block.cam_scale_layer(hidden)
+            _wan_trace(
+                "camera_chunk_after_scale",
+                block=block,
+                tensors={"cam_scale": cam_scale},
+                detail=detail,
+                sync=True,
+            )
+            _wan_trace(
+                "camera_chunk_before_shift",
+                block=block,
+                tensors={"hidden": hidden},
+                detail=detail,
+                sync=True,
+            )
             cam_shift = block.cam_shift_layer(hidden)
-            return (1.0 + cam_scale.to(dtype=x_chunk.dtype)) * x_chunk + cam_shift.to(dtype=x_chunk.dtype)
+            _wan_trace(
+                "camera_chunk_after_shift",
+                block=block,
+                tensors={"cam_shift": cam_shift},
+                detail=detail,
+                sync=True,
+            )
+            output = (1.0 + cam_scale.to(dtype=x_chunk.dtype)) * x_chunk + cam_shift.to(dtype=x_chunk.dtype)
+            _wan_trace(
+                "camera_chunk_exit",
+                block=block,
+                tensors={"output": output},
+                detail=detail,
+                sync=True,
+            )
+            return output
 
         chunk_size = ffn_chunk_size
         if chunk_size is None or x.shape[1] <= chunk_size:
-            return _run_chunk(x, c2ws)
+            return _run_chunk(x, c2ws, 0, int(x.shape[1]))
 
         outputs = []
         for start in range(0, x.shape[1], chunk_size):
             stop = min(start + chunk_size, x.shape[1])
-            outputs.append(_run_chunk(x[:, start:stop], c2ws[:, start:stop]))
-        return torch.cat(outputs, dim=1)
+            outputs.append(_run_chunk(x[:, start:stop], c2ws[:, start:stop], start, stop))
+        output = torch.cat(outputs, dim=1)
+        _wan_trace("camera_exit", block=block, tensors={"output": output}, sync=True)
+        return output
 
     patched = 0
     block_container = getattr(model, "blocks", None)
@@ -728,7 +894,8 @@ def apply_memory_efficient_wan_block_patch(
         LOGGER.warning("No transformer blocks found for %s", model_name)
         return
 
-    for block in block_container:
+    for block_index, block in enumerate(block_container):
+        block._pc_wan_block_index = block_index
         if getattr(block, "_pc_memory_efficient_modulation_patched", False):
             continue
         required_attrs = ("modulation", "norm1", "self_attn", "norm2", "ffn", "norm3", "cross_attn")
@@ -736,21 +903,37 @@ def apply_memory_efficient_wan_block_patch(
             continue
 
         def _forward(self, x, e, seq_lens, grid_sizes, freqs, context, context_lens, dit_cond_dict=None):
+            _wan_trace("block_enter", block=self, tensors={"x": x}, sync=True)
             target_dtype = x.dtype
             e = (
                 self.modulation.unsqueeze(0).to(device=e.device, dtype=torch.float32)
                 + e.to(dtype=torch.float32)
             ).chunk(6, dim=2)
 
+            _wan_trace("before_self_attn_norm", block=self, tensors={"x": x}, sync=True)
             self_attn_input = _modulate(self.norm1(x), e[0], e[1], target_dtype)
+            _wan_trace(
+                "before_self_attn",
+                block=self,
+                tensors={"self_attn_input": self_attn_input},
+                sync=True,
+            )
             y = self.self_attn(self_attn_input, seq_lens, grid_sizes, freqs)
+            _wan_trace("after_self_attn", block=self, tensors={"y": y}, sync=True)
             x = _apply_gated_residual(x, y, e[2])
+            _wan_trace("after_self_attn_residual", block=self, tensors={"x": x}, sync=True)
 
+            _wan_trace("before_camera_injection", block=self, tensors={"x": x}, sync=True)
             x = _run_camera_injection(self, x, dit_cond_dict, target_dtype)
+            _wan_trace("after_camera_injection", block=self, tensors={"x": x}, sync=True)
 
+            _wan_trace("before_cross_attn_norm", block=self, tensors={"x": x}, sync=True)
             cross_input = self.norm3(x).to(target_dtype)
+            _wan_trace("before_cross_attn", block=self, tensors={"cross_input": cross_input}, sync=True)
             x = x + self.cross_attn(cross_input, context, context_lens)
+            _wan_trace("after_cross_attn", block=self, tensors={"x": x}, sync=True)
 
+            _wan_trace("before_ffn", block=self, tensors={"x": x}, sync=True)
             x = _run_ffn_residual(
                 self,
                 self.ffn,
@@ -761,6 +944,7 @@ def apply_memory_efficient_wan_block_patch(
                 e[5],
                 target_dtype,
             )
+            _wan_trace("after_ffn", block=self, tensors={"x": x}, sync=True)
             return x
 
         block.forward = MethodType(_forward, block)
