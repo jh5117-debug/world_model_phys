@@ -579,6 +579,30 @@ def test_build_args_accepts_num_frames_override(tmp_path):
     assert args.num_frames == 81
 
 
+def test_build_args_accepts_resolution_overrides(tmp_path):
+    config_path = tmp_path / "train.yaml"
+    env_path = tmp_path / "paths.env"
+    write_yaml(
+        config_path,
+        {
+            "experiment_name": "exp_resolution",
+            "model_type": "dual",
+            "height": 480,
+            "width": 832,
+            "teacher_checkpoint_dir": str(tmp_path / "teacher"),
+        },
+    )
+    env_path.write_text("", encoding="utf-8")
+    cli_args = _CliArgs(str(config_path), str(env_path))
+    cli_args.height = 448
+    cli_args.width = 768
+
+    args = build_args(cli_args)
+
+    assert args.height == 448
+    assert args.width == 768
+
+
 def test_build_args_accepts_wandb_relation_image_every_steps_override(tmp_path):
     config_path = tmp_path / "train.yaml"
     env_path = tmp_path / "paths.env"

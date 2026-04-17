@@ -1719,6 +1719,8 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("teacher_input_frames", 64)
     payload.setdefault("teacher_drop_first_frame", False)
     payload.setdefault("num_frames", 81)
+    payload.setdefault("height", 480)
+    payload.setdefault("width", 832)
     payload.setdefault("teacher_model_variant", "vjepa2_1_vit_base_384")
     payload.setdefault("teacher_dtype", "bfloat16")
     payload.setdefault("teacher_image_size", 384)
@@ -1755,6 +1757,10 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload["teacher_offload_after_encode"] = _coerce_bool(payload["teacher_offload_after_encode"])
     payload["teacher_drop_first_frame"] = _coerce_bool(payload["teacher_drop_first_frame"])
     payload["teacher_backend"] = str(payload["teacher_backend"]).strip().lower()
+    payload["height"] = int(payload["height"])
+    payload["width"] = int(payload["width"])
+    if payload["height"] <= 0 or payload["width"] <= 0:
+        raise ValueError(f"height and width must be positive, got {payload['height']}x{payload['width']}")
     payload["student_tuning_mode"] = str(payload["student_tuning_mode"]).strip().lower()
     if payload["student_tuning_mode"] not in {"full", "lora"}:
         raise ValueError(f"Unsupported student_tuning_mode: {payload['student_tuning_mode']}")
@@ -1890,6 +1896,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_epochs", type=int, default=None)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=None)
     parser.add_argument("--num_frames", type=int, default=None)
+    parser.add_argument("--height", type=int, default=None)
+    parser.add_argument("--width", type=int, default=None)
     parser.add_argument("--teacher_backend", type=str, default="")
     parser.add_argument("--teacher_repo_dir", type=str, default="")
     parser.add_argument("--teacher_checkpoint_dir", type=str, default="")
