@@ -431,7 +431,7 @@ def apply_gradient_checkpointing(
 ) -> None:
     """Apply the same DiT block checkpointing strategy as Stage-1."""
     from functools import wraps
-    from torch.utils.checkpoint import checkpoint as torch_checkpoint
+    import torch.utils.checkpoint as checkpoint_module
 
     patched = 0
     block_container = getattr(model, "blocks", None)
@@ -471,11 +471,26 @@ def apply_gradient_checkpointing(
                     # even though DeepSpeed gathers them for the actual math.
                     checkpoint_kwargs["determinism_check"] = "none"
 
-                return torch_checkpoint(
-                    _forward,
-                    *checkpoint_args,
-                    **checkpoint_kwargs,
-                )
+                def _run_checkpoint():
+                    return checkpoint_module.checkpoint(
+                        _forward,
+                        *checkpoint_args,
+                        **checkpoint_kwargs,
+                    )
+
+                if use_reentrant:
+                    return _run_checkpoint()
+
+                # Non-reentrant checkpointing stops recomputation once saved
+                # tensors have been rebuilt. With ZeRO-3 parameter offload that
+                # can interrupt a Wan block before DeepSpeed has balanced all
+                # parameter gather/release hooks, which has shown up as native
+                # SIGFPEs during the first backward. Force a full block replay.
+                early_stop = getattr(checkpoint_module, "set_checkpoint_early_stop", None)
+                if early_stop is None:
+                    return _run_checkpoint()
+                with early_stop(False):
+                    return _run_checkpoint()
 
             return _wrapped
 
@@ -528,6 +543,16 @@ def apply_memory_efficient_wan_block_patch(
         gate = _squeeze_gate(gate).to(device=value.device, dtype=value.dtype)
         return torch.addcmul(base, value, gate)
 
+    def _extract_control_tensor(dit_cond_dict) -> torch.Tensor | None:
+        if not dit_cond_dict or "c2ws_plucker_emb" not in dit_cond_dict:
+            return None
+        value = dit_cond_dict["c2ws_plucker_emb"]
+        if isinstance(value, (tuple, list)):
+            if not value:
+                return None
+            value = value[0]
+        return value if torch.is_tensor(value) else None
+
     def _run_module_layers(module: torch.nn.Module, inputs: torch.Tensor) -> torch.Tensor:
         # Running nested Sequentials layer-by-layer avoids a large ZeRO-3 fetch on the
         # outer container, which otherwise gathers the whole FFN at once.
@@ -564,6 +589,40 @@ def apply_memory_efficient_wan_block_patch(
             output[:, start:stop] = _apply_gated_residual(residual_chunk, y_chunk, gate_chunk)
         return output
 
+    def _run_camera_injection(block: torch.nn.Module, x: torch.Tensor, dit_cond_dict, target_dtype: torch.dtype) -> torch.Tensor:
+        c2ws = _extract_control_tensor(dit_cond_dict)
+        if c2ws is None:
+            return x
+        if c2ws.ndim < 3:
+            return x
+        required_cam_attrs = (
+            "cam_injector_layer1",
+            "cam_injector_layer2",
+            "cam_scale_layer",
+            "cam_shift_layer",
+        )
+        if not all(hasattr(block, attr) for attr in required_cam_attrs):
+            return x
+
+        c2ws = c2ws.to(device=x.device, dtype=target_dtype)
+
+        def _run_chunk(x_chunk: torch.Tensor, c2ws_chunk: torch.Tensor) -> torch.Tensor:
+            hidden = block.cam_injector_layer2(F.silu(block.cam_injector_layer1(c2ws_chunk)))
+            hidden = hidden + c2ws_chunk
+            cam_scale = block.cam_scale_layer(hidden)
+            cam_shift = block.cam_shift_layer(hidden)
+            return (1.0 + cam_scale.to(dtype=x_chunk.dtype)) * x_chunk + cam_shift.to(dtype=x_chunk.dtype)
+
+        chunk_size = ffn_chunk_size
+        if chunk_size is None or x.shape[1] <= chunk_size:
+            return _run_chunk(x, c2ws)
+
+        outputs = []
+        for start in range(0, x.shape[1], chunk_size):
+            stop = min(start + chunk_size, x.shape[1])
+            outputs.append(_run_chunk(x[:, start:stop], c2ws[:, start:stop]))
+        return torch.cat(outputs, dim=1)
+
     patched = 0
     block_container = getattr(model, "blocks", None)
     if block_container is None:
@@ -587,6 +646,8 @@ def apply_memory_efficient_wan_block_patch(
             self_attn_input = _modulate(self.norm1(x), e[0], e[1], target_dtype)
             y = self.self_attn(self_attn_input, seq_lens, grid_sizes, freqs)
             x = _apply_gated_residual(x, y, e[2])
+
+            x = _run_camera_injection(self, x, dit_cond_dict, target_dtype)
 
             cross_input = self.norm3(x).to(target_dtype)
             x = x + self.cross_attn(cross_input, context, context_lens)

@@ -116,12 +116,24 @@ def test_reentrant_gradient_checkpointing_preserves_parameter_grads_without_inpu
 
 def test_non_reentrant_gradient_checkpointing_disables_metadata_check(monkeypatch):
     captured_kwargs = []
+    early_stop_values = []
 
     def fake_checkpoint(fn, *args, **kwargs):
         captured_kwargs.append(kwargs)
         return fn(*args)
 
+    class _FakeEarlyStop:
+        def __init__(self, value):
+            self.value = value
+
+        def __enter__(self):
+            early_stop_values.append(self.value)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
     monkeypatch.setattr("torch.utils.checkpoint.checkpoint", fake_checkpoint)
+    monkeypatch.setattr("torch.utils.checkpoint.set_checkpoint_early_stop", _FakeEarlyStop)
     model = _CheckpointedModel()
     apply_gradient_checkpointing(model, use_reentrant=False)
 
@@ -136,6 +148,7 @@ def test_non_reentrant_gradient_checkpointing_disables_metadata_check(monkeypatc
     model.blocks[0](x, e, seq_lens, grid_sizes, freqs, context, context_lens)
 
     assert captured_kwargs == [{"use_reentrant": False, "determinism_check": "none"}]
+    assert early_stop_values == [False]
 
 
 def test_wan_rope_patch_preserves_input_dtype_and_shape():

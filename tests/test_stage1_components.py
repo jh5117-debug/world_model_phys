@@ -77,6 +77,10 @@ class _DummyWanBlock(nn.Module):
         self.cross_attn = _RecordingCrossAttention()
         self.norm2 = _FloatNorm()
         self.ffn = _TypedFFN(dim)
+        self.cam_injector_layer1 = _TypedFFN(dim)
+        self.cam_injector_layer2 = _TypedFFN(dim)
+        self.cam_scale_layer = _TypedFFN(dim)
+        self.cam_shift_layer = _TypedFFN(dim)
 
     def forward(self, x, e, seq_lens, grid_sizes, freqs, context, context_lens, dit_cond_dict=None):
         raise NotImplementedError("test should replace this forward via patching")
@@ -191,6 +195,36 @@ def test_apply_memory_efficient_wan_block_patch_avoids_outer_sequential_forward(
     assert inner_ffn.seen_seq_lens == [2, 2, 1]
     out.float().sum().backward()
     assert inner_ffn.proj.weight.grad is not None
+
+
+def test_apply_memory_efficient_wan_block_patch_keeps_camera_injection_chunked():
+    model = _DummyWanModel(dim=4)
+    apply_memory_efficient_wan_block_patch(model, "dummy", ffn_chunk_size=2)
+
+    block = model.blocks[0]
+    x = torch.randn(1, 5, 4, dtype=torch.bfloat16, requires_grad=True)
+    e = torch.zeros(1, 5, 6, 4, dtype=torch.bfloat16)
+    context = torch.zeros(1, 2, 4, dtype=torch.bfloat16)
+    c2ws = torch.ones(1, 5, 4, dtype=torch.bfloat16)
+
+    out = block(
+        x,
+        e,
+        seq_lens=torch.tensor([5], dtype=torch.int32),
+        grid_sizes=torch.tensor([[1, 1, 1]], dtype=torch.int32),
+        freqs=torch.zeros(1, 5, 4, dtype=torch.bfloat16),
+        context=context,
+        context_lens=torch.tensor([2], dtype=torch.int32),
+        dit_cond_dict={"c2ws_plucker_emb": c2ws},
+    )
+
+    assert out.shape == x.shape
+    assert block.cam_injector_layer1.seen_seq_lens == [2, 2, 1]
+    assert block.cam_injector_layer2.seen_seq_lens == [2, 2, 1]
+    assert block.cam_scale_layer.seen_seq_lens == [2, 2, 1]
+    assert block.cam_shift_layer.seen_seq_lens == [2, 2, 1]
+    out.float().sum().backward()
+    assert x.grad is not None
 
 
 def test_apply_memory_efficient_wan_block_patch_chunks_wan_sequence_norms():
