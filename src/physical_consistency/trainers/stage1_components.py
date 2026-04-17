@@ -434,11 +434,21 @@ def apply_gradient_checkpointing(
     import torch.utils.checkpoint as checkpoint_module
 
     patched = 0
+    inner_patched = 0
     block_container = getattr(model, "blocks", None)
     if block_container is None:
         LOGGER.warning("No transformer blocks found for %s", model_name)
         return
     for block in block_container:
+        if getattr(block, "_pc_memory_efficient_modulation_patched", False):
+            block._pc_inner_gradient_checkpointing = True
+            block._pc_checkpoint_use_reentrant = use_reentrant
+            inner_patched += 1
+            continue
+
+        if getattr(block, "_pc_gradient_checkpointing_patched", False):
+            continue
+
         original_forward = block.forward
 
         def _make_ckpt(fn):
@@ -495,14 +505,26 @@ def apply_gradient_checkpointing(
             return _wrapped
 
         block.forward = _make_ckpt(original_forward)
+        block._pc_gradient_checkpointing_patched = True
         patched += 1
     if _should_log_rank_zero():
-        LOGGER.info(
-            "Gradient checkpointing patched %s blocks for %s (use_reentrant=%s)",
-            patched,
-            model_name,
-            use_reentrant,
-        )
+        if inner_patched:
+            LOGGER.info(
+                "Gradient checkpointing enabled inner FFN checkpointing for %s memory-efficient Wan blocks in %s "
+                "(use_reentrant=%s; attention remains outside checkpoint)",
+                inner_patched,
+                model_name,
+                use_reentrant,
+            )
+        if patched:
+            LOGGER.info(
+                "Gradient checkpointing patched %s blocks for %s (use_reentrant=%s)",
+                patched,
+                model_name,
+                use_reentrant,
+            )
+        if not inner_patched and not patched:
+            LOGGER.warning("No transformer blocks were patched for gradient checkpointing in %s", model_name)
 
 
 def apply_memory_efficient_wan_block_patch(
@@ -543,6 +565,58 @@ def apply_memory_efficient_wan_block_patch(
         gate = _squeeze_gate(gate).to(device=value.device, dtype=value.dtype)
         return torch.addcmul(base, value, gate)
 
+    def _run_checkpointed_inner(
+        block: torch.nn.Module,
+        fn,
+        *args: torch.Tensor,
+    ) -> torch.Tensor:
+        if not getattr(block, "_pc_inner_gradient_checkpointing", False) or not torch.is_grad_enabled():
+            return fn(*args)
+
+        import torch.utils.checkpoint as checkpoint_module
+
+        use_reentrant = bool(getattr(block, "_pc_checkpoint_use_reentrant", False))
+        checkpoint_args = args
+        needs_anchor = use_reentrant and not any(
+            torch.is_tensor(arg) and arg.requires_grad for arg in checkpoint_args
+        )
+        if needs_anchor:
+            anchor_source = next((arg for arg in checkpoint_args if torch.is_tensor(arg)), None)
+            if anchor_source is None:
+                return fn(*args)
+            anchor = torch.ones(
+                (),
+                device=anchor_source.device,
+                dtype=anchor_source.dtype,
+                requires_grad=True,
+            )
+            checkpoint_args = (*checkpoint_args, anchor)
+
+            def _forward(*inner_args):
+                *fn_args, anchor_arg = inner_args
+                output = fn(*fn_args)
+                return output + anchor_arg.to(dtype=output.dtype) * 0
+
+        else:
+            def _forward(*inner_args):
+                return fn(*inner_args)
+
+        checkpoint_kwargs = {"use_reentrant": use_reentrant}
+        if not use_reentrant:
+            checkpoint_kwargs["determinism_check"] = "none"
+
+        def _run_checkpoint():
+            return checkpoint_module.checkpoint(_forward, *checkpoint_args, **checkpoint_kwargs)
+
+        if use_reentrant:
+            return _run_checkpoint()
+
+        early_stop = getattr(checkpoint_module, "set_checkpoint_early_stop", None)
+        if early_stop is None:
+            return _run_checkpoint()
+        with early_stop(False):
+            return _run_checkpoint()
+
     def _extract_control_tensor(dit_cond_dict) -> torch.Tensor | None:
         if not dit_cond_dict or "c2ws_plucker_emb" not in dit_cond_dict:
             return None
@@ -564,6 +638,7 @@ def apply_memory_efficient_wan_block_patch(
         return module(inputs)
 
     def _run_ffn_residual(
+        block: torch.nn.Module,
         ffn: torch.nn.Module,
         norm: torch.nn.Module,
         residual: torch.Tensor,
@@ -573,9 +648,17 @@ def apply_memory_efficient_wan_block_patch(
         target_dtype: torch.dtype,
     ) -> torch.Tensor:
         if ffn_chunk_size is None or residual.shape[1] <= ffn_chunk_size:
-            ffn_input = _modulate(norm(residual), shift, scale, target_dtype)
-            y = _run_module_layers(ffn, ffn_input)
-            return _apply_gated_residual(residual, y, gate)
+            def _ffn_body(
+                residual_arg: torch.Tensor,
+                shift_arg: torch.Tensor,
+                scale_arg: torch.Tensor,
+                gate_arg: torch.Tensor,
+            ):
+                ffn_input = _modulate(norm(residual_arg), shift_arg, scale_arg, target_dtype)
+                y = _run_module_layers(ffn, ffn_input)
+                return _apply_gated_residual(residual_arg, y, gate_arg)
+
+            return _run_checkpointed_inner(block, _ffn_body, residual, shift, scale, gate)
 
         output = torch.empty_like(residual)
         for start in range(0, residual.shape[1], ffn_chunk_size):
@@ -584,9 +667,25 @@ def apply_memory_efficient_wan_block_patch(
             shift_chunk = _slice_sequence(shift, start, stop)
             scale_chunk = _slice_sequence(scale, start, stop)
             gate_chunk = _slice_sequence(gate, start, stop)
-            ffn_input_chunk = _modulate(norm(residual_chunk), shift_chunk, scale_chunk, target_dtype)
-            y_chunk = _run_module_layers(ffn, ffn_input_chunk)
-            output[:, start:stop] = _apply_gated_residual(residual_chunk, y_chunk, gate_chunk)
+
+            def _ffn_chunk_body(
+                residual_arg: torch.Tensor,
+                shift_arg: torch.Tensor,
+                scale_arg: torch.Tensor,
+                gate_arg: torch.Tensor,
+            ):
+                ffn_input_chunk = _modulate(norm(residual_arg), shift_arg, scale_arg, target_dtype)
+                y_chunk = _run_module_layers(ffn, ffn_input_chunk)
+                return _apply_gated_residual(residual_arg, y_chunk, gate_arg)
+
+            output[:, start:stop] = _run_checkpointed_inner(
+                block,
+                _ffn_chunk_body,
+                residual_chunk,
+                shift_chunk,
+                scale_chunk,
+                gate_chunk,
+            )
         return output
 
     def _run_camera_injection(block: torch.nn.Module, x: torch.Tensor, dit_cond_dict, target_dtype: torch.dtype) -> torch.Tensor:
@@ -653,6 +752,7 @@ def apply_memory_efficient_wan_block_patch(
             x = x + self.cross_attn(cross_input, context, context_lens)
 
             x = _run_ffn_residual(
+                self,
                 self.ffn,
                 self.norm2,
                 x,

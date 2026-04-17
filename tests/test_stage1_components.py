@@ -4,6 +4,7 @@ import torch.nn as nn
 from physical_consistency.trainers.stage1_components import (
     LoRALinear,
     LingBotStage1Helper,
+    apply_gradient_checkpointing,
     apply_lora_to_wan_model,
     apply_memory_efficient_wan_block_patch,
     export_pretrained_state_dict,
@@ -238,6 +239,57 @@ def test_apply_memory_efficient_wan_block_patch_chunks_wan_sequence_norms():
     assert model.extra_norm.seen_seq_lens == [2, 2, 1]
     out.float().sum().backward()
     assert x.grad is not None
+
+
+def test_gradient_checkpointing_uses_inner_ffn_for_memory_efficient_wan(monkeypatch):
+    checkpoint_calls = []
+    early_stop_values = []
+
+    def fake_checkpoint(fn, *args, **kwargs):
+        checkpoint_calls.append(kwargs)
+        return fn(*args)
+
+    class _FakeEarlyStop:
+        def __init__(self, value):
+            self.value = value
+
+        def __enter__(self):
+            early_stop_values.append(self.value)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("torch.utils.checkpoint.checkpoint", fake_checkpoint)
+    monkeypatch.setattr("torch.utils.checkpoint.set_checkpoint_early_stop", _FakeEarlyStop)
+
+    model = _DummyWanModel(dim=4)
+    apply_memory_efficient_wan_block_patch(model, "dummy", ffn_chunk_size=2)
+    block = model.blocks[0]
+    apply_gradient_checkpointing(model, "dummy", use_reentrant=False)
+
+    x = torch.randn(1, 5, 4, dtype=torch.bfloat16, requires_grad=True)
+    e = torch.zeros(1, 5, 6, 4, dtype=torch.bfloat16)
+    context = torch.zeros(1, 2, 4, dtype=torch.bfloat16)
+    out = block(
+        x,
+        e,
+        seq_lens=torch.tensor([5], dtype=torch.int32),
+        grid_sizes=torch.tensor([[1, 1, 1]], dtype=torch.int32),
+        freqs=torch.zeros(1, 5, 4, dtype=torch.bfloat16),
+        context=context,
+        context_lens=torch.tensor([2], dtype=torch.int32),
+    )
+
+    assert out.shape == x.shape
+    assert getattr(block, "_pc_inner_gradient_checkpointing") is True
+    assert checkpoint_calls == [
+        {"use_reentrant": False, "determinism_check": "none"},
+        {"use_reentrant": False, "determinism_check": "none"},
+        {"use_reentrant": False, "determinism_check": "none"},
+    ]
+    assert early_stop_values == [False, False, False]
+    out.float().sum().backward()
+    assert block.ffn.proj.weight.grad is not None
 
 
 def test_apply_lora_to_wan_model_replaces_block_linears_and_freezes_base_params():
