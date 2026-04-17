@@ -221,6 +221,26 @@ def test_apply_lora_to_wan_model_replaces_block_linears_and_freezes_base_params(
     assert "outside.weight" not in trainable_names
 
 
+def test_lora_linear_chunked_forward_matches_unchunked_and_backprops():
+    torch.manual_seed(0)
+    base = torch.nn.Linear(4, 4, bias=False)
+    plain = LoRALinear(base, rank=2, alpha=2, dropout=0.0)
+    chunked = LoRALinear(torch.nn.Linear(4, 4, bias=False), rank=2, alpha=2, dropout=0.0, chunk_size=2)
+    chunked.load_state_dict(plain.state_dict())
+
+    x_plain = torch.randn(1, 5, 4, requires_grad=True)
+    x_chunked = x_plain.detach().clone().requires_grad_(True)
+
+    out_plain = plain(x_plain)
+    out_chunked = chunked(x_chunked)
+
+    assert torch.allclose(out_plain, out_chunked)
+    out_chunked.sum().backward()
+    assert x_chunked.grad is not None
+    assert chunked.lora_A.weight.grad is not None
+    assert chunked.lora_B.weight.grad is not None
+
+
 def test_lora_state_dict_round_trip_and_merge_export():
     model = _TinyLoRAModel(dim=2)
     apply_lora_to_wan_model(model, model_name="tiny", rank=1, alpha=1, dropout=0.0)

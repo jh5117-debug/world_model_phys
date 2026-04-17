@@ -268,6 +268,7 @@ class LingBotStage1Helper:
                 alpha=getattr(self.args, "student_lora_alpha", 16),
                 dropout=getattr(self.args, "student_lora_dropout", 0.0),
                 block_start=getattr(self.args, "student_lora_block_start", 0),
+                lora_chunk_size=getattr(self.args, "student_lora_chunk_size", None),
             )
         model.train()
         return model
@@ -664,6 +665,7 @@ class LoRALinear(torch.nn.Module):
         rank: int,
         alpha: int,
         dropout: float,
+        chunk_size: int | None = None,
     ) -> None:
         super().__init__()
         if rank <= 0:
@@ -672,6 +674,7 @@ class LoRALinear(torch.nn.Module):
         self.rank = int(rank)
         self.alpha = int(alpha)
         self.scaling = float(self.alpha) / float(self.rank)
+        self.chunk_size = int(chunk_size) if chunk_size is not None and chunk_size > 0 else None
         self.dropout = torch.nn.Dropout(float(dropout)) if dropout > 0 else torch.nn.Identity()
         self.lora_A = torch.nn.Linear(
             base.in_features,
@@ -694,8 +697,15 @@ class LoRALinear(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         base_out = self.base(x)
-        lora_out = self.lora_B(self.lora_A(self.dropout(x)))
-        return base_out + lora_out * self.scaling
+        if self.chunk_size is None or x.ndim < 3 or x.shape[1] <= self.chunk_size:
+            lora_out = self.lora_B(self.lora_A(self.dropout(x)))
+            return base_out.add_(lora_out, alpha=self.scaling)
+
+        for start in range(0, x.shape[1], self.chunk_size):
+            stop = min(start + self.chunk_size, x.shape[1])
+            lora_chunk = self.lora_B(self.lora_A(self.dropout(x[:, start:stop])))
+            base_out[:, start:stop].add_(lora_chunk, alpha=self.scaling)
+        return base_out
 
 
 def _iter_lora_modules(model: torch.nn.Module) -> list[tuple[str, LoRALinear]]:
@@ -711,12 +721,15 @@ def apply_lora_to_wan_model(
     dropout: float,
     target_prefixes: tuple[str, ...] = ("blocks",),
     block_start: int = 0,
+    lora_chunk_size: int | None = None,
 ) -> None:
     """Replace selected Wan linear layers with standard LoRA adapters."""
 
     block_start = int(block_start)
     if block_start < 0:
         raise ValueError(f"LoRA block_start must be non-negative, got {block_start}")
+    if lora_chunk_size is not None and lora_chunk_size <= 0:
+        lora_chunk_size = None
 
     def _block_index(full_name: str) -> int | None:
         parts = full_name.split(".")
@@ -748,6 +761,7 @@ def apply_lora_to_wan_model(
             rank=rank,
             alpha=alpha,
             dropout=dropout,
+            chunk_size=lora_chunk_size,
         )
         replaced += 1
 
@@ -772,16 +786,18 @@ def apply_lora_to_wan_model(
         "dropout": float(dropout),
         "target_prefixes": tuple(target_prefixes),
         "block_start": block_start,
+        "lora_chunk_size": lora_chunk_size,
     }
     if _should_log_rank_zero():
         LOGGER.info(
-            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, block_start=%s, trainable=%s/%s)",
+            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, block_start=%s, lora_chunk_size=%s, trainable=%s/%s)",
             replaced,
             model_name,
             rank,
             alpha,
             dropout,
             block_start,
+            lora_chunk_size or "disabled",
             trainable_params,
             total_params,
         )

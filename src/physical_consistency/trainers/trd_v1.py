@@ -1730,6 +1730,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("student_lora_alpha", 16)
     payload.setdefault("student_lora_dropout", 0.0)
     payload.setdefault("student_lora_block_start", 0)
+    payload.setdefault("student_lora_chunk_size", 0)
     payload.setdefault("student_memory_efficient_modulation", True)
     payload.setdefault("student_ffn_chunk_size", 512)
     payload.setdefault("student_norm_chunk_size", 0)
@@ -1780,6 +1781,10 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         payload["student_lora_block_start"] = 0
     else:
         payload["student_lora_block_start"] = int(payload["student_lora_block_start"])
+    if payload["student_lora_chunk_size"] in ("", None):
+        payload["student_lora_chunk_size"] = 0
+    else:
+        payload["student_lora_chunk_size"] = int(payload["student_lora_chunk_size"])
     if payload["student_tuning_mode"] == "lora":
         if payload["student_lora_rank"] <= 0:
             raise ValueError(f"student_lora_rank must be positive, got {payload['student_lora_rank']}")
@@ -1792,6 +1797,10 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         if payload["student_lora_block_start"] < 0:
             raise ValueError(
                 f"student_lora_block_start must be non-negative, got {payload['student_lora_block_start']}"
+            )
+        if payload["student_lora_chunk_size"] < 0:
+            raise ValueError(
+                f"student_lora_chunk_size must be non-negative, got {payload['student_lora_chunk_size']}"
             )
     payload["student_memory_efficient_modulation"] = _coerce_bool(payload["student_memory_efficient_modulation"])
     payload["gradient_checkpointing"] = _coerce_bool(payload["gradient_checkpointing"])
@@ -1914,6 +1923,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--student_lora_alpha", type=int, default=None)
     parser.add_argument("--student_lora_dropout", type=float, default=None)
     parser.add_argument("--student_lora_block_start", type=int, default=None)
+    parser.add_argument("--student_lora_chunk_size", type=int, default=None)
     parser.add_argument("--gradient_checkpointing", type=str, default="")
     parser.add_argument("--student_checkpoint_use_reentrant", type=str, default="")
     parser.add_argument("--student_memory_efficient_modulation", type=str, default="")

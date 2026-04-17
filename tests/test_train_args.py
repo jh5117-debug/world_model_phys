@@ -43,6 +43,7 @@ class _CliArgs:
     validation_runtime_mode = ""
     allow_deepspeed_feature_hook_experimental = ""
     student_lora_block_start = None
+    student_lora_chunk_size = None
 
     def __init__(self, config: str, env_file: str) -> None:
         self.config = config
@@ -179,6 +180,7 @@ def test_build_args_supports_dual_training_defaults(tmp_path):
     assert args.student_lora_rank == 16
     assert args.student_lora_alpha == 16
     assert args.student_lora_dropout == 0.0
+    assert args.student_lora_chunk_size == 0
     assert args.student_memory_efficient_modulation is True
     assert args.student_ffn_chunk_size == 512
     assert args.student_norm_chunk_size == 0
@@ -634,6 +636,7 @@ def test_build_args_accepts_student_lora_overrides(tmp_path):
             "student_lora_alpha": 32,
             "student_lora_dropout": 0.1,
             "student_lora_block_start": 2,
+            "student_lora_chunk_size": 128,
             "teacher_checkpoint_dir": str(tmp_path / "teacher"),
         },
     )
@@ -645,6 +648,7 @@ def test_build_args_accepts_student_lora_overrides(tmp_path):
     assert args.student_lora_alpha == 32
     assert args.student_lora_dropout == 0.1
     assert args.student_lora_block_start == 2
+    assert args.student_lora_chunk_size == 128
 
 
 def test_lora_block_start_limits_trainable_adapters():
