@@ -574,6 +574,28 @@ def test_build_args_accepts_gradient_checkpointing_override(tmp_path):
     assert args.gradient_checkpointing is False
 
 
+def test_build_args_accepts_checkpoint_reentrant_override(tmp_path):
+    config_path = tmp_path / "train.yaml"
+    env_path = tmp_path / "paths.env"
+    write_yaml(
+        config_path,
+        {
+            "experiment_name": "exp_non_reentrant_gc",
+            "model_type": "dual",
+            "student_tuning_mode": "lora",
+            "teacher_checkpoint_dir": str(tmp_path / "teacher"),
+        },
+    )
+    env_path.write_text("", encoding="utf-8")
+    cli_args = _CliArgs(str(config_path), str(env_path))
+    cli_args.student_checkpoint_use_reentrant = "false"
+
+    args = build_args(cli_args)
+
+    assert args.student_checkpoint_use_reentrant is False
+    assert student_gradient_checkpointing_use_reentrant(args) is False
+
+
 def test_should_apply_student_gradient_checkpointing_keeps_full_mode():
     args = _CliArgs(config="", env_file="")
     args.gradient_checkpointing = True

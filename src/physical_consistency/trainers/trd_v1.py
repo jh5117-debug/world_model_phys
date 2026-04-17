@@ -71,6 +71,9 @@ def should_apply_student_gradient_checkpointing(args: argparse.Namespace) -> boo
 
 def student_gradient_checkpointing_use_reentrant(args: argparse.Namespace) -> bool:
     """Use the reentrant checkpoint path for LoRA to avoid non-reentrant metadata mismatches."""
+    override = getattr(args, "student_checkpoint_use_reentrant", None)
+    if override is not None:
+        return bool(override)
     return getattr(args, "student_tuning_mode", "full") == "lora"
 
 
@@ -1726,6 +1729,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("student_lora_dropout", 0.0)
     payload.setdefault("student_memory_efficient_modulation", True)
     payload.setdefault("student_ffn_chunk_size", 512)
+    payload.setdefault("student_checkpoint_use_reentrant", None)
     payload.setdefault("gradient_checkpointing", True)
     payload.setdefault("validation_every_steps", 0)
     payload.setdefault("validation_every_epochs", 1)
@@ -1775,6 +1779,10 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
             )
     payload["student_memory_efficient_modulation"] = _coerce_bool(payload["student_memory_efficient_modulation"])
     payload["gradient_checkpointing"] = _coerce_bool(payload["gradient_checkpointing"])
+    if payload["student_checkpoint_use_reentrant"] in ("", None):
+        payload["student_checkpoint_use_reentrant"] = None
+    else:
+        payload["student_checkpoint_use_reentrant"] = _coerce_bool(payload["student_checkpoint_use_reentrant"])
     if payload["student_ffn_chunk_size"] in ("", None):
         payload["student_ffn_chunk_size"] = 512
     else:
@@ -1882,6 +1890,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--student_lora_alpha", type=int, default=None)
     parser.add_argument("--student_lora_dropout", type=float, default=None)
     parser.add_argument("--gradient_checkpointing", type=str, default="")
+    parser.add_argument("--student_checkpoint_use_reentrant", type=str, default="")
     parser.add_argument("--student_memory_efficient_modulation", type=str, default="")
     parser.add_argument("--student_ffn_chunk_size", type=int, default=None)
     parser.add_argument("--wandb_relation_image_every_steps", type=int, default=None)
