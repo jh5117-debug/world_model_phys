@@ -872,11 +872,23 @@ class TRDTrainingRunner:
                 use_reentrant = student_gradient_checkpointing_use_reentrant(self.args)
                 if self.accelerator.is_main_process:
                     LOGGER.info(
-                        "Applying block-level gradient checkpointing for student models (use_reentrant=%s)",
+                        "Applying block-level gradient checkpointing for student models (use_reentrant=%s; skip_feature_block=%s)",
                         use_reentrant,
+                        self.args.student_target_block,
                     )
-                apply_gradient_checkpointing(low_model, "low_noise_model", use_reentrant=use_reentrant)
-                apply_gradient_checkpointing(high_model, "high_noise_model", use_reentrant=use_reentrant)
+                skip_feature_block = {int(self.args.student_target_block)}
+                apply_gradient_checkpointing(
+                    low_model,
+                    "low_noise_model",
+                    use_reentrant=use_reentrant,
+                    skip_block_indices=skip_feature_block,
+                )
+                apply_gradient_checkpointing(
+                    high_model,
+                    "high_noise_model",
+                    use_reentrant=use_reentrant,
+                    skip_block_indices=skip_feature_block,
+                )
 
             if self.args.student_tuning_mode == "lora" and resume_state:
                 load_lora_state_dict(low_model, resume_state.get("low_lora", {}), model_name="low_noise_model")
@@ -904,14 +916,16 @@ class TRDTrainingRunner:
                 use_reentrant = student_gradient_checkpointing_use_reentrant(self.args)
                 if self.accelerator.is_main_process:
                     LOGGER.info(
-                        "Applying block-level gradient checkpointing for %s_noise_model (use_reentrant=%s)",
+                        "Applying block-level gradient checkpointing for %s_noise_model (use_reentrant=%s; skip_feature_block=%s)",
                         branch,
                         use_reentrant,
+                        self.args.student_target_block,
                     )
                 apply_gradient_checkpointing(
                     branch_model,
                     f"{branch}_noise_model",
                     use_reentrant=use_reentrant,
+                    skip_block_indices={int(self.args.student_target_block)},
                 )
 
             if self.args.student_tuning_mode == "lora" and resume_state:

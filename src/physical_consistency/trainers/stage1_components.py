@@ -516,6 +516,7 @@ def apply_gradient_checkpointing(
     model_name: str = "model",
     *,
     use_reentrant: bool = False,
+    skip_block_indices: set[int] | None = None,
 ) -> None:
     """Apply the same DiT block checkpointing strategy as Stage-1."""
     from functools import wraps
@@ -523,6 +524,8 @@ def apply_gradient_checkpointing(
 
     patched = 0
     memory_efficient_patched = 0
+    skipped = 0
+    skip_block_indices = set(skip_block_indices or ())
     block_container = getattr(model, "blocks", None)
     if block_container is None:
         LOGGER.warning("No transformer blocks found for %s", model_name)
@@ -581,7 +584,12 @@ def apply_gradient_checkpointing(
 
         return _wrapped
 
-    for block in block_container:
+    for block_index, block in enumerate(block_container):
+        if block_index in skip_block_indices:
+            block._pc_gradient_checkpointing_skipped = True
+            block._pc_checkpoint_skip_reason = "requested"
+            skipped += 1
+            continue
         if getattr(block, "_pc_gradient_checkpointing_patched", False):
             continue
 
@@ -614,6 +622,13 @@ def apply_gradient_checkpointing(
                 patched,
                 model_name,
                 use_reentrant,
+            )
+        if skipped:
+            LOGGER.info(
+                "Gradient checkpointing skipped %s blocks for %s (indices=%s)",
+                skipped,
+                model_name,
+                ",".join(str(index) for index in sorted(skip_block_indices)),
             )
         if not patched:
             LOGGER.warning("No transformer blocks were patched for gradient checkpointing in %s", model_name)

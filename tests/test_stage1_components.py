@@ -88,9 +88,9 @@ class _DummyWanBlock(nn.Module):
 
 
 class _DummyWanModel(nn.Module):
-    def __init__(self, dim: int):
+    def __init__(self, dim: int, num_blocks: int = 1):
         super().__init__()
-        self.blocks = nn.ModuleList([_DummyWanBlock(dim)])
+        self.blocks = nn.ModuleList([_DummyWanBlock(dim) for _ in range(num_blocks)])
         self.extra_norm = WanRMSNorm()
 
 
@@ -341,6 +341,41 @@ def test_gradient_checkpointing_wraps_camera_injection_for_memory_efficient_wan(
     assert early_stop_values == [False]
     out.float().sum().backward()
     assert block.cam_injector_layer1.proj.weight.grad is not None
+
+
+def test_gradient_checkpointing_can_skip_feature_hook_block(monkeypatch):
+    checkpoint_calls = []
+
+    def fake_checkpoint(fn, *args, **kwargs):
+        checkpoint_calls.append(kwargs)
+        return fn(*args)
+
+    monkeypatch.setattr("torch.utils.checkpoint.checkpoint", fake_checkpoint)
+
+    model = _DummyWanModel(dim=4, num_blocks=2)
+    apply_memory_efficient_wan_block_patch(model, "dummy")
+    apply_gradient_checkpointing(model, "dummy", use_reentrant=False, skip_block_indices={1})
+
+    assert getattr(model.blocks[0], "_pc_gradient_checkpointing_patched") is True
+    assert not getattr(model.blocks[0], "_pc_gradient_checkpointing_skipped", False)
+    assert not getattr(model.blocks[1], "_pc_gradient_checkpointing_patched", False)
+    assert getattr(model.blocks[1], "_pc_gradient_checkpointing_skipped") is True
+
+    x = torch.randn(1, 5, 4, dtype=torch.bfloat16, requires_grad=True)
+    e = torch.zeros(1, 5, 6, 4, dtype=torch.bfloat16)
+    context = torch.zeros(1, 2, 4, dtype=torch.bfloat16)
+    common_kwargs = {
+        "seq_lens": torch.tensor([5], dtype=torch.int32),
+        "grid_sizes": torch.tensor([[1, 1, 1]], dtype=torch.int32),
+        "freqs": torch.zeros(1, 5, 4, dtype=torch.bfloat16),
+        "context": context,
+        "context_lens": torch.tensor([2], dtype=torch.int32),
+    }
+
+    _ = model.blocks[0](x, e, **common_kwargs)
+    _ = model.blocks[1](x, e, **common_kwargs)
+
+    assert checkpoint_calls == [{"use_reentrant": False, "determinism_check": "none"}]
 
 
 def test_apply_lora_to_wan_model_replaces_block_linears_and_freezes_base_params():
