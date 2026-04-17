@@ -392,17 +392,23 @@ def apply_gradient_checkpointing(
             @wraps(fn)
             def _wrapped(x, e, seq_lens, grid_sizes, freqs, context, context_lens, dit_cond_dict=None):
                 def _forward(*tensor_args):
+                    if use_reentrant and len(tensor_args) == 8:
+                        tensor_args = tensor_args[:-1]
                     return fn(*tensor_args, dit_cond_dict=dit_cond_dict)
+
+                checkpoint_args = (x, e, seq_lens, grid_sizes, freqs, context, context_lens)
+                if use_reentrant and not any(
+                    torch.is_tensor(arg) and arg.requires_grad for arg in checkpoint_args
+                ):
+                    # Reentrant checkpointing drops parameter gradients when no input
+                    # requires grad. LoRA tuning often freezes all block inputs, so a
+                    # tiny sentinel keeps the checkpoint backward path alive.
+                    grad_anchor = torch.ones((), device=x.device, dtype=x.dtype, requires_grad=True)
+                    checkpoint_args = (*checkpoint_args, grad_anchor)
 
                 return torch_checkpoint(
                     _forward,
-                    x,
-                    e,
-                    seq_lens,
-                    grid_sizes,
-                    freqs,
-                    context,
-                    context_lens,
+                    *checkpoint_args,
                     use_reentrant=use_reentrant,
                 )
 

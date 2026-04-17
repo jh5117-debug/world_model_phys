@@ -1,5 +1,8 @@
 from physical_consistency.common.io import read_yaml, write_yaml
-from physical_consistency.trainers.stage1_components import compute_scheduler_total_steps
+from physical_consistency.trainers.stage1_components import (
+    apply_gradient_checkpointing,
+    compute_scheduler_total_steps,
+)
 from physical_consistency.trainers import trd_v1 as trd_v1_module
 from physical_consistency.trainers.trd_v1 import (
     TRDTrainingRunner,
@@ -42,6 +45,21 @@ class _CliArgs:
         self.env_file = env_file
 
 
+class _CheckpointedBlock(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.proj = torch.nn.Linear(3, 3)
+
+    def forward(self, x, e, seq_lens, grid_sizes, freqs, context, context_lens, dit_cond_dict=None):
+        return self.proj(x)
+
+
+class _CheckpointedModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.blocks = torch.nn.ModuleList([_CheckpointedBlock()])
+
+
 def test_build_args_does_not_resolve_teacher_checkpoint_early(tmp_path):
     config_path = tmp_path / "train.yaml"
     env_path = tmp_path / "paths.env"
@@ -58,6 +76,24 @@ def test_build_args_does_not_resolve_teacher_checkpoint_early(tmp_path):
     args = build_args(_CliArgs(str(config_path), str(env_path)))
     assert args.experiment_name == "exp_test"
     assert args.teacher_checkpoint_path == ""
+
+
+def test_reentrant_gradient_checkpointing_preserves_parameter_grads_without_input_grads():
+    model = _CheckpointedModel()
+    apply_gradient_checkpointing(model, use_reentrant=True)
+
+    x = torch.randn(2, 3)
+    e = torch.zeros(2, 3)
+    seq_lens = torch.tensor([2])
+    grid_sizes = torch.tensor([[1, 1, 2]])
+    freqs = torch.zeros(2, 3)
+    context = torch.zeros(2, 3)
+    context_lens = torch.tensor([2])
+
+    output = model.blocks[0](x, e, seq_lens, grid_sizes, freqs, context, context_lens)
+    output.sum().backward()
+
+    assert model.blocks[0].proj.weight.grad is not None
 
 
 def test_build_args_supports_dual_training_defaults(tmp_path):
