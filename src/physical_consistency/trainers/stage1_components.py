@@ -266,6 +266,7 @@ class LingBotStage1Helper:
                 rank=getattr(self.args, "student_lora_rank", 16),
                 alpha=getattr(self.args, "student_lora_alpha", 16),
                 dropout=getattr(self.args, "student_lora_dropout", 0.0),
+                block_start=getattr(self.args, "student_lora_block_start", 0),
             )
         model.train()
         return model
@@ -664,11 +665,28 @@ def apply_lora_to_wan_model(
     alpha: int,
     dropout: float,
     target_prefixes: tuple[str, ...] = ("blocks",),
+    block_start: int = 0,
 ) -> None:
     """Replace selected Wan linear layers with standard LoRA adapters."""
 
+    block_start = int(block_start)
+    if block_start < 0:
+        raise ValueError(f"LoRA block_start must be non-negative, got {block_start}")
+
+    def _block_index(full_name: str) -> int | None:
+        parts = full_name.split(".")
+        if len(parts) < 2 or parts[0] != "blocks":
+            return None
+        try:
+            return int(parts[1])
+        except ValueError:
+            return None
+
     def _is_target_module(full_name: str) -> bool:
-        return any(full_name == prefix or full_name.startswith(f"{prefix}.") for prefix in target_prefixes)
+        if not any(full_name == prefix or full_name.startswith(f"{prefix}.") for prefix in target_prefixes):
+            return False
+        index = _block_index(full_name)
+        return index is None or index >= block_start
 
     replaced = 0
     for full_name, module in list(model.named_modules()):
@@ -708,15 +726,17 @@ def apply_lora_to_wan_model(
         "alpha": int(alpha),
         "dropout": float(dropout),
         "target_prefixes": tuple(target_prefixes),
+        "block_start": block_start,
     }
     if _should_log_rank_zero():
         LOGGER.info(
-            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, trainable=%s/%s)",
+            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, block_start=%s, trainable=%s/%s)",
             replaced,
             model_name,
             rank,
             alpha,
             dropout,
+            block_start,
             trainable_params,
             total_params,
         )

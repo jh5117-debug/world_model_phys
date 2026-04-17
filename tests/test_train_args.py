@@ -1,7 +1,9 @@
 from physical_consistency.common.io import read_yaml, write_yaml
 from physical_consistency.trainers.stage1_components import (
+    LoRALinear,
     _patch_wan_rope_apply_to_preserve_dtype,
     apply_gradient_checkpointing,
+    apply_lora_to_wan_model,
     compute_scheduler_total_steps,
 )
 from physical_consistency.trainers import trd_v1 as trd_v1_module
@@ -40,6 +42,7 @@ class _CliArgs:
     teacher_checkpoint_path = ""
     validation_runtime_mode = ""
     allow_deepspeed_feature_hook_experimental = ""
+    student_lora_block_start = None
 
     def __init__(self, config: str, env_file: str) -> None:
         self.config = config
@@ -59,6 +62,18 @@ class _CheckpointedModel(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.blocks = torch.nn.ModuleList([_CheckpointedBlock()])
+
+
+class _TinyLoRABlock(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.proj = torch.nn.Linear(4, 4)
+
+
+class _TinyLoRAModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.blocks = torch.nn.ModuleList([_TinyLoRABlock() for _ in range(3)])
 
 
 def test_build_args_does_not_resolve_teacher_checkpoint_early(tmp_path):
@@ -575,6 +590,7 @@ def test_build_args_accepts_student_lora_overrides(tmp_path):
             "student_lora_rank": 8,
             "student_lora_alpha": 32,
             "student_lora_dropout": 0.1,
+            "student_lora_block_start": 2,
             "teacher_checkpoint_dir": str(tmp_path / "teacher"),
         },
     )
@@ -585,6 +601,18 @@ def test_build_args_accepts_student_lora_overrides(tmp_path):
     assert args.student_lora_rank == 8
     assert args.student_lora_alpha == 32
     assert args.student_lora_dropout == 0.1
+    assert args.student_lora_block_start == 2
+
+
+def test_lora_block_start_limits_trainable_adapters():
+    model = _TinyLoRAModel()
+
+    apply_lora_to_wan_model(model, rank=2, alpha=2, dropout=0.0, block_start=1)
+
+    assert isinstance(model.blocks[0].proj, torch.nn.Linear)
+    assert isinstance(model.blocks[1].proj, LoRALinear)
+    assert isinstance(model.blocks[2].proj, LoRALinear)
+    assert model._pc_lora_config["block_start"] == 1
 
 
 def test_should_apply_student_gradient_checkpointing_keeps_lora_mode_enabled():
