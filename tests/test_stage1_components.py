@@ -17,6 +17,16 @@ class _FloatNorm(nn.Module):
         return x.float()
 
 
+class WanRMSNorm(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.seen_seq_lens = []
+
+    def forward(self, x):
+        self.seen_seq_lens.append(x.shape[1])
+        return x.float().type_as(x)
+
+
 class _RecordingSelfAttention(nn.Module):
     def __init__(self):
         super().__init__()
@@ -76,6 +86,7 @@ class _DummyWanModel(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
         self.blocks = nn.ModuleList([_DummyWanBlock(dim)])
+        self.extra_norm = WanRMSNorm()
 
 
 class _TinyLoRABlock(nn.Module):
@@ -180,6 +191,19 @@ def test_apply_memory_efficient_wan_block_patch_avoids_outer_sequential_forward(
     assert inner_ffn.seen_seq_lens == [2, 2, 1]
     out.float().sum().backward()
     assert inner_ffn.proj.weight.grad is not None
+
+
+def test_apply_memory_efficient_wan_block_patch_chunks_wan_sequence_norms():
+    model = _DummyWanModel(dim=4)
+    apply_memory_efficient_wan_block_patch(model, "dummy", norm_chunk_size=2)
+
+    x = torch.randn(1, 5, 4, dtype=torch.bfloat16, requires_grad=True)
+    out = model.extra_norm(x)
+
+    assert out.dtype == torch.bfloat16
+    assert model.extra_norm.seen_seq_lens == [2, 2, 1]
+    out.float().sum().backward()
+    assert x.grad is not None
 
 
 def test_apply_lora_to_wan_model_replaces_block_linears_and_freezes_base_params():

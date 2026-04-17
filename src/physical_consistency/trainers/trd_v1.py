@@ -1730,6 +1730,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("student_lora_block_start", 0)
     payload.setdefault("student_memory_efficient_modulation", True)
     payload.setdefault("student_ffn_chunk_size", 512)
+    payload.setdefault("student_norm_chunk_size", 0)
     payload.setdefault("student_checkpoint_use_reentrant", None)
     payload.setdefault("gradient_checkpointing", True)
     payload.setdefault("validation_every_steps", 0)
@@ -1796,6 +1797,12 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         payload["student_ffn_chunk_size"] = 512
     else:
         payload["student_ffn_chunk_size"] = int(payload["student_ffn_chunk_size"])
+    if payload["student_norm_chunk_size"] in ("", None):
+        payload["student_norm_chunk_size"] = 0
+    else:
+        payload["student_norm_chunk_size"] = int(payload["student_norm_chunk_size"])
+    if payload["student_norm_chunk_size"] < 0:
+        raise ValueError(f"student_norm_chunk_size must be non-negative, got {payload['student_norm_chunk_size']}")
     if payload["wandb_relation_image_every_steps"] in ("", None):
         payload["wandb_relation_image_every_steps"] = 25
     else:
@@ -1903,6 +1910,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--student_checkpoint_use_reentrant", type=str, default="")
     parser.add_argument("--student_memory_efficient_modulation", type=str, default="")
     parser.add_argument("--student_ffn_chunk_size", type=int, default=None)
+    parser.add_argument("--student_norm_chunk_size", type=int, default=None)
     parser.add_argument("--wandb_relation_image_every_steps", type=int, default=None)
     parser.add_argument("--validation_every_steps", type=int, default=None)
     parser.add_argument("--validation_every_epochs", type=int, default=None)

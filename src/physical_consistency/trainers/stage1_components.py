@@ -258,6 +258,7 @@ class LingBotStage1Helper:
                 model,
                 subfolder,
                 ffn_chunk_size=getattr(self.args, "student_ffn_chunk_size", None),
+                norm_chunk_size=getattr(self.args, "student_norm_chunk_size", None),
             )
         if getattr(self.args, "student_tuning_mode", "full") == "lora":
             apply_lora_to_wan_model(
@@ -493,11 +494,18 @@ def apply_memory_efficient_wan_block_patch(
     model_name: str = "model",
     *,
     ffn_chunk_size: int | None = None,
+    norm_chunk_size: int | None = None,
 ) -> None:
     """Avoid full fp32 modulation tensors and optionally chunk FFN activations."""
 
     if ffn_chunk_size is not None and ffn_chunk_size <= 0:
         ffn_chunk_size = None
+    if norm_chunk_size is not None and norm_chunk_size <= 0:
+        norm_chunk_size = None
+
+    norm_patched = 0
+    if norm_chunk_size is not None:
+        norm_patched = _patch_sequence_norm_forward(model, int(norm_chunk_size))
 
     def _squeeze_gate(tensor: torch.Tensor) -> torch.Tensor:
         if tensor.ndim >= 3 and tensor.shape[2] == 1:
@@ -605,8 +613,45 @@ def apply_memory_efficient_wan_block_patch(
                 model_name,
                 ffn_chunk_size or "disabled",
             )
+            if norm_patched:
+                LOGGER.info(
+                    "Memory-efficient Wan sequence norms patched %s modules for %s (norm_chunk_size=%s)",
+                    norm_patched,
+                    model_name,
+                    norm_chunk_size,
+                )
     else:
         LOGGER.warning("No Wan attention blocks matched modulation patch for %s", model_name)
+
+
+def _patch_sequence_norm_forward(model: torch.nn.Module, chunk_size: int) -> int:
+    """Chunk Wan norm modules that internally cast long sequences to fp32."""
+
+    patched = 0
+    target_class_names = {"WanRMSNorm", "WanLayerNorm"}
+    for module in model.modules():
+        if module.__class__.__name__ not in target_class_names:
+            continue
+        if getattr(module, "_pc_sequence_norm_chunk_patched", False):
+            continue
+        original_forward = module.forward
+
+        def _make_forward(fn):
+            def _forward(self, x: torch.Tensor):
+                if not torch.is_tensor(x) or x.ndim < 3 or x.shape[1] <= chunk_size:
+                    return fn(x)
+                outputs = []
+                for start in range(0, x.shape[1], chunk_size):
+                    stop = min(start + chunk_size, x.shape[1])
+                    outputs.append(fn(x[:, start:stop]))
+                return torch.cat(outputs, dim=1)
+
+            return _forward
+
+        module.forward = MethodType(_make_forward(original_forward), module)
+        module._pc_sequence_norm_chunk_patched = True
+        patched += 1
+    return patched
 
 
 class LoRALinear(torch.nn.Module):

@@ -181,6 +181,7 @@ def test_build_args_supports_dual_training_defaults(tmp_path):
     assert args.student_lora_dropout == 0.0
     assert args.student_memory_efficient_modulation is True
     assert args.student_ffn_chunk_size == 512
+    assert args.student_norm_chunk_size == 0
     assert args.wandb_relation_image_every_steps == 25
     assert args.num_frames == 81
     assert args.validation_every_steps == 0
@@ -440,6 +441,24 @@ def test_build_args_accepts_student_ffn_chunk_size_override(tmp_path):
 
     args = build_args(_CliArgs(str(config_path), str(env_path)))
     assert args.student_ffn_chunk_size == 2048
+
+
+def test_build_args_accepts_student_norm_chunk_size_override(tmp_path):
+    config_path = tmp_path / "train.yaml"
+    env_path = tmp_path / "paths.env"
+    write_yaml(
+        config_path,
+        {
+            "experiment_name": "exp_student_norm_chunk",
+            "model_type": "dual",
+            "student_norm_chunk_size": 2048,
+            "teacher_checkpoint_dir": str(tmp_path / "teacher"),
+        },
+    )
+    env_path.write_text("", encoding="utf-8")
+
+    args = build_args(_CliArgs(str(config_path), str(env_path)))
+    assert args.student_norm_chunk_size == 2048
 
 
 def test_build_args_defaults_validation_sample_steps_to_sample_steps(tmp_path):
