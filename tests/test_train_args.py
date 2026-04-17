@@ -96,6 +96,30 @@ def test_reentrant_gradient_checkpointing_preserves_parameter_grads_without_inpu
     assert model.blocks[0].proj.weight.grad is not None
 
 
+def test_non_reentrant_gradient_checkpointing_disables_metadata_check(monkeypatch):
+    captured_kwargs = []
+
+    def fake_checkpoint(fn, *args, **kwargs):
+        captured_kwargs.append(kwargs)
+        return fn(*args)
+
+    monkeypatch.setattr("torch.utils.checkpoint.checkpoint", fake_checkpoint)
+    model = _CheckpointedModel()
+    apply_gradient_checkpointing(model, use_reentrant=False)
+
+    x = torch.randn(2, 3)
+    e = torch.zeros(2, 3)
+    seq_lens = torch.tensor([2])
+    grid_sizes = torch.tensor([[1, 1, 2]])
+    freqs = torch.zeros(2, 3)
+    context = torch.zeros(2, 3)
+    context_lens = torch.tensor([2])
+
+    model.blocks[0](x, e, seq_lens, grid_sizes, freqs, context, context_lens)
+
+    assert captured_kwargs == [{"use_reentrant": False, "determinism_check": "none"}]
+
+
 def test_build_args_supports_dual_training_defaults(tmp_path):
     config_path = tmp_path / "train.yaml"
     env_path = tmp_path / "paths.env"

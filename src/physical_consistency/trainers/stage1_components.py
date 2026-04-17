@@ -411,10 +411,17 @@ def apply_gradient_checkpointing(
                         context_lens,
                     )
 
+                checkpoint_kwargs = {"use_reentrant": use_reentrant}
+                if not use_reentrant:
+                    # ZeRO-3 can expose sharded parameters as empty tensors during
+                    # non-reentrant recompute, which trips PyTorch's metadata check
+                    # even though DeepSpeed gathers them for the actual math.
+                    checkpoint_kwargs["determinism_check"] = "none"
+
                 return torch_checkpoint(
                     _forward,
                     *checkpoint_args,
-                    use_reentrant=use_reentrant,
+                    **checkpoint_kwargs,
                 )
 
             return _wrapped
