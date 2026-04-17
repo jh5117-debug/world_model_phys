@@ -1726,6 +1726,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("student_lora_dropout", 0.0)
     payload.setdefault("student_memory_efficient_modulation", True)
     payload.setdefault("student_ffn_chunk_size", 512)
+    payload.setdefault("gradient_checkpointing", True)
     payload.setdefault("validation_every_steps", 0)
     payload.setdefault("validation_every_epochs", 1)
     payload.setdefault("mini_val_max_samples", 8)
@@ -1773,6 +1774,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
                 f"student_lora_dropout must be in [0, 1), got {payload['student_lora_dropout']}"
             )
     payload["student_memory_efficient_modulation"] = _coerce_bool(payload["student_memory_efficient_modulation"])
+    payload["gradient_checkpointing"] = _coerce_bool(payload["gradient_checkpointing"])
     if payload["student_ffn_chunk_size"] in ("", None):
         payload["student_ffn_chunk_size"] = 512
     else:
@@ -1879,6 +1881,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--student_lora_rank", type=int, default=None)
     parser.add_argument("--student_lora_alpha", type=int, default=None)
     parser.add_argument("--student_lora_dropout", type=float, default=None)
+    parser.add_argument("--gradient_checkpointing", type=str, default="")
     parser.add_argument("--student_memory_efficient_modulation", type=str, default="")
     parser.add_argument("--student_ffn_chunk_size", type=int, default=None)
     parser.add_argument("--wandb_relation_image_every_steps", type=int, default=None)

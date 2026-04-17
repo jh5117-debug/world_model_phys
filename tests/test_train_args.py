@@ -553,6 +553,27 @@ def test_should_apply_student_gradient_checkpointing_keeps_lora_mode_enabled():
     assert should_apply_student_gradient_checkpointing(args) is True
 
 
+def test_build_args_accepts_gradient_checkpointing_override(tmp_path):
+    config_path = tmp_path / "train.yaml"
+    env_path = tmp_path / "paths.env"
+    write_yaml(
+        config_path,
+        {
+            "experiment_name": "exp_no_gc",
+            "model_type": "dual",
+            "gradient_checkpointing": True,
+            "teacher_checkpoint_dir": str(tmp_path / "teacher"),
+        },
+    )
+    env_path.write_text("", encoding="utf-8")
+    cli_args = _CliArgs(str(config_path), str(env_path))
+    cli_args.gradient_checkpointing = "false"
+
+    args = build_args(cli_args)
+
+    assert args.gradient_checkpointing is False
+
+
 def test_should_apply_student_gradient_checkpointing_keeps_full_mode():
     args = _CliArgs(config="", env_file="")
     args.gradient_checkpointing = True
