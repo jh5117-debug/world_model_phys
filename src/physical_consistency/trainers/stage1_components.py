@@ -522,85 +522,89 @@ def apply_gradient_checkpointing(
     import torch.utils.checkpoint as checkpoint_module
 
     patched = 0
-    inner_patched = 0
+    memory_efficient_patched = 0
     block_container = getattr(model, "blocks", None)
     if block_container is None:
         LOGGER.warning("No transformer blocks found for %s", model_name)
         return
-    for block in block_container:
-        if getattr(block, "_pc_memory_efficient_modulation_patched", False):
-            block._pc_inner_gradient_checkpointing = True
-            block._pc_checkpoint_use_reentrant = use_reentrant
-            inner_patched += 1
-            continue
 
+    def _make_ckpt(fn):
+        @wraps(fn)
+        def _wrapped(x, e, seq_lens, grid_sizes, freqs, context, context_lens, dit_cond_dict=None):
+            def _forward(*tensor_args):
+                return fn(*tensor_args, dit_cond_dict=dit_cond_dict)
+
+            checkpoint_args = (x, e, seq_lens, grid_sizes, freqs, context, context_lens)
+            if use_reentrant and not any(
+                torch.is_tensor(arg) and arg.requires_grad for arg in checkpoint_args
+            ):
+                # Reentrant checkpointing drops parameter gradients when no input
+                # requires grad. LoRA tuning freezes the student inputs, so mark
+                # the actual hidden state as a local grad anchor.
+                checkpoint_args = (
+                    x.detach().requires_grad_(True),
+                    e,
+                    seq_lens,
+                    grid_sizes,
+                    freqs,
+                    context,
+                    context_lens,
+                )
+
+            checkpoint_kwargs = {"use_reentrant": use_reentrant}
+            if not use_reentrant:
+                # ZeRO-3 can expose sharded parameters as empty tensors during
+                # non-reentrant recompute, which trips PyTorch's metadata check
+                # even though DeepSpeed gathers them for the actual math.
+                checkpoint_kwargs["determinism_check"] = "none"
+
+            def _run_checkpoint():
+                return checkpoint_module.checkpoint(
+                    _forward,
+                    *checkpoint_args,
+                    **checkpoint_kwargs,
+                )
+
+            if use_reentrant:
+                return _run_checkpoint()
+
+            # Non-reentrant checkpointing stops recomputation once saved
+            # tensors have been rebuilt. With ZeRO-3 parameter offload that
+            # can interrupt a Wan block before DeepSpeed has balanced all
+            # parameter gather/release hooks, which has shown up as native
+            # SIGFPEs during the first backward. Force a full block replay.
+            early_stop = getattr(checkpoint_module, "set_checkpoint_early_stop", None)
+            if early_stop is None:
+                return _run_checkpoint()
+            with early_stop(False):
+                return _run_checkpoint()
+
+        return _wrapped
+
+    for block in block_container:
         if getattr(block, "_pc_gradient_checkpointing_patched", False):
             continue
 
+        is_memory_efficient = bool(getattr(block, "_pc_memory_efficient_modulation_patched", False))
+        if is_memory_efficient:
+            # The memory-efficient block already chunks expensive FFN math. Wrap
+            # the whole block so attention/norm/camera activations are replayed
+            # instead of retained across all Wan layers.
+            block._pc_inner_gradient_checkpointing = False
+            memory_efficient_patched += 1
+
         original_forward = block.forward
-
-        def _make_ckpt(fn):
-            @wraps(fn)
-            def _wrapped(x, e, seq_lens, grid_sizes, freqs, context, context_lens, dit_cond_dict=None):
-                def _forward(*tensor_args):
-                    return fn(*tensor_args, dit_cond_dict=dit_cond_dict)
-
-                checkpoint_args = (x, e, seq_lens, grid_sizes, freqs, context, context_lens)
-                if use_reentrant and not any(
-                    torch.is_tensor(arg) and arg.requires_grad for arg in checkpoint_args
-                ):
-                    # Reentrant checkpointing drops parameter gradients when no input
-                    # requires grad. LoRA tuning freezes the student inputs, so mark
-                    # the actual hidden state as a local grad anchor.
-                    checkpoint_args = (
-                        x.detach().requires_grad_(True),
-                        e,
-                        seq_lens,
-                        grid_sizes,
-                        freqs,
-                        context,
-                        context_lens,
-                    )
-
-                checkpoint_kwargs = {"use_reentrant": use_reentrant}
-                if not use_reentrant:
-                    # ZeRO-3 can expose sharded parameters as empty tensors during
-                    # non-reentrant recompute, which trips PyTorch's metadata check
-                    # even though DeepSpeed gathers them for the actual math.
-                    checkpoint_kwargs["determinism_check"] = "none"
-
-                def _run_checkpoint():
-                    return checkpoint_module.checkpoint(
-                        _forward,
-                        *checkpoint_args,
-                        **checkpoint_kwargs,
-                    )
-
-                if use_reentrant:
-                    return _run_checkpoint()
-
-                # Non-reentrant checkpointing stops recomputation once saved
-                # tensors have been rebuilt. With ZeRO-3 parameter offload that
-                # can interrupt a Wan block before DeepSpeed has balanced all
-                # parameter gather/release hooks, which has shown up as native
-                # SIGFPEs during the first backward. Force a full block replay.
-                early_stop = getattr(checkpoint_module, "set_checkpoint_early_stop", None)
-                if early_stop is None:
-                    return _run_checkpoint()
-                with early_stop(False):
-                    return _run_checkpoint()
-
-            return _wrapped
 
         block.forward = _make_ckpt(original_forward)
         block._pc_gradient_checkpointing_patched = True
+        block._pc_checkpoint_use_reentrant = use_reentrant
         patched += 1
     if _should_log_rank_zero():
-        if inner_patched:
+        if memory_efficient_patched:
             LOGGER.info(
-                "Gradient checkpointing enabled inner FFN checkpointing for %s memory-efficient Wan blocks in %s "
-                "(use_reentrant=%s; attention remains outside checkpoint)",
-                inner_patched,
+                "Gradient checkpointing wrapped %s memory-efficient Wan blocks in %s "
+                "(use_reentrant=%s; full block replay)",
+                memory_efficient_patched,
                 model_name,
                 use_reentrant,
             )
@@ -611,7 +615,7 @@ def apply_gradient_checkpointing(
                 model_name,
                 use_reentrant,
             )
-        if not inner_patched and not patched:
+        if not patched:
             LOGGER.warning("No transformer blocks were patched for gradient checkpointing in %s", model_name)
 
 

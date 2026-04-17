@@ -241,7 +241,7 @@ def test_apply_memory_efficient_wan_block_patch_chunks_wan_sequence_norms():
     assert x.grad is not None
 
 
-def test_gradient_checkpointing_uses_inner_ffn_for_memory_efficient_wan(monkeypatch):
+def test_gradient_checkpointing_wraps_memory_efficient_wan_block(monkeypatch):
     checkpoint_calls = []
     early_stop_values = []
 
@@ -281,13 +281,13 @@ def test_gradient_checkpointing_uses_inner_ffn_for_memory_efficient_wan(monkeypa
     )
 
     assert out.shape == x.shape
-    assert getattr(block, "_pc_inner_gradient_checkpointing") is True
+    assert getattr(block, "_pc_gradient_checkpointing_patched") is True
+    assert getattr(block, "_pc_inner_gradient_checkpointing") is False
+    assert block.ffn.seen_seq_lens == [2, 2, 1]
     assert checkpoint_calls == [
         {"use_reentrant": False, "determinism_check": "none"},
-        {"use_reentrant": False, "determinism_check": "none"},
-        {"use_reentrant": False, "determinism_check": "none"},
     ]
-    assert early_stop_values == [False, False, False]
+    assert early_stop_values == [False]
     out.float().sum().backward()
     assert block.ffn.proj.weight.grad is not None
 
@@ -337,11 +337,8 @@ def test_gradient_checkpointing_wraps_camera_injection_for_memory_efficient_wan(
     assert block.cam_injector_layer1.seen_seq_lens == [5]
     assert checkpoint_calls == [
         {"use_reentrant": False, "determinism_check": "none"},
-        {"use_reentrant": False, "determinism_check": "none"},
-        {"use_reentrant": False, "determinism_check": "none"},
-        {"use_reentrant": False, "determinism_check": "none"},
     ]
-    assert early_stop_values == [False, False, False, False]
+    assert early_stop_values == [False]
     out.float().sum().backward()
     assert block.cam_injector_layer1.proj.weight.grad is not None
 
