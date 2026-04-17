@@ -1,5 +1,6 @@
 from physical_consistency.common.io import read_yaml, write_yaml
 from physical_consistency.trainers.stage1_components import (
+    _patch_wan_rope_apply_to_preserve_dtype,
     apply_gradient_checkpointing,
     compute_scheduler_total_steps,
 )
@@ -118,6 +119,22 @@ def test_non_reentrant_gradient_checkpointing_disables_metadata_check(monkeypatc
     model.blocks[0](x, e, seq_lens, grid_sizes, freqs, context, context_lens)
 
     assert captured_kwargs == [{"use_reentrant": False, "determinism_check": "none"}]
+
+
+def test_wan_rope_patch_preserves_input_dtype_and_shape():
+    module = SimpleNamespace(rope_apply=lambda x, grid_sizes, freqs: x.float())
+    _patch_wan_rope_apply_to_preserve_dtype(module)
+
+    x = torch.randn(1, 4, 2, 6, dtype=torch.bfloat16)
+    grid_sizes = torch.tensor([[1, 2, 2]])
+    phase = torch.zeros(4, 3, dtype=torch.float64)
+    freqs = torch.polar(torch.ones_like(phase), phase)
+
+    output = module.rope_apply(x, grid_sizes, freqs)
+
+    assert output.shape == x.shape
+    assert output.dtype == torch.bfloat16
+    assert module._pc_original_rope_apply is not None
 
 
 def test_build_args_supports_dual_training_defaults(tmp_path):
