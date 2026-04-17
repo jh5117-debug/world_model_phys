@@ -198,7 +198,7 @@ def test_apply_memory_efficient_wan_block_patch_avoids_outer_sequential_forward(
     assert inner_ffn.proj.weight.grad is not None
 
 
-def test_apply_memory_efficient_wan_block_patch_keeps_camera_injection_chunked():
+def test_apply_memory_efficient_wan_block_patch_runs_camera_injection_full_sequence():
     model = _DummyWanModel(dim=4)
     apply_memory_efficient_wan_block_patch(model, "dummy", ffn_chunk_size=2)
 
@@ -220,10 +220,10 @@ def test_apply_memory_efficient_wan_block_patch_keeps_camera_injection_chunked()
     )
 
     assert out.shape == x.shape
-    assert block.cam_injector_layer1.seen_seq_lens == [2, 2, 1]
-    assert block.cam_injector_layer2.seen_seq_lens == [2, 2, 1]
-    assert block.cam_scale_layer.seen_seq_lens == [2, 2, 1]
-    assert block.cam_shift_layer.seen_seq_lens == [2, 2, 1]
+    assert block.cam_injector_layer1.seen_seq_lens == [5]
+    assert block.cam_injector_layer2.seen_seq_lens == [5]
+    assert block.cam_scale_layer.seen_seq_lens == [5]
+    assert block.cam_shift_layer.seen_seq_lens == [5]
     out.float().sum().backward()
     assert x.grad is not None
 
@@ -290,6 +290,60 @@ def test_gradient_checkpointing_uses_inner_ffn_for_memory_efficient_wan(monkeypa
     assert early_stop_values == [False, False, False]
     out.float().sum().backward()
     assert block.ffn.proj.weight.grad is not None
+
+
+def test_gradient_checkpointing_wraps_camera_injection_for_memory_efficient_wan(monkeypatch):
+    checkpoint_calls = []
+    early_stop_values = []
+
+    def fake_checkpoint(fn, *args, **kwargs):
+        checkpoint_calls.append(kwargs)
+        return fn(*args)
+
+    class _FakeEarlyStop:
+        def __init__(self, value):
+            self.value = value
+
+        def __enter__(self):
+            early_stop_values.append(self.value)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("torch.utils.checkpoint.checkpoint", fake_checkpoint)
+    monkeypatch.setattr("torch.utils.checkpoint.set_checkpoint_early_stop", _FakeEarlyStop)
+
+    model = _DummyWanModel(dim=4)
+    apply_memory_efficient_wan_block_patch(model, "dummy", ffn_chunk_size=2)
+    block = model.blocks[0]
+    apply_gradient_checkpointing(model, "dummy", use_reentrant=False)
+
+    x = torch.randn(1, 5, 4, dtype=torch.bfloat16, requires_grad=True)
+    e = torch.zeros(1, 5, 6, 4, dtype=torch.bfloat16)
+    context = torch.zeros(1, 2, 4, dtype=torch.bfloat16)
+    c2ws = torch.ones(1, 5, 4, dtype=torch.bfloat16)
+    out = block(
+        x,
+        e,
+        seq_lens=torch.tensor([5], dtype=torch.int32),
+        grid_sizes=torch.tensor([[1, 1, 1]], dtype=torch.int32),
+        freqs=torch.zeros(1, 5, 4, dtype=torch.bfloat16),
+        context=context,
+        context_lens=torch.tensor([2], dtype=torch.int32),
+        dit_cond_dict={"c2ws_plucker_emb": c2ws},
+    )
+
+    assert out.shape == x.shape
+    assert block.cam_injector_layer1.seen_seq_lens == [5]
+    assert checkpoint_calls == [
+        {"use_reentrant": False, "determinism_check": "none"},
+        {"use_reentrant": False, "determinism_check": "none"},
+        {"use_reentrant": False, "determinism_check": "none"},
+        {"use_reentrant": False, "determinism_check": "none"},
+    ]
+    assert early_stop_values == [False, False, False, False]
+    out.float().sum().backward()
+    assert block.cam_injector_layer1.proj.weight.grad is not None
 
 
 def test_apply_lora_to_wan_model_replaces_block_linears_and_freezes_base_params():
