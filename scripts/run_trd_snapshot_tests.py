@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import re
@@ -150,6 +151,134 @@ def _copy_if_exists(src: Path, dst: Path) -> None:
     if src.exists():
         ensure_dir(dst.parent)
         shutil.copy2(src, dst)
+
+
+def _score_column(row: dict[str, str]) -> str:
+    if "score" in row:
+        return "score"
+    for key in row:
+        if key.lower().endswith("score"):
+            return key
+    raise KeyError(f"No score column found in VideoPhy-2 row: {sorted(row)}")
+
+
+def _video_path_column(row: dict[str, str]) -> str | None:
+    for key in ("videopath", "video_path", "video", "path"):
+        if key in row:
+            return key
+    for key in row:
+        if "video" in key.lower() and "path" in key.lower():
+            return key
+    return None
+
+
+def _video_key(path_or_name: str, fallback: str) -> str:
+    if not path_or_name:
+        return fallback
+    name = Path(path_or_name).name
+    return name.removesuffix("_gen.mp4").removesuffix(".mp4")
+
+
+def _read_videophy_scores(path: Path) -> list[dict[str, str]]:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = []
+        for idx, row in enumerate(reader):
+            video_col = _video_path_column(row)
+            score_col = _score_column(row)
+            video_path = row.get(video_col, "") if video_col else ""
+            rows.append(
+                {
+                    "index": str(idx),
+                    "video": _video_key(video_path, f"row_{idx:04d}"),
+                    "video_path": video_path,
+                    "score": row.get(score_col, ""),
+                }
+            )
+        return rows
+
+
+def _write_merged_videophy_scores(*, seed_dir: Path, output_csv: Path) -> bool:
+    sa_csv = seed_dir / "output_sa.csv"
+    pc_csv = seed_dir / "output_pc.csv"
+    if not sa_csv.exists() or not pc_csv.exists():
+        return False
+
+    sa_rows = _read_videophy_scores(sa_csv)
+    pc_rows = _read_videophy_scores(pc_csv)
+    merged_rows: list[dict[str, str]] = []
+    for idx, (sa_row, pc_row) in enumerate(zip(sa_rows, pc_rows)):
+        video = sa_row["video"] if not sa_row["video"].startswith("row_") else pc_row["video"]
+        video_path = sa_row["video_path"] or pc_row["video_path"]
+        sa_score = float(sa_row["score"])
+        pc_score = float(pc_row["score"])
+        merged_rows.append(
+            {
+                "index": str(idx),
+                "video": video,
+                "video_path": video_path,
+                "sa_score": f"{sa_score:.4f}",
+                "pc_score": f"{pc_score:.4f}",
+                "joint_ge_4": "1" if sa_score >= 4.0 and pc_score >= 4.0 else "0",
+            }
+        )
+
+    ensure_dir(output_csv.parent)
+    with output_csv.open("w", encoding="utf-8", newline="") as handle:
+        fieldnames = ["index", "video", "video_path", "sa_score", "pc_score", "joint_ge_4"]
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(merged_rows)
+    return True
+
+
+def _materialize_clean_outputs(
+    *,
+    result_root: Path,
+    result_dir: Path,
+    timestamp: str,
+    checkpoint_label: str,
+    experiment_name: str,
+    seeds: list[int],
+) -> list[str]:
+    """Copy only the artifacts humans inspect: generated mp4s and per-video scores."""
+    clean_dirs = [
+        result_dir / "clean",
+        result_root / "clean_results" / timestamp / checkpoint_label,
+    ]
+    materialized: list[str] = []
+    for clean_dir in clean_dirs:
+        videos_dir = ensure_dir(clean_dir / "videos")
+        for seed in seeds:
+            source_videos = (
+                result_dir
+                / "runs"
+                / "eval"
+                / experiment_name
+                / f"seed_{seed}"
+                / "csgo_metrics"
+                / "videos"
+            )
+            if source_videos.exists():
+                for video in sorted(source_videos.glob("*.mp4")):
+                    shutil.copy2(video, videos_dir / video.name)
+
+            seed_dir = (
+                result_dir
+                / "runs"
+                / "eval"
+                / "videophy2"
+                / experiment_name
+                / f"seed_{seed}"
+            )
+            _write_merged_videophy_scores(
+                seed_dir=seed_dir,
+                output_csv=clean_dir / f"videophy2_scores_seed_{seed}.csv",
+            )
+
+        _copy_if_exists(result_dir / "videophy2_summary.md", clean_dir / "videophy2_summary.md")
+        materialized.append(str(clean_dir.resolve()))
+    return materialized
 
 
 def _run_one_checkpoint(
@@ -328,6 +457,14 @@ def _run_one_checkpoint(
         rendered = format_videophy2_summary(summary, title=f"Lingbot_VideoREPA: {checkpoint_path.name}")
         (result_dir / "videophy2_summary.md").write_text(rendered + "\n", encoding="utf-8")
         metadata["videophy2_summary"] = summary
+        metadata["clean_result_dirs"] = _materialize_clean_outputs(
+            result_root=result_root,
+            result_dir=result_dir,
+            timestamp=timestamp,
+            checkpoint_label=checkpoint_path.name,
+            experiment_name=experiment_name,
+            seeds=seeds,
+        )
         metadata["status"] = "ok"
     else:
         metadata["status"] = "failed_videophy2_summary"
