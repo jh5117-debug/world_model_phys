@@ -308,6 +308,7 @@ def test_train_runs_validation_at_each_epoch_end(tmp_path, monkeypatch):
     runner.args.validation_every_steps = 0
     runner.args.validation_every_epochs = 1
     runner.args.save_every_n_epochs = 0
+    runner.args.max_train_micro_steps = 0
     runner.args.max_grad_norm = 1.0
     runner.args.gradient_accumulation_steps = 4
     runner.args.best_checkpoint_name = "best_videophy2"
@@ -564,6 +565,7 @@ def test_snapshot_validation_export_uses_validation_sample_steps(tmp_path, monke
         ulysses_size=4,
         base_model_dir="base",
         dataset_dir="dataset",
+        model_type="dual",
     )
     runner.global_step = 123
     runner.accelerator = _DummyAccelerator()
@@ -833,6 +835,43 @@ def test_build_training_state_payload_from_bundle_state_uses_full_lora_tensors(t
     assert payload["high_lora"]["blocks.1.self_attn.k.lora_B.weight"].shape == (5120, 16)
     assert all(tensor.numel() > 0 for tensor in payload["low_lora"].values())
     assert all(tensor.numel() > 0 for tensor in payload["high_lora"].values())
+
+
+def test_build_training_state_payload_from_bundle_state_supports_single_branch(tmp_path):
+    stage1_dir = tmp_path / "stage1_ckpt"
+    stage1_dir.mkdir()
+    bundle_state = {
+        "projector.proj.weight": torch.randn(768, 16),
+        "projector.proj.bias": torch.randn(768),
+        "model.blocks.0.self_attn.q.lora_A.weight": torch.randn(8, 5120),
+        "model.blocks.0.self_attn.q.lora_B.weight": torch.randn(5120, 8),
+        "model.blocks.0.self_attn.q.weight": torch.randn(5120, 5120),
+    }
+
+    payload = _build_training_state_payload_from_bundle_state(
+        bundle_state=bundle_state,
+        student_tuning_mode="lora",
+        global_step=7,
+        epoch=1,
+        student_base_checkpoint_dir=stage1_dir,
+        model_type="low",
+    )
+
+    assert payload["global_step"] == 7
+    assert payload["low_projector"]["proj.bias"].shape == (768,)
+    assert "high_projector" not in payload
+    assert set(payload["low_lora"]) == {
+        "blocks.0.self_attn.q.lora_A.weight",
+        "blocks.0.self_attn.q.lora_B.weight",
+    }
+    assert "high_lora" not in payload
+
+
+def test_trd_runtime_stack_accepts_single_branch_model_types():
+    for model_type in ("low", "high", "dual"):
+        runner = object.__new__(TRDTrainingRunner)
+        runner.args = SimpleNamespace(model_type=model_type)
+        runner.validate_runtime_stack()
 
 
 def test_gather_optimizer_resume_state_collects_all_deepspeed_ranks(monkeypatch):

@@ -346,6 +346,88 @@ class DualBranchTrainingBundle(nn.Module):
         return tokens.view(1, lat_f, pooled_h * pooled_w, channels)
 
 
+class SingleBranchTrainingBundle(nn.Module):
+    """Wrap one Stage-1 branch for memory-probed single-branch training."""
+
+    def __init__(
+        self,
+        *,
+        branch: str,
+        model: nn.Module,
+        projector: nn.Module,
+        student_target_block: int,
+        patch_size: tuple[int, int, int],
+    ) -> None:
+        super().__init__()
+        if branch not in {"low", "high"}:
+            raise ValueError(f"Unsupported single branch: {branch}")
+        self.branch = branch
+        self.model = model
+        self.projector = projector
+        self.patch_size = patch_size
+
+        self.hook = BlockFeatureHook()
+        self.hook.attach(self.model.blocks[student_target_block])
+
+    def forward(
+        self,
+        *,
+        branch: str,
+        noisy_latent: torch.Tensor,
+        timestep: torch.Tensor,
+        context: list[torch.Tensor],
+        seq_len: int,
+        y: torch.Tensor,
+        dit_cond: dict[str, tuple[torch.Tensor, ...]],
+        lat_f: int,
+        lat_h: int,
+        lat_w: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if branch != self.branch:
+            raise RuntimeError(f"Single-branch bundle for {self.branch} received branch={branch}")
+        self.hook.clear()
+
+        pred = self.model(
+            [noisy_latent],
+            t=timestep,
+            context=context,
+            seq_len=seq_len,
+            y=[y],
+            dit_cond_dict=dit_cond,
+        )[0]
+        if self.hook.latest is None:
+            raise RuntimeError(f"Feature hook did not capture student tokens for branch={branch}")
+
+        student_tokens = self._reshape_student_tokens(self.hook.latest, lat_f, lat_h, lat_w)
+        student_tokens = self.projector(student_tokens)
+        return pred, student_tokens
+
+    def projector_state_dicts(self) -> dict[str, dict[str, torch.Tensor]]:
+        return {f"{self.branch}_projector": self.projector.state_dict()}
+
+    def lora_state_dicts(self) -> dict[str, dict[str, torch.Tensor]]:
+        return {f"{self.branch}_lora": extract_lora_state_dict(self.model)}
+
+    def training_state_dicts(self) -> dict[str, dict[str, torch.Tensor]]:
+        payload = self.projector_state_dicts()
+        lora = extract_lora_state_dict(self.model)
+        if lora:
+            payload[f"{self.branch}_lora"] = lora
+        return payload
+
+    def _reshape_student_tokens(
+        self,
+        tokens: torch.Tensor,
+        lat_f: int,
+        lat_h: int,
+        lat_w: int,
+    ) -> torch.Tensor:
+        channels = tokens.shape[-1]
+        pooled_h = lat_h // self.patch_size[1]
+        pooled_w = lat_w // self.patch_size[2]
+        return tokens.view(1, lat_f, pooled_h * pooled_w, channels)
+
+
 def _extract_prefixed_state_dict(
     state_dict: dict[str, torch.Tensor],
     prefix: str,
@@ -379,13 +461,19 @@ def _build_training_state_payload_from_bundle_state(
     optimizer_state: dict[str, Any] | None = None,
     scheduler_state: dict[str, Any] | None = None,
     student_base_checkpoint_dir: str | Path | None = None,
+    model_type: str = "dual",
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "low_projector": _extract_prefixed_state_dict(bundle_state, "low_projector."),
-        "high_projector": _extract_prefixed_state_dict(bundle_state, "high_projector."),
         "global_step": global_step,
         "epoch": epoch,
     }
+    branch_prefixes = (
+        {"low": "low_projector.", "high": "high_projector."}
+        if model_type == "dual"
+        else {model_type: "projector."}
+    )
+    for branch, prefix in branch_prefixes.items():
+        payload[f"{branch}_projector"] = _extract_prefixed_state_dict(bundle_state, prefix)
     if tag is not None:
         payload["tag"] = tag
     if optimizer_state is not None:
@@ -394,21 +482,20 @@ def _build_training_state_payload_from_bundle_state(
         payload["scheduler"] = scheduler_state
 
     if student_tuning_mode == "lora":
-        low_lora = _extract_prefixed_state_dict(
-            bundle_state,
-            "low_model.",
-            key_filter=_is_lora_adapter_key,
-            required=False,
+        model_prefixes = (
+            {"low": "low_model.", "high": "high_model."}
+            if model_type == "dual"
+            else {model_type: "model."}
         )
-        high_lora = _extract_prefixed_state_dict(
-            bundle_state,
-            "high_model.",
-            key_filter=_is_lora_adapter_key,
-            required=False,
-        )
-        if low_lora or high_lora:
-            payload["low_lora"] = low_lora
-            payload["high_lora"] = high_lora
+        for branch, prefix in model_prefixes.items():
+            lora = _extract_prefixed_state_dict(
+                bundle_state,
+                prefix,
+                key_filter=_is_lora_adapter_key,
+                required=False,
+            )
+            if lora:
+                payload[f"{branch}_lora"] = lora
         if student_base_checkpoint_dir is not None:
             payload["student_base_checkpoint_dir"] = str(Path(student_base_checkpoint_dir).resolve())
 
@@ -440,7 +527,7 @@ def save_dual_bundle_checkpoint(
     extra_training_state: dict[str, Any] | Callable[[dict[str, torch.Tensor], nn.Module], dict[str, Any] | None] | None = None,
     training_state_filename: str = "resume_state.pt",
 ) -> Path:
-    """Save a dual-branch checkpoint from one wrapped container model."""
+    """Save a wrapped TRD checkpoint from one dual- or single-branch container."""
     save_dir = Path(args.output_dir) / tag
     if accelerator.is_main_process:
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -451,23 +538,33 @@ def save_dual_bundle_checkpoint(
 
     if accelerator.is_main_process:
         if bundle_state is None:
-            raise RuntimeError("Accelerator returned no state_dict for the dual bundle on the main process")
+            raise RuntimeError("Accelerator returned no state_dict for the TRD bundle on the main process")
         unwrapped = accelerator.unwrap_model(model_bundle)
         resolved_training_state = extra_training_state
         if callable(extra_training_state):
             resolved_training_state = extra_training_state(bundle_state, unwrapped)
-        _save_branch_checkpoint(
-            branch_model=unwrapped.low_model,
-            state_dict=bundle_state,
-            prefix="low_model.",
-            model_dir=save_dir / "low_noise_model",
-        )
-        _save_branch_checkpoint(
-            branch_model=unwrapped.high_model,
-            state_dict=bundle_state,
-            prefix="high_model.",
-            model_dir=save_dir / "high_noise_model",
-        )
+        if hasattr(unwrapped, "low_model") and hasattr(unwrapped, "high_model"):
+            _save_branch_checkpoint(
+                branch_model=unwrapped.low_model,
+                state_dict=bundle_state,
+                prefix="low_model.",
+                model_dir=save_dir / "low_noise_model",
+            )
+            _save_branch_checkpoint(
+                branch_model=unwrapped.high_model,
+                state_dict=bundle_state,
+                prefix="high_model.",
+                model_dir=save_dir / "high_noise_model",
+            )
+        elif hasattr(unwrapped, "model") and hasattr(unwrapped, "branch"):
+            _save_branch_checkpoint(
+                branch_model=unwrapped.model,
+                state_dict=bundle_state,
+                prefix="model.",
+                model_dir=save_dir / get_model_subfolder(unwrapped.branch),
+            )
+        else:
+            raise RuntimeError(f"Unsupported TRD bundle type for saving: {type(unwrapped)!r}")
         if resolved_training_state is not None:
             training_only = save_dir / "training_only"
             training_only.mkdir(parents=True, exist_ok=True)
@@ -577,11 +674,8 @@ class TRDTrainingRunner:
 
     def validate_runtime_stack(self) -> None:
         """Reject unsupported runtime combinations before training starts."""
-        if self.args.model_type != "dual":
-            raise RuntimeError(
-                "TRD-v1 now trains the Stage-1 dual model only. "
-                "Use model_type=dual and the dual training wrapper."
-            )
+        if self.args.model_type not in {"low", "high", "dual"}:
+            raise RuntimeError(f"Unsupported TRD-v1 model_type: {self.args.model_type}")
 
     def train(self) -> None:
         """Main training loop."""
@@ -761,41 +855,80 @@ class TRDTrainingRunner:
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats(self.accelerator.device)
 
-        low_model = self.helper.load_model(self.accelerator.device, "low", checkpoint_dir=checkpoint_dir)
-        self._log_gpu_memory("after_low_model_load")
-        high_model = self.helper.load_model(self.accelerator.device, "high", checkpoint_dir=checkpoint_dir)
-        self._log_gpu_memory("after_high_model_load")
+        if self.args.model_type == "dual":
+            low_model = self.helper.load_model(self.accelerator.device, "low", checkpoint_dir=checkpoint_dir)
+            self._log_gpu_memory("after_low_model_load")
+            high_model = self.helper.load_model(self.accelerator.device, "high", checkpoint_dir=checkpoint_dir)
+            self._log_gpu_memory("after_high_model_load")
 
-        student_dim = int(low_model.dim)
-        low_projector = StudentProjector(student_dim, self.args.teacher_feature_dim)
-        high_projector = StudentProjector(student_dim, self.args.teacher_feature_dim)
-        if resume_state:
-            low_projector.load_state_dict(resume_state["low_projector"])
-            high_projector.load_state_dict(resume_state["high_projector"])
+            student_dim = int(low_model.dim)
+            low_projector = StudentProjector(student_dim, self.args.teacher_feature_dim)
+            high_projector = StudentProjector(student_dim, self.args.teacher_feature_dim)
+            if resume_state:
+                low_projector.load_state_dict(resume_state["low_projector"])
+                high_projector.load_state_dict(resume_state["high_projector"])
 
-        if should_apply_student_gradient_checkpointing(self.args):
-            use_reentrant = student_gradient_checkpointing_use_reentrant(self.args)
-            if self.accelerator.is_main_process:
-                LOGGER.info(
-                    "Applying block-level gradient checkpointing for student models (use_reentrant=%s)",
-                    use_reentrant,
+            if should_apply_student_gradient_checkpointing(self.args):
+                use_reentrant = student_gradient_checkpointing_use_reentrant(self.args)
+                if self.accelerator.is_main_process:
+                    LOGGER.info(
+                        "Applying block-level gradient checkpointing for student models (use_reentrant=%s)",
+                        use_reentrant,
+                    )
+                apply_gradient_checkpointing(low_model, "low_noise_model", use_reentrant=use_reentrant)
+                apply_gradient_checkpointing(high_model, "high_noise_model", use_reentrant=use_reentrant)
+
+            if self.args.student_tuning_mode == "lora" and resume_state:
+                load_lora_state_dict(low_model, resume_state.get("low_lora", {}), model_name="low_noise_model")
+                load_lora_state_dict(high_model, resume_state.get("high_lora", {}), model_name="high_noise_model")
+
+            self.model_bundle = DualBranchTrainingBundle(
+                low_model=low_model,
+                high_model=high_model,
+                low_projector=low_projector,
+                high_projector=high_projector,
+                student_target_block=self.args.student_target_block,
+                patch_size=self.helper.patch_size,
+            )
+            self._log_gpu_memory("after_dual_bundle_construct")
+        else:
+            branch = self.args.model_type
+            branch_model = self.helper.load_model(self.accelerator.device, branch, checkpoint_dir=checkpoint_dir)
+            self._log_gpu_memory(f"after_{branch}_model_load")
+
+            projector = StudentProjector(int(branch_model.dim), self.args.teacher_feature_dim)
+            if resume_state:
+                projector.load_state_dict(resume_state[f"{branch}_projector"])
+
+            if should_apply_student_gradient_checkpointing(self.args):
+                use_reentrant = student_gradient_checkpointing_use_reentrant(self.args)
+                if self.accelerator.is_main_process:
+                    LOGGER.info(
+                        "Applying block-level gradient checkpointing for %s_noise_model (use_reentrant=%s)",
+                        branch,
+                        use_reentrant,
+                    )
+                apply_gradient_checkpointing(
+                    branch_model,
+                    f"{branch}_noise_model",
+                    use_reentrant=use_reentrant,
                 )
-            apply_gradient_checkpointing(low_model, "low_noise_model", use_reentrant=use_reentrant)
-            apply_gradient_checkpointing(high_model, "high_noise_model", use_reentrant=use_reentrant)
 
-        if self.args.student_tuning_mode == "lora" and resume_state:
-            load_lora_state_dict(low_model, resume_state.get("low_lora", {}), model_name="low_noise_model")
-            load_lora_state_dict(high_model, resume_state.get("high_lora", {}), model_name="high_noise_model")
+            if self.args.student_tuning_mode == "lora" and resume_state:
+                load_lora_state_dict(
+                    branch_model,
+                    resume_state.get(f"{branch}_lora", {}),
+                    model_name=f"{branch}_noise_model",
+                )
 
-        self.model_bundle = DualBranchTrainingBundle(
-            low_model=low_model,
-            high_model=high_model,
-            low_projector=low_projector,
-            high_projector=high_projector,
-            student_target_block=self.args.student_target_block,
-            patch_size=self.helper.patch_size,
-        )
-        self._log_gpu_memory("after_dual_bundle_construct")
+            self.model_bundle = SingleBranchTrainingBundle(
+                branch=branch,
+                model=branch_model,
+                projector=projector,
+                student_target_block=self.args.student_target_block,
+                patch_size=self.helper.patch_size,
+            )
+            self._log_gpu_memory("after_single_bundle_construct")
 
         optimizer = torch.optim.AdamW(
             self._all_trainable_params(),
@@ -1167,6 +1300,7 @@ class TRDTrainingRunner:
                 optimizer_state=optimizer_state,
                 scheduler_state=scheduler_state,
                 student_base_checkpoint_dir=self.args.stage1_ckpt_dir,
+                model_type=self.args.model_type,
             )
 
         return _factory
@@ -1231,9 +1365,13 @@ class TRDTrainingRunner:
         )
         generation_root = ensure_dir(validation_root / "generated")
         validation_seed = int(self.args.validation_seed_list[0])
+        generation_checkpoint_path = self._materialize_eval_checkpoint_bundle(
+            checkpoint_path,
+            experiment_name=f"{self.args.experiment_name}_{tag}_generation",
+        )
 
         run_command(
-            self._validation_generation_command(checkpoint_path, generation_root, validation_seed),
+            self._validation_generation_command(generation_checkpoint_path, generation_root, validation_seed),
             cwd=PROJECT_ROOT,
             log_path=validation_root / "generation.log",
         )
@@ -1330,6 +1468,18 @@ class TRDTrainingRunner:
             "VIDEOPHY2_SUMMARY_STDOUT": "0",
             "KILL_EXISTING_GPU_PIDS": "0",
         }
+
+    def _allow_stage1_fallback_for_eval(self) -> bool:
+        return self.args.model_type in {"low", "high"}
+
+    def _materialize_eval_checkpoint_bundle(self, checkpoint_path: Path, *, experiment_name: str) -> Path:
+        return materialize_eval_checkpoint_bundle(
+            ft_ckpt_dir=checkpoint_path,
+            output_root=self.args.output_root,
+            experiment_name=experiment_name,
+            stage1_ckpt_dir=self.args.stage1_ckpt_dir,
+            allow_stage1_fallback=self._allow_stage1_fallback_for_eval(),
+        )
 
     def _emit_videophy2_summary(self, tag: str, summary: dict[str, Any]) -> None:
         rendered = format_videophy2_summary(
@@ -1570,18 +1720,22 @@ class TRDTrainingRunner:
             project_root=PROJECT_ROOT,
             notes=f"model_type={self.args.model_type}",
         )
-        for subfolder in MODEL_SUBFOLDERS:
-            record.write(checkpoint_path / subfolder / "lineage.json")
+        subfolders = (
+            MODEL_SUBFOLDERS
+            if self.args.model_type == "dual"
+            else (get_model_subfolder(self.args.model_type),)
+        )
+        for subfolder in subfolders:
+            branch_dir = checkpoint_path / subfolder
+            if branch_dir.exists():
+                record.write(branch_dir / "lineage.json")
 
     def _write_pending_eval_commands(self, checkpoint_path: Path) -> None:
         output_dir = checkpoint_path / "post_train_eval"
         ensure_dir(output_dir)
-        bundle_dir = materialize_eval_checkpoint_bundle(
-            ft_ckpt_dir=checkpoint_path,
-            output_root=self.args.output_root,
+        bundle_dir = self._materialize_eval_checkpoint_bundle(
+            checkpoint_path,
             experiment_name=f"{self.args.experiment_name}_final",
-            stage1_ckpt_dir=self.args.stage1_ckpt_dir,
-            allow_stage1_fallback=False,
         )
         eval_config_path = output_dir / "eval_trd_final.yaml"
         eval_config = {
@@ -1603,7 +1757,7 @@ class TRDTrainingRunner:
             "ft_ckpt_dir": str(bundle_dir),
             "output_root": self.args.output_root,
             "stage1_ckpt_dir": self.args.stage1_ckpt_dir,
-            "allow_stage1_fallback": False,
+            "allow_stage1_fallback": self._allow_stage1_fallback_for_eval(),
         }
         write_yaml(eval_config_path, eval_config)
         command_file = output_dir / "commands.txt"
@@ -1631,12 +1785,9 @@ class TRDTrainingRunner:
     def _export_validation_request(self, checkpoint_path: Path, tag: str) -> None:
         export_dir = checkpoint_path / "validation_export"
         ensure_dir(export_dir)
-        bundle_dir = materialize_eval_checkpoint_bundle(
-            ft_ckpt_dir=checkpoint_path,
-            output_root=self.args.output_root,
+        bundle_dir = self._materialize_eval_checkpoint_bundle(
+            checkpoint_path,
             experiment_name=f"{self.args.experiment_name}_{tag}",
-            stage1_ckpt_dir=self.args.stage1_ckpt_dir,
-            allow_stage1_fallback=False,
         )
         eval_config_path = export_dir / "eval_trd_snapshot.yaml"
         eval_config = {
@@ -1658,7 +1809,7 @@ class TRDTrainingRunner:
             "ft_ckpt_dir": str(bundle_dir),
             "output_root": self.args.output_root,
             "stage1_ckpt_dir": self.args.stage1_ckpt_dir,
-            "allow_stage1_fallback": False,
+            "allow_stage1_fallback": self._allow_stage1_fallback_for_eval(),
         }
         write_yaml(eval_config_path, eval_config)
         request_payload = {
