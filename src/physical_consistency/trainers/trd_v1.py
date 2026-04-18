@@ -183,6 +183,10 @@ def tensor_to_numpy_float32(value: torch.Tensor | np.ndarray) -> np.ndarray:
 _STEP_LABEL_PATTERN = re.compile(r"^step_(\d+)_(.+)$")
 
 
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def format_eta(seconds: float | None) -> str:
     """Render a compact ETA string for progress logs."""
     if seconds is None or not math.isfinite(seconds) or seconds < 0:
@@ -633,6 +637,79 @@ class TRDTrainingRunner:
         self._train_start_time: float | None = None
         self._last_optimizer_step_time: float | None = None
 
+    def _should_trace_training_phase(self) -> bool:
+        return self._micro_step <= 1 or _env_flag("PC_TRAIN_PHASE_TRACE")
+
+    def _phase_trace_rank_allowed(self) -> bool:
+        return self.accelerator.is_main_process or _env_flag("PC_TRAIN_PHASE_TRACE_ALL_RANKS")
+
+    def _trace_training_phase(
+        self,
+        label: str,
+        *,
+        tensors: dict[str, torch.Tensor | None] | None = None,
+        scalars: dict[str, torch.Tensor | float | int | None] | None = None,
+    ) -> None:
+        if not self._should_trace_training_phase() or not self._phase_trace_rank_allowed():
+            return
+
+        device = self.accelerator.device
+        if torch.cuda.is_available() and device.type == "cuda":
+            try:
+                torch.cuda.synchronize(device)
+            except Exception:
+                LOGGER.exception("[PHASE] cuda synchronize failed at %s", label)
+                raise
+
+        rank = os.environ.get("RANK", "?")
+        local_rank = os.environ.get("LOCAL_RANK", "?")
+        parts = [
+            f"label={label}",
+            f"rank={rank}",
+            f"local_rank={local_rank}",
+            f"epoch={self.current_epoch}",
+            f"micro_step={self._micro_step}",
+            f"global_step={self.global_step}",
+        ]
+        if torch.cuda.is_available() and device.type == "cuda":
+            parts.extend(
+                [
+                    f"allocated={torch.cuda.memory_allocated(device) / (1024**3):.2f}GiB",
+                    f"reserved={torch.cuda.memory_reserved(device) / (1024**3):.2f}GiB",
+                    f"max_allocated={torch.cuda.max_memory_allocated(device) / (1024**3):.2f}GiB",
+                ]
+            )
+
+        if tensors:
+            for name, tensor in tensors.items():
+                if tensor is None:
+                    parts.append(f"{name}=None")
+                    continue
+                if not torch.is_tensor(tensor):
+                    parts.append(f"{name}=<non_tensor>")
+                    continue
+                parts.append(
+                    f"{name}=shape{tuple(tensor.shape)} dtype={tensor.dtype} "
+                    f"device={tensor.device} requires_grad={tensor.requires_grad}"
+                )
+
+        if scalars:
+            for name, value in scalars.items():
+                if value is None:
+                    parts.append(f"{name}=None")
+                    continue
+                try:
+                    if torch.is_tensor(value):
+                        scalar = float(value.detach().float().item())
+                    else:
+                        scalar = float(value)
+                    parts.append(f"{name}={scalar:.6g}")
+                    parts.append(f"{name}_finite={math.isfinite(scalar)}")
+                except Exception:
+                    parts.append(f"{name}=<unavailable>")
+
+        LOGGER.info("[PHASE] %s", " ".join(parts))
+
     def initialize_tracking(self) -> None:
         """Create the shared W&B run before model loading."""
         if self._tracking_initialized:
@@ -709,9 +786,20 @@ class TRDTrainingRunner:
                 self._log_gpu_memory(f"step_{self._micro_step}_start", emit_console=False)
                 metrics: dict[str, torch.Tensor] | None = None
                 with self.accelerator.accumulate(self.model_bundle):
+                    self._trace_training_phase("before_training_step")
                     metrics = self.training_step(batch)
+                    self._trace_training_phase(
+                        "after_training_step",
+                        scalars={
+                            "loss_total": metrics["loss_total"],
+                            "loss_fm": metrics["loss_fm"],
+                            "loss_trd": metrics["loss_trd"],
+                        },
+                    )
                     self._log_gpu_memory(f"step_{self._micro_step}_after_forward", emit_console=False)
+                    self._trace_training_phase("before_backward", scalars={"loss_total": metrics["loss_total"]})
                     self.accelerator.backward(metrics["loss_total"])
+                    self._trace_training_phase("after_backward")
                     # The non-detached loss keeps the autograd graph alive, which
                     # can retain old DeepSpeed parameters across pause_external
                     # validation/restoration cycles.
@@ -1166,11 +1254,28 @@ class TRDTrainingRunner:
             noise = torch.randn_like(video_latent)
             noisy_latent = (1.0 - timestep_sample.sigma) * video_latent + timestep_sample.sigma * noise
             target = noise - video_latent
+            self._trace_training_phase("before_teacher_encode", tensors={"video": video})
             teacher_features = self.teacher.encode(video.unsqueeze(0))
+            self._trace_training_phase(
+                "after_teacher_encode",
+                tensors={"teacher_tokens": teacher_features.tokens},
+            )
             if not self._logged_teacher_encode_offload_memory:
                 self._log_gpu_memory("after_teacher_encode")
                 self._logged_teacher_encode_offload_memory = True
 
+        self._trace_training_phase(
+            "before_student_forward",
+            tensors={
+                "noisy_latent": noisy_latent,
+                "context": context,
+                "y": y,
+            },
+            scalars={
+                "sample_sigma": timestep_sample.sigma,
+                "sample_timestep": timestep_sample.timestep.detach().float().mean(),
+            },
+        )
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             pred, student_tokens = self.model_bundle(
                 branch=timestep_sample.branch,
@@ -1184,13 +1289,31 @@ class TRDTrainingRunner:
                 lat_h=lat_h,
                 lat_w=lat_w,
             )
+        self._trace_training_phase(
+            "after_student_forward",
+            tensors={"pred": pred, "student_tokens": student_tokens},
+        )
 
         pred_rest = pred[:, 1:]
         target_rest = target[:, 1:]
         loss_fm = F.mse_loss(pred_rest.float(), target_rest.float()) * timestep_sample.weight
+        self._trace_training_phase("after_fm_loss", scalars={"loss_fm": loss_fm})
 
+        self._trace_training_phase(
+            "before_trd_loss",
+            tensors={"student_tokens": student_tokens, "teacher_tokens": teacher_features.tokens},
+        )
         trd_output = self.trd_loss(student_tokens, teacher_features.tokens)
         loss_total = loss_fm + self.args.lambda_trd * trd_output.total
+        self._trace_training_phase(
+            "after_trd_loss",
+            scalars={
+                "loss_total": loss_total,
+                "loss_trd": trd_output.total,
+                "loss_trd_spatial": trd_output.spatial,
+                "loss_trd_temporal": trd_output.temporal,
+            },
+        )
 
         metrics = {
             "loss_total": loss_total,
