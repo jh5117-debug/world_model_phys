@@ -5734,3 +5734,76 @@ save_every_n_epochs >= 0
 ```
 
 用于每个 epoch 保存 checkpoint，同时关闭 validation 以保持训练主流程最快。
+
+## 46. Validation 改为非致命：保证 5 个 epoch 权重优先
+
+### 46.1 需求
+
+正式训练会持续很久，核心优先级是：
+
+```text
+必须完成 5 个 epoch，并产出 5 个 epoch checkpoint。
+```
+
+每个 epoch 结束后仍然希望尝试 validation：
+
+- 先用当前 epoch 权重生成 mini-val 视频；
+- mini-val manifest 当前为 8 个样本；
+- 5 个 epoch 共期望保存 40 个 validation 视频；
+- 然后尝试 VideoPhy-2 打分。
+
+但 validation 不是训练的生死开关：
+
+```text
+即使 validation 生成失败、VideoPhy-2 环境失败、summary 缺失，也不能中断训练。
+```
+
+### 46.2 当前代码路径
+
+`validation_runtime_mode=pause_external` 的设计是：
+
+1. 保存 `_candidate_epoch_N` checkpoint；
+2. 释放训练 runtime 和 CUDA cache；
+3. 用释放后的 GPU 显存跑 validation generation；
+4. 调用 VideoPhy-2 脚本，脚本会通过 `scripts/lib_videophy2_env.sh` 解析 `phys-videophy` 环境；
+5. 恢复训练 runtime；
+6. 根据 validation 结果决定是否更新 best checkpoint。
+
+这意味着 validation 期间训练会暂停，显存会被释放给生成/评测使用，然后再恢复训练。
+
+### 46.3 修复
+
+新增：
+
+```text
+validation_fail_fast: false
+--validation_fail_fast false
+```
+
+当外部 validation 失败时：
+
+- 写入 `_candidate_epoch_N/validation_error.txt`，包含 traceback；
+- 主训练 log 打印 `[VALIDATION FAILED]` 和 `[VALIDATION NONFATAL]`；
+- 本地 metrics 写入 `val/failed=1`；
+- 清理临时 candidate checkpoint；
+- 恢复训练并继续下一个 epoch。
+
+只有显式设置：
+
+```text
+--validation_fail_fast true
+```
+
+才恢复旧行为：validation 一失败就终止训练。
+
+### 46.4 Checkpoint 优先级
+
+正式训练命令必须保留：
+
+```text
+--save_every_n_epochs 1
+--validation_every_epochs 1
+--validation_fail_fast false
+```
+
+训练循环的顺序是先保存正式 epoch checkpoint，再进入 validation。因此即使 validation 失败，`epoch_1`、`epoch_2`、... 这类权重也已经落盘。
