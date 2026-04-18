@@ -3451,3 +3451,232 @@ LingBot / Wan2.1 student
 截至 2026-04-18 11:01 左右，核心 `SIGFPE` 尚未修复，但已经从“大概是 DDP / OOM / TRD loss / checkpoint / teacher”的宽泛怀疑，收敛为：
 
 > 单卡也能复现的 Wan student backward native CUDA 问题；最可疑区域是 LoRA + patched Wan block + attention/flash-attn/bf16 在 H20 上的组合。
+
+## 23. 2026-04-18 14:20 后续 probe：已排除项与下一步收敛方向
+
+本节记录 2026-04-18 中午到下午继续做的 TRD-v1 H20 `SIGFPE` probe。这里的“排除”含义是：在当前 17 帧、320x576、low model、单卡最小复现条件下，它不是触发这次 `loss.backward()` 原生 `SIGFPE` 的充分根因；不代表这些路径在完整训练里永远没有显存或性能风险。
+
+### 23.1 新增 probe 时间线
+
+#### 23.1.1 强制绕开 Dao flash-attn backward
+
+代码增加了运行时开关：
+
+```text
+PC_FORCE_SDPA_FALLBACK=1
+```
+
+它同时 patch：
+
+```text
+wan.modules.attention.flash_attention
+wan.modules.model.flash_attention
+```
+
+日志确认：
+
+```text
+PC_FORCE_SDPA_FALLBACK=1: patched wan.modules.attention+wan.modules.model flash_attention -> SDPA fallback (flash-attn backward will NOT be used)
+```
+
+结果：仍然在 `before_backward` 之后触发 `Fatal Python error: Floating point exception`。
+
+结论：当前 `SIGFPE` 不是 Dao `flash_attn_varlen` backward 的必要结果。
+
+#### 23.1.2 强制 PyTorch SDPA math backend
+
+继续增加：
+
+```text
+PC_FORCE_SDPA_MATH=1
+```
+
+日志确认：
+
+```text
+PC_FORCE_SDPA_MATH=1: forcing PyTorch SDPA math backend
+```
+
+结果：单卡仍然在 backward 中 `SIGFPE`。
+
+结论：当前问题不能再简单归因于 PyTorch fused / memory-efficient SDPA backend；至少在 math backend 下，`SIGFPE` 仍然可复现。
+
+#### 23.1.3 plain python 单进程复现
+
+不再通过 `accelerate launch`，而是直接运行：
+
+```text
+python -m physical_consistency.cli.train_trd_v1
+```
+
+日志显示：
+
+```text
+distributed_type=DistributedType.NO
+rank=? local_rank=?
+```
+
+结果：仍然在：
+
+```text
+torch.autograd.graph._engine_run_backward
+accelerate.accelerator.backward
+```
+
+内触发 `SIGFPE`。
+
+结论：DDP、NCCL、torchrun / elastic launcher、rank 间同步都不是当前最小复现的主因。
+
+#### 23.1.4 关闭 gradient checkpointing
+
+关键配置：
+
+```text
+--gradient_checkpointing false
+--student_memory_efficient_modulation false
+--student_lora_block_start 39
+```
+
+日志确认：
+
+```text
+gradient_checkpointing=False
+checkpoint_modes=unpatched:40
+lora_modules=14
+```
+
+结果：仍然在 backward 中 `SIGFPE`。
+
+结论：
+
+- block checkpoint replay 不是当前 `SIGFPE` 的必要条件；
+- memory-efficient modulation patch 也不是单独充分根因；
+- 只训练最后一个 block 的 14 个 LoRA linear 仍可复现，所以不是“560 个 LoRA 太多”这个规模问题本身。
+
+#### 23.1.5 LoRA fp32 probe
+
+代码增加：
+
+```text
+PC_FORCE_LORA_FP32=1
+```
+
+日志确认：
+
+```text
+lora_dtype=float32
+force_lora_fp32=True
+```
+
+结果：仍然 `SIGFPE`。
+
+结论：LoRA A/B 参数和 LoRA 分支 matmul 使用 bf16 不是当前 `SIGFPE` 的充分根因。
+
+#### 23.1.6 detach base_out probe
+
+代码增加：
+
+```text
+PC_LORA_DETACH_BASE_OUT=1
+```
+
+日志确认：
+
+```text
+detach_base_out=True
+```
+
+结果：仍然 `SIGFPE`。
+
+结论：LoRA wrapper 中 frozen base linear 的输出分支进入 backward 图，不是当前 `SIGFPE` 的充分根因。
+
+#### 23.1.7 detach LoRA input probe
+
+代码增加：
+
+```text
+PC_LORA_DETACH_INPUT=1
+```
+
+日志确认：
+
+```text
+detach_base_out=True
+detach_input=True
+```
+
+最新一次关键日志为：
+
+```text
+Applied standard LoRA to 14 linear layers ...
+lora_dtype=float32, force_lora_fp32=True, detach_base_out=True, detach_input=True
+distributed_type=DistributedType.NO
+gradient_checkpointing=False
+checkpoint_modes=unpatched:40
+PC_FORCE_SDPA_MATH=1
+loss_total_finite=True
+before_backward
+Fatal Python error: Floating point exception
+```
+
+结果：仍然 `SIGFPE`。
+
+结论：LoRA adapter 的输入继续把上游 Wan block / attention / FFN graph 牵进 backward，不是当前 `SIGFPE` 的充分解释。即使把 base 输出和 LoRA 输入都 detach，FM loss 对 `pred` 的 backward 仍会触发 native 崩溃。
+
+### 23.2 到目前为止可以认为“不是当前根因”的项
+
+以下项目已经在当前最小复现里被排除为主因：
+
+- TRD teacher loss / V-JEPA loss：`--trd_backward_mode off` 后仍炸；
+- loss 显式 NaN / Inf：`loss_total_finite=True`、`loss_fm_finite=True`；
+- OOM：当前 probe backward 前显存约 36-40 GiB allocated，不是 96G H20 OOM；
+- 多卡 DDP / NCCL / allreduce：plain python 单进程仍炸；
+- `find_unused_parameters`：true / false 均不能解决；
+- gradient checkpoint replay：`gradient_checkpointing=False`、`checkpoint_modes=unpatched:40` 仍炸；
+- memory-efficient modulation patch：关闭后仍炸；
+- Dao flash-attn varlen backward：强制 SDPA fallback 后仍炸；
+- PyTorch fused SDPA backend：强制 SDPA math 后仍炸；
+- LoRA 数量过大：只保留最后 block 的 14 个 LoRA linear 仍炸；
+- LoRA bf16 dtype：强制 LoRA fp32 后仍炸；
+- LoRA wrapper 的 frozen base 输出分支：`detach_base_out=True` 后仍炸；
+- LoRA 输入向上游传播：`detach_input=True` 后仍炸。
+
+### 23.3 当前剩余最可疑区域
+
+最新证据把问题进一步压缩到：
+
+```text
+LoRA adapter output
+-> last Wan block / final head / unpatchify / pred path
+-> FM loss
+-> backward native op
+```
+
+也就是说，当前更像是“LoRA 输出被 FM loss 牵到下游 `pred` 路径时，某个 frozen Wan downstream op 的 backward 在 H20 上触发原生 `SIGFPE`”，而不是 LoRA dtype、DDP、checkpoint、TRD 或 flash-attn varlen 本身。
+
+### 23.4 已加入但还需要 H20 运行的下一步：LoRA local loss probe
+
+最新代码已经加入：
+
+```text
+PC_LORA_LOCAL_LOSS=1
+```
+
+该 probe 在 LoRA forward 内部收集一个 local loss，然后在 `training_step` 中用这个 local loss 替代 FM loss。目的不是训练有效模型，而是二分 backward graph：
+
+```text
+LoRA A/B minimal local backward
+vs
+LoRA output -> pred -> FM loss downstream backward
+```
+
+判据：
+
+- 如果 `PC_LORA_LOCAL_LOSS=1` 可以通过 1 个 micro step，则 LoRA A/B 最小 backward 本身可用，问题集中在 LoRA 输出到 `pred/FM loss` 的 downstream Wan 路径；
+- 如果 `PC_LORA_LOCAL_LOSS=1` 仍然 `SIGFPE`，则 LoRA A/B 的最小 linear backward 或 H20/PyTorch 原生 linear backward 路径仍然可疑，需要再做纯 LoRA toy backward / `addmm` 级别 probe。
+
+### 23.5 当前一句话结论更新
+
+截至 2026-04-18 14:20，当前 `SIGFPE` 已经不再像是 DDP、TRD、checkpoint、flash-attn、LoRA bf16 或 LoRA 上游传播问题；最强假设已经变成：
+
+> FM loss 从 `pred` 往回拉时，LoRA 输出之后的 Wan downstream backward 路径中存在某个 H20 上不稳定的 native op。下一步用 `PC_LORA_LOCAL_LOSS=1` 把 FM / pred 下游路径切掉，验证 LoRA 最小 backward 是否本身健康。
