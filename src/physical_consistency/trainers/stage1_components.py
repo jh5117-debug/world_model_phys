@@ -1180,6 +1180,8 @@ class LoRALinear(torch.nn.Module):
         self.merge_mode = merge_mode
         self.detach_base_out = _env_flag("PC_LORA_DETACH_BASE_OUT")
         self.detach_input = _env_flag("PC_LORA_DETACH_INPUT")
+        self.record_local_loss = _env_flag("PC_LORA_LOCAL_LOSS")
+        self._pc_lora_local_losses: list[torch.Tensor] = []
         self.dropout = torch.nn.Dropout(float(dropout)) if dropout > 0 else torch.nn.Identity()
         lora_dtype = torch.float32 if _env_flag("PC_FORCE_LORA_FP32") else base.weight.dtype
         self.lora_A = torch.nn.Linear(
@@ -1206,12 +1208,17 @@ class LoRALinear(torch.nn.Module):
         if self.detach_input:
             x = x.detach()
         lora_input = self.dropout(x.to(dtype=lora_dtype))
-        lora_out = self.lora_B(self.lora_A(lora_input))
+        lora_hidden = self.lora_A(lora_input)
+        lora_out = self.lora_B(lora_hidden)
+        if self.record_local_loss:
+            self._pc_lora_local_losses.append(lora_hidden.float().square().mean() + lora_out.float().mean())
         if lora_out.dtype != out_dtype:
             lora_out = lora_out.to(dtype=out_dtype)
         return lora_out
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.record_local_loss:
+            self._pc_lora_local_losses = []
         base_out = self.base(x)
         if self.detach_base_out:
             base_out = base_out.detach()
@@ -1307,6 +1314,7 @@ def apply_lora_to_wan_model(
     lora_dtypes: set[torch.dtype] = set()
     detach_base_out = False
     detach_input = False
+    local_loss_probe = False
     for _, module in _iter_lora_modules(model):
         module.lora_A.weight.requires_grad = True
         module.lora_B.weight.requires_grad = True
@@ -1314,6 +1322,7 @@ def apply_lora_to_wan_model(
         lora_dtypes.add(module.lora_B.weight.dtype)
         detach_base_out = detach_base_out or module.detach_base_out
         detach_input = detach_input or module.detach_input
+        local_loss_probe = local_loss_probe or module.record_local_loss
     for parameter in model.parameters():
         total_params += parameter.numel()
         if parameter.requires_grad:
@@ -1332,10 +1341,11 @@ def apply_lora_to_wan_model(
         "force_lora_fp32": _env_flag("PC_FORCE_LORA_FP32"),
         "detach_base_out": detach_base_out,
         "detach_input": detach_input,
+        "local_loss_probe": local_loss_probe,
     }
     if _should_log_rank_zero():
         LOGGER.info(
-            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, block_start=%s, lora_chunk_size=%s, merge_mode=%s, lora_dtype=%s, force_lora_fp32=%s, detach_base_out=%s, detach_input=%s, trainable=%s/%s)",
+            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, block_start=%s, lora_chunk_size=%s, merge_mode=%s, lora_dtype=%s, force_lora_fp32=%s, detach_base_out=%s, detach_input=%s, local_loss_probe=%s, trainable=%s/%s)",
             replaced,
             model_name,
             rank,
@@ -1348,9 +1358,21 @@ def apply_lora_to_wan_model(
             _env_flag("PC_FORCE_LORA_FP32"),
             detach_base_out,
             detach_input,
+            local_loss_probe,
             trainable_params,
             total_params,
         )
+
+
+def collect_lora_local_loss(model: torch.nn.Module) -> torch.Tensor:
+    """Return a direct LoRA-output loss collected during the latest forward."""
+
+    losses: list[torch.Tensor] = []
+    for _, module in _iter_lora_modules(model):
+        losses.extend(module._pc_lora_local_losses)
+    if not losses:
+        raise RuntimeError("PC_LORA_LOCAL_LOSS=1 but no LoRA local losses were collected")
+    return torch.stack(losses).mean()
 
 
 def extract_lora_state_dict(model: torch.nn.Module) -> dict[str, torch.Tensor]:

@@ -50,6 +50,7 @@ from physical_consistency.trainers.stage1_components import (
     LingBotStage1Helper,
     apply_gradient_checkpointing,
     build_dataloader,
+    collect_lora_local_loss,
     compute_scheduler_total_steps,
     export_pretrained_state_dict,
     extract_lora_state_dict,
@@ -62,6 +63,10 @@ from physical_consistency.wandb_utils.media import relation_matrix_image
 from physical_consistency.wandb_utils.session import init_wandb_run, log_dict
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def should_apply_student_gradient_checkpointing(args: argparse.Namespace) -> bool:
@@ -1512,7 +1517,11 @@ class TRDTrainingRunner:
 
         pred_rest = pred[:, 1:]
         target_rest = target[:, 1:]
-        loss_fm = F.mse_loss(pred_rest.float(), target_rest.float()) * timestep_sample.weight
+        if _env_flag("PC_LORA_LOCAL_LOSS"):
+            loss_fm = collect_lora_local_loss(self.model_bundle)
+            self._trace_training_phase("lora_local_loss_probe", scalars={"loss_lora_local": loss_fm})
+        else:
+            loss_fm = F.mse_loss(pred_rest.float(), target_rest.float()) * timestep_sample.weight
         self._trace_training_phase("after_fm_loss", scalars={"loss_fm": loss_fm})
 
         if trd_backward_mode == "off":
