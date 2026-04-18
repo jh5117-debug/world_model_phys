@@ -4888,3 +4888,100 @@ PC_LORA_DISABLE_AUTOCAST=1
 
 - 如果通过，说明仅 LoRA 分支内部禁用 autocast 就足够；
 - 如果失败，说明 LoRA 参数 / LoRA input / LoRA matmul 必须显式保持 fp32，正式修复需要同时保留 fp32 LoRA dtype 和 disable autocast。
+
+## 38. 2026-04-18 15:58 no-force-fp32 结果：失败，LoRA fp32 dtype 是必要条件
+
+### 38.1 本轮配置
+
+本轮去掉：
+
+```text
+PC_FORCE_LORA_FP32=1
+```
+
+保留：
+
+```text
+PC_LORA_DISABLE_AUTOCAST=1
+WANDB_MODE=disabled
+PC_DISABLE_WANDB=1
+REQUIRE_TRAIN_FLASH_ATTN=0
+```
+
+同时使用默认 attention 路径，没有启用 SDPA fallback/math 探针，也没有启用 clone/trace/local-loss 诊断开关。
+
+LoRA 应用日志显示：
+
+```text
+lora_dtype=bfloat16
+force_lora_fp32=False
+detach_base_out=False
+detach_input=False
+local_loss_probe=False
+clone_input=False
+clone_hidden=False
+trace_input_meta=False
+disable_autocast=True
+```
+
+### 38.2 结果
+
+forward 与 loss 仍然正常：
+
+```text
+[PHASE] label=after_student_forward ... pred=shape(16, 5, 40, 72) dtype=torch.float32 ... requires_grad=True
+[PHASE] label=after_fm_loss ... loss_fm=0.0320554 loss_fm_finite=True
+[PHASE] label=before_backward ... loss_total=0.0320554 loss_total_finite=True
+```
+
+但进入 backward 后再次触发原始问题：
+
+```text
+Fatal Python error: Floating point exception
+...
+torch.autograd.graph.py line 825 in _engine_run_backward
+accelerate/accelerator.py line 2241 in backward
+physical_consistency/trainers/trd_v1.py line 1050 in train
+```
+
+### 38.3 结论
+
+这轮是关键反证：仅仅在 LoRA 分支内部禁用 autocast 不够。
+
+当 LoRA 参数仍是 bfloat16 时，即使 `PC_LORA_DISABLE_AUTOCAST=1` 让内部 autocast 关闭，H20 backward 仍会在 native autograd/CUDA 扩展层触发 SIGFPE。
+
+因此当前最小有效修复不只是禁用 LoRA autocast，而是必须同时满足：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+这说明根因高度集中在 H20 上 bf16 LoRA adapter backward 路径，而不是 attention backend、TF32、TRD loss、W&B、checkpointing、memory-efficient modulation、clone/stride 或 loss 数值本身。
+
+### 38.4 附：本轮 log 未覆盖原因
+
+本轮命令末尾显示为：
+
+```text
+2>&1 | tee logs/train_trd_v1_low.logh true \se \ull \
+```
+
+这会把输出写到 `logs/train_trd_v1_low.logh` 等错误目标，而不是 `logs/train_trd_v1_low.log`。因此 IDE 中的 `train_trd_v1_low.log` 仍可能停留在上一轮通过的结果。
+
+下一轮命令需要确保使用：
+
+```text
+2>&1 | tee logs/train_trd_v1_low.log
+```
+
+### 38.5 下一步：用最小有效修复跑 3 个 micro step
+
+下一轮恢复：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+并把 `--max_train_micro_steps` 从 1 提到 3，用默认 attention 路径确认不是单步偶然通过。
