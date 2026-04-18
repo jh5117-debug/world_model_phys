@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import logging
 import math
@@ -19,6 +20,7 @@ from einops import rearrange
 from torch.utils.data import DataLoader, Dataset
 
 LOGGER = logging.getLogger(__name__)
+_SDPA_MATH_LOGGED = False
 
 
 def _should_log_rank_zero() -> bool:
@@ -28,6 +30,42 @@ def _should_log_rank_zero() -> bool:
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+@contextlib.contextmanager
+def _sdpa_kernel_context():
+    """Optionally force PyTorch SDPA fallback to its math backend."""
+    if not _env_flag("PC_FORCE_SDPA_MATH"):
+        yield
+        return
+
+    global _SDPA_MATH_LOGGED
+    if not _SDPA_MATH_LOGGED and _should_log_rank_zero():
+        LOGGER.info("PC_FORCE_SDPA_MATH=1: forcing PyTorch SDPA math backend")
+        _SDPA_MATH_LOGGED = True
+
+    try:
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+    except Exception:
+        sdpa_kernel = None
+        SDPBackend = None
+
+    if sdpa_kernel is not None and SDPBackend is not None:
+        with sdpa_kernel(SDPBackend.MATH):
+            yield
+        return
+
+    cuda_backends = getattr(torch.backends, "cuda", None)
+    if cuda_backends is not None and hasattr(cuda_backends, "sdp_kernel"):
+        with cuda_backends.sdp_kernel(
+            enable_flash=False,
+            enable_mem_efficient=False,
+            enable_math=True,
+        ):
+            yield
+        return
+
+    yield
 
 
 def _env_list_allows(name: str, value: str | None) -> bool:
@@ -189,12 +227,13 @@ def _patch_flash_attention_sdpa_fallback(wan_attention_module, wan_model_module=
             causal=False, window_size=(-1, -1),
             deterministic=False, dtype=torch.bfloat16, version=None,
         ):
-            return sdpa_fn(
-                q=q, k=k, v=v,
-                q_lens=q_lens, k_lens=k_lens,
-                dropout_p=dropout_p, softmax_scale=softmax_scale,
-                q_scale=q_scale, causal=causal, dtype=dtype,
-            )
+            with _sdpa_kernel_context():
+                return sdpa_fn(
+                    q=q, k=k, v=v,
+                    q_lens=q_lens, k_lens=k_lens,
+                    dropout_p=dropout_p, softmax_scale=softmax_scale,
+                    q_scale=q_scale, causal=causal, dtype=dtype,
+                )
 
         wan_attention_module._pc_original_flash_attention = original_flash_attention
         wan_attention_module.flash_attention = _flash_attention_via_sdpa
