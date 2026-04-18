@@ -229,6 +229,17 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _wandb_disabled(args: argparse.Namespace) -> bool:
+    mode = str(getattr(args, "wandb_mode", "") or os.environ.get("WANDB_MODE", "")).strip().lower()
+    env_mode = os.environ.get("WANDB_MODE", "").strip().lower()
+    return _env_flag("PC_DISABLE_WANDB") or mode in {"disabled", "disable", "off", "none"} or env_mode in {
+        "disabled",
+        "disable",
+        "off",
+        "none",
+    }
+
+
 def format_eta(seconds: float | None) -> str:
     """Render a compact ETA string for progress logs."""
     if seconds is None or not math.isfinite(seconds) or seconds < 0:
@@ -624,6 +635,7 @@ class TRDTrainingRunner:
 
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
+        self.disable_wandb = _wandb_disabled(args)
         project_config = ProjectConfiguration(
             project_dir=str(Path(args.output_dir)),
             logging_dir=str(Path(args.output_root) / "logs" / "wandb"),
@@ -651,7 +663,7 @@ class TRDTrainingRunner:
             gradient_accumulation_plugin=grad_accum_plugin,
             dataloader_config=DataLoaderConfiguration(use_seedable_sampler=True),
             kwargs_handlers=[ddp_kwargs, init_process_group_kwargs],
-            log_with="wandb",
+            log_with=None if self.disable_wandb else "wandb",
             project_config=project_config,
         )
         self.helper = LingBotStage1Helper(args)
@@ -942,6 +954,13 @@ class TRDTrainingRunner:
     def initialize_tracking(self) -> None:
         """Create the shared W&B run before model loading."""
         if self._tracking_initialized:
+            return
+        if self.disable_wandb:
+            if self.accelerator.is_main_process:
+                LOGGER.info(
+                    "PC_DISABLE_WANDB/WANDB_MODE disabled: skipping W&B tracker initialization"
+                )
+            self._tracking_initialized = True
             return
         run_config = vars(self.args).copy()
         self.run = init_wandb_run(
@@ -2612,6 +2631,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--student_ffn_chunk_size", type=int, default=None)
     parser.add_argument("--student_norm_chunk_size", type=int, default=None)
     parser.add_argument("--trd_backward_mode", type=str, default="")
+    parser.add_argument("--wandb_mode", type=str, default="")
     parser.add_argument("--wandb_relation_image_every_steps", type=int, default=None)
     parser.add_argument("--validation_every_steps", type=int, default=None)
     parser.add_argument("--validation_every_epochs", type=int, default=None)

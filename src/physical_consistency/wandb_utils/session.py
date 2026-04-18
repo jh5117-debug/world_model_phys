@@ -67,7 +67,10 @@ def log_dict(step: int, payload: dict[str, Any] | None, *, accelerator=None) -> 
     if not payload:
         return
     if accelerator is not None:
-        accelerator.log(payload, step=step)
+        try:
+            accelerator.log(payload, step=step)
+        except Exception:
+            LOGGER.debug("Skipping accelerator.log because no tracker is active", exc_info=True)
         return
     try:
         import wandb

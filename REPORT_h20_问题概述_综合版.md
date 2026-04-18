@@ -4252,3 +4252,68 @@ PC_FORCE_LORA_FP32=1
 
 - 如果通过，说明 LoRA 梯度穿回上游 Wan graph 没问题，下一轮再去掉 `PC_LORA_DETACH_BASE_OUT=1`；
 - 如果失败，说明 base output branch 还没进入 backward 时，仅 LoRA input 的上游真实 graph 就能触发 SIGFPE，需要继续按 block 内 attention / FFN / cam path 二分。
+
+## 31. 2026-04-18 15:14 W&B 初始化超时：非训练图失败，先禁用 W&B 继续诊断
+
+### 31.1 本轮现象
+
+本轮原计划验证：
+
+```text
+去掉 PC_LORA_DETACH_INPUT=1
+保留 PC_LORA_DETACH_BASE_OUT=1
+保留 PC_LORA_DISABLE_AUTOCAST=1
+```
+
+但程序在进入模型加载和训练之前，被 W&B 初始化卡住：
+
+```text
+wandb.errors.errors.CommError:
+Run initialization has timed out after 90.0 sec.
+```
+
+因此这次不是 H20 `SIGFPE`，也不是 backward / CUDA / LoRA 路径问题；它发生在：
+
+```text
+runner.initialize_tracking()
+accelerator.init_trackers(...)
+wandb.init(...)
+```
+
+也就是说，本轮没有产生训练图诊断结果。
+
+### 31.2 处理方式
+
+为了继续定位 SIGFPE，代码加入了一个运行时禁用开关：
+
+```text
+PC_DISABLE_WANDB=1
+```
+
+当该开关开启，或者 `WANDB_MODE` 为 `disabled` / `off` / `none` 时：
+
+- `Accelerator(log_with=None)`，不注册 W&B tracker；
+- `initialize_tracking()` 直接跳过 W&B 初始化；
+- `log_dict()` 在没有 tracker 时安静跳过日志上报。
+
+这样后续 probe 不再依赖 W&B 网络状态。等训练图稳定后，再恢复 W&B online。
+
+### 31.3 下一步：重复 no-input-detach 实验，但禁用 W&B
+
+下一轮仍然测同一个关键边界：
+
+```text
+真实 FM loss -> LoRA adapter fp32 backward -> LoRA input 上游真实 Wan graph
+```
+
+只是在环境里额外加：
+
+```text
+PC_DISABLE_WANDB=1
+WANDB_MODE=disabled
+```
+
+判据不变：
+
+- 如果通过，下一步去掉 `PC_LORA_DETACH_BASE_OUT=1`；
+- 如果失败，说明仅 LoRA input 上游真实 graph 进入 backward 时仍会触发问题，需要继续按 block 内模块二分。
