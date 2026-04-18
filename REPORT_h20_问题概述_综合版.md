@@ -5204,3 +5204,113 @@ PC_LORA_DISABLE_AUTOCAST=1
 
 1. 去掉 `--max_train_micro_steps` 开始真实训练；
 2. 或先把 W&B 从 disabled 改回 online，确认只是网络/初始化偶发问题，不影响训练本体。
+
+## 41. 2026-04-18 16:22 TRD full 20-step 结果：通过，原 SIGFPE 问题已被规避
+
+### 41.1 本轮配置
+
+本轮在完整 TRD backward 基础上，把探针步数从 3 提到 20：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+WANDB_MODE=disabled
+PC_DISABLE_WANDB=1
+REQUIRE_TRAIN_FLASH_ATTN=0
+```
+
+LoRA 应用日志确认仍是最小有效修复：
+
+```text
+lora_dtype=float32
+force_lora_fp32=True
+detach_base_out=False
+detach_input=False
+local_loss_probe=False
+clone_input=False
+clone_hidden=False
+trace_input_meta=False
+disable_autocast=True
+```
+
+### 41.2 结果
+
+第 1 step 完整通过 teacher encode、student forward、FM loss、TRD loss 和 backward：
+
+```text
+[PHASE] label=after_teacher_encode ... teacher_tokens=shape(1, 32, 576, 768) dtype=torch.float32 requires_grad=False
+[PHASE] label=after_student_forward ... pred=shape(16, 5, 40, 72) dtype=torch.float32 ... requires_grad=True
+[PHASE] label=after_trd_loss ... loss_total=0.0335121 loss_total_finite=True loss_trd=0.0145668 loss_trd_finite=True
+[PHASE] label=after_backward ...
+[PROGRESS] epoch=1/5 global_step=1/8350 micro_step=1 ... loss_total=0.0335 loss_fm=0.0321 loss_trd=0.0146
+```
+
+随后连续跑到第 20 step：
+
+```text
+[PROGRESS] epoch=1/5 global_step=10/8350 micro_step=10 ... loss_total=0.0846 loss_fm=0.0835 loss_trd=0.0114
+[PROGRESS] epoch=1/5 global_step=15/8350 micro_step=15 ... loss_total=0.0492 loss_fm=0.0491 loss_trd=0.0009
+[PROGRESS] epoch=1/5 global_step=20/8350 micro_step=20 ... loss_total=0.0634 loss_fm=0.0629 loss_trd=0.0052
+[MEM PROBE] reached max_train_micro_steps=20 global_step=20 micro_step=20 peak_mem=38.56GiB; exiting before checkpoint/validation
+```
+
+本轮没有出现：
+
+```text
+Fatal Python error: Floating point exception
+```
+
+也没有出现 loss NaN/Inf 或 CUDA OOM。
+
+### 41.3 结论
+
+可以认为原始 H20 SIGFPE 问题已经被当前修复规避。
+
+精确表述是：
+
+```text
+H20 上 bf16 LoRA adapter backward 会触发 native SIGFPE；
+将 LoRA 参数/输入/LoRA 分支 matmul 固定为 fp32，并在 LoRA 分支内部禁用 autocast 后，
+full TRD backward 已稳定通过 20 个 micro step。
+```
+
+当前应保留的最小修复：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+已经排除为主因的路径包括：
+
+- W&B；
+- TF32；
+- SDPA fallback/math/default attention；
+- V-JEPA teacher encode；
+- TRD spatial/temporal loss；
+- TRD full backward；
+- checkpointing；
+- memory-efficient modulation；
+- LoRA clone/stride；
+- loss 数值异常。
+
+### 41.4 尚未验证
+
+本轮仍然是 probe 运行，并在第 20 step 手动退出：
+
+```text
+max_train_micro_steps=20
+```
+
+因此还没有验证：
+
+- 无 `--max_train_micro_steps` 的长训练；
+- checkpoint 保存；
+- validation；
+- W&B online 初始化与同步。
+
+### 41.5 下一步
+
+下一步建议去掉 `--max_train_micro_steps`，保持 W&B disabled，先跑一次真实训练流程。这样可以验证 checkpoint/validation 前后的路径。
+
+如果真实训练也稳定，再单独恢复 W&B online。
