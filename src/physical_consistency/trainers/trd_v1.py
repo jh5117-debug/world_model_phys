@@ -2401,6 +2401,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("gradient_checkpointing", True)
     payload.setdefault("validation_every_steps", 0)
     payload.setdefault("validation_every_epochs", 1)
+    payload.setdefault("save_every_n_epochs", 0)
     payload.setdefault("max_train_micro_steps", 0)
     payload.setdefault("mini_val_max_samples", 8)
     payload.setdefault("student_target_block", 20)
@@ -2516,6 +2517,12 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         payload["validation_sample_steps"] = int(payload["validation_sample_steps"])
     if payload["validation_sample_steps"] <= 0:
         raise ValueError(f"validation_sample_steps must be positive, got {payload['validation_sample_steps']}")
+    if payload["save_every_n_epochs"] in ("", None):
+        payload["save_every_n_epochs"] = 0
+    else:
+        payload["save_every_n_epochs"] = int(payload["save_every_n_epochs"])
+    if payload["save_every_n_epochs"] < 0:
+        raise ValueError(f"save_every_n_epochs must be non-negative, got {payload['save_every_n_epochs']}")
     if payload["max_train_micro_steps"] in ("", None):
         payload["max_train_micro_steps"] = 0
     else:
@@ -2637,6 +2644,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb_relation_image_every_steps", type=int, default=None)
     parser.add_argument("--validation_every_steps", type=int, default=None)
     parser.add_argument("--validation_every_epochs", type=int, default=None)
+    parser.add_argument("--save_every_n_epochs", type=int, default=None)
     parser.add_argument("--max_train_micro_steps", type=int, default=None)
     parser.add_argument("--validation_sample_steps", type=int, default=None)
     parser.add_argument("--validation_runtime_mode", type=str, default="")

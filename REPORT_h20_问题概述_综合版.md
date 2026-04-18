@@ -5677,3 +5677,60 @@ grad_norm finite 且不是长期 0
 ```
 
 这比每个 epoch 内暂停训练做外部 validation 更快，同时每个 epoch checkpoint 都可用于回溯。
+
+## 45. 4-GPU 正式训练首启失败：save_every_n_epochs CLI 未暴露
+
+### 45.1 现象
+
+4 卡启动命令使用：
+
+```text
+python -m torch.distributed.run --standalone --nproc_per_node=4 ...
+```
+
+训练进程尚未进入模型加载或前后向阶段，四个 rank 都在参数解析阶段失败：
+
+```text
+train_trd_v1.py: error: unrecognized arguments: --save_every_n_epochs 1
+```
+
+因此这次失败不是 OOM，不是 H20 SIGFPE，也不是 LoRA 梯度再次断开，而是 CLI parser 没有暴露已有配置项。
+
+### 45.2 根因
+
+配置文件和训练循环已经支持：
+
+```text
+save_every_n_epochs
+```
+
+但 `parse_args()` 没有注册：
+
+```text
+--save_every_n_epochs
+```
+
+导致命令行覆盖每 epoch checkpoint 策略时被 argparse 拒绝。
+
+### 45.3 修复
+
+已补齐：
+
+```text
+parser.add_argument("--save_every_n_epochs", type=int, default=None)
+```
+
+并在配置归一化阶段按非负整数处理：
+
+```text
+payload.setdefault("save_every_n_epochs", 0)
+save_every_n_epochs >= 0
+```
+
+修复后可以继续使用正式训练命令中的：
+
+```text
+--save_every_n_epochs 1
+```
+
+用于每个 epoch 保存 checkpoint，同时关闭 validation 以保持训练主流程最快。
