@@ -4785,3 +4785,106 @@ PC_LORA_DISABLE_AUTOCAST=1
 
 - 如果通过，说明 attention fallback / SDPA patch 全部不是必要修复，核心就是 LoRA fp32 compute；
 - 如果失败，说明默认 Wan attention / flash-attn 路径仍有问题，正式训练需保留 `PC_FORCE_SDPA_FALLBACK=1`。
+
+## 37. 2026-04-18 15:54 default attention 结果：attention fallback 不是必要修复
+
+### 37.1 本轮实验配置和结果
+
+本轮去掉了全部 attention 隔离开关：
+
+```text
+PC_FORCE_SDPA_FALLBACK 未设置
+PC_FORCE_SDPA_MATH 未设置
+```
+
+保留当前最小 LoRA 修复候选：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+日志中没有出现 SDPA fallback patch：
+
+```text
+PC_FORCE_SDPA_FALLBACK=1: patched ...
+```
+
+也没有出现强制 SDPA math：
+
+```text
+PC_FORCE_SDPA_MATH=1: forcing PyTorch SDPA math backend
+```
+
+LoRA 应用日志确认仍是最小 LoRA 修复配置：
+
+```text
+detach_base_out=False
+detach_input=False
+local_loss_probe=False
+clone_input=False
+clone_hidden=False
+trace_input_meta=False
+disable_autocast=True
+```
+
+训练结果：
+
+```text
+[PHASE] label=after_student_forward ... pred=shape(16, 5, 40, 72) dtype=torch.float32 ... requires_grad=True
+[PHASE] label=after_fm_loss ... loss_fm=0.0320554 loss_fm_finite=True
+[PHASE] label=before_backward ... loss_total=0.0320554 loss_total_finite=True
+[PHASE] label=after_backward ...
+[PROGRESS] epoch=1/5 global_step=1/8350 micro_step=1 ...
+[MEM PROBE] reached max_train_micro_steps=1 global_step=1 micro_step=1 ... exiting before checkpoint/validation
+```
+
+本轮没有出现 `Fatal Python error: Floating point exception`。
+
+### 37.2 新结论
+
+可以排除：
+
+```text
+PC_FORCE_SDPA_FALLBACK=1
+PC_FORCE_SDPA_MATH=1
+```
+
+是必要修复。默认 Wan attention / flash-attn 路径在 LoRA fp32 compute + LoRA 内部禁用 autocast 时可以通过。
+
+当前最小有效修复候选进一步收敛为：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+至此已经排除：
+
+- TRD/V-JEPA loss；
+- W&B；
+- checkpointing；
+- memory-efficient modulation；
+- LoRA clone/trace；
+- TF32；
+- SDPA math；
+- SDPA fallback / attention patch。
+
+### 37.3 下一步：去掉 PC_FORCE_LORA_FP32，仅保留 LoRA disable autocast
+
+下一轮去掉：
+
+```text
+PC_FORCE_LORA_FP32=1
+```
+
+保留：
+
+```text
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+判据：
+
+- 如果通过，说明仅 LoRA 分支内部禁用 autocast 就足够；
+- 如果失败，说明 LoRA 参数 / LoRA input / LoRA matmul 必须显式保持 fp32，正式修复需要同时保留 fp32 LoRA dtype 和 disable autocast。
