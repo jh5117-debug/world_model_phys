@@ -1195,6 +1195,7 @@ class LoRALinear(torch.nn.Module):
         self.clone_input = _env_flag("PC_LORA_INPUT_CONTIGUOUS_CLONE")
         self.clone_hidden = _env_flag("PC_LORA_HIDDEN_CONTIGUOUS_CLONE")
         self.trace_input_meta = _env_flag("PC_LORA_TRACE_INPUT_META")
+        self.disable_autocast = _env_flag("PC_LORA_DISABLE_AUTOCAST")
         self._pc_lora_local_losses: list[torch.Tensor] = []
         self._pc_lora_name = "<unregistered>"
         self._pc_lora_trace_logged = False
@@ -1227,13 +1228,19 @@ class LoRALinear(torch.nn.Module):
         lora_input = self.dropout(x.to(dtype=lora_dtype))
         if self.clone_input:
             lora_input = lora_input.contiguous().clone()
-        lora_hidden = self.lora_A(lora_input)
-        if self.clone_hidden:
-            lora_hidden = lora_hidden.contiguous().clone()
-        lora_out = self.lora_B(lora_hidden)
+        autocast_context = (
+            torch.amp.autocast(lora_input.device.type, enabled=False)
+            if self.disable_autocast and lora_input.device.type in {"cuda", "cpu"}
+            else contextlib.nullcontext()
+        )
+        with autocast_context:
+            lora_hidden = self.lora_A(lora_input)
+            if self.clone_hidden:
+                lora_hidden = lora_hidden.contiguous().clone()
+            lora_out = self.lora_B(lora_hidden)
         if self.trace_input_meta and not self._pc_lora_trace_logged and _should_log_rank_zero():
             LOGGER.info(
-                "PC_LORA_TRACE_INPUT_META name=%s raw_shape=%s raw_dtype=%s raw_stride=%s raw_contig=%s raw_requires_grad=%s input_shape=%s input_dtype=%s input_stride=%s input_contig=%s hidden_shape=%s hidden_dtype=%s hidden_stride=%s hidden_contig=%s out_shape=%s out_dtype=%s out_stride=%s out_contig=%s clone_input=%s clone_hidden=%s",
+                "PC_LORA_TRACE_INPUT_META name=%s raw_shape=%s raw_dtype=%s raw_stride=%s raw_contig=%s raw_requires_grad=%s input_shape=%s input_dtype=%s input_stride=%s input_contig=%s hidden_shape=%s hidden_dtype=%s hidden_stride=%s hidden_contig=%s out_shape=%s out_dtype=%s out_stride=%s out_contig=%s clone_input=%s clone_hidden=%s disable_autocast=%s",
                 self._pc_lora_name,
                 tuple(raw_x.shape),
                 raw_x.dtype,
@@ -1254,6 +1261,7 @@ class LoRALinear(torch.nn.Module):
                 lora_out.is_contiguous(),
                 self.clone_input,
                 self.clone_hidden,
+                self.disable_autocast,
             )
             self._pc_lora_trace_logged = True
         if self.record_local_loss:
@@ -1365,6 +1373,7 @@ def apply_lora_to_wan_model(
     clone_input = False
     clone_hidden = False
     trace_input_meta = False
+    disable_autocast = False
     for _, module in _iter_lora_modules(model):
         module.lora_A.weight.requires_grad = True
         module.lora_B.weight.requires_grad = True
@@ -1376,6 +1385,7 @@ def apply_lora_to_wan_model(
         clone_input = clone_input or module.clone_input
         clone_hidden = clone_hidden or module.clone_hidden
         trace_input_meta = trace_input_meta or module.trace_input_meta
+        disable_autocast = disable_autocast or module.disable_autocast
     for parameter in model.parameters():
         total_params += parameter.numel()
         if parameter.requires_grad:
@@ -1398,10 +1408,11 @@ def apply_lora_to_wan_model(
         "clone_input": clone_input,
         "clone_hidden": clone_hidden,
         "trace_input_meta": trace_input_meta,
+        "disable_autocast": disable_autocast,
     }
     if _should_log_rank_zero():
         LOGGER.info(
-            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, block_start=%s, lora_chunk_size=%s, merge_mode=%s, lora_dtype=%s, force_lora_fp32=%s, detach_base_out=%s, detach_input=%s, local_loss_probe=%s, clone_input=%s, clone_hidden=%s, trace_input_meta=%s, trainable=%s/%s)",
+            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, block_start=%s, lora_chunk_size=%s, merge_mode=%s, lora_dtype=%s, force_lora_fp32=%s, detach_base_out=%s, detach_input=%s, local_loss_probe=%s, clone_input=%s, clone_hidden=%s, trace_input_meta=%s, disable_autocast=%s, trainable=%s/%s)",
             replaced,
             model_name,
             rank,
@@ -1418,6 +1429,7 @@ def apply_lora_to_wan_model(
             clone_input,
             clone_hidden,
             trace_input_meta,
+            disable_autocast,
             trainable_params,
             total_params,
         )

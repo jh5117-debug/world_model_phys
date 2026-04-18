@@ -3984,3 +3984,95 @@ real Wan activation
 
 - 如果这轮通过，说明真实 activation 的 stride/storage/contiguity 是触发点，后续修复可在 LoRA 分支固定 clone/contiguous；
 - 如果仍然 `SIGFPE`，则问题更可能依赖真实 activation 数值分布或真实 forward 周边上下文，需要继续记录每个 LoRA module 的 input meta，并按 module 关闭/替换真实 activation 二分。
+
+## 28. 2026-04-18 14:57 real activation clone 结果：clone 不够，真实 LoRA 计算仍被 autocast 成 bf16
+
+### 28.1 本轮实验配置和结果
+
+本轮回到真实 Wan forward + LoRA local loss，并开启：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DETACH_BASE_OUT=1
+PC_LORA_DETACH_INPUT=1
+PC_LORA_LOCAL_LOSS=1
+PC_LORA_INPUT_CONTIGUOUS_CLONE=1
+PC_LORA_HIDDEN_CONTIGUOUS_CLONE=1
+PC_LORA_TRACE_INPUT_META=1
+```
+
+日志确认 LoRA 分支输入已经是 contiguous：
+
+```text
+raw_contig=True
+input_dtype=torch.float32
+input_contig=True
+clone_input=True
+clone_hidden=True
+```
+
+但关键新发现是：
+
+```text
+hidden_dtype=torch.bfloat16
+out_dtype=torch.bfloat16
+```
+
+也就是说，虽然 LoRA 参数和输入被设为 fp32，真实 Wan forward 外层仍处于：
+
+```text
+torch.amp.autocast("cuda", dtype=torch.bfloat16)
+```
+
+因此 LoRA `Linear` 实际计算仍被 autocast 到 bf16。synthetic matmul probe 之所以通过，是因为它在 skip-forward 早退分支里，不在这个 autocast context 内。
+
+本轮结果仍然：
+
+```text
+[PHASE] label=lora_local_loss_probe ... loss_lora_local=0.0472017 loss_lora_local_finite=True
+[PHASE] label=before_backward ... loss_total=0.0472017 loss_total_finite=True
+Fatal Python error: Floating point exception
+```
+
+### 28.2 新结论
+
+目前最强结论更新为：
+
+```text
+真实 Wan forward 的 autocast bf16 LoRA Linear backward
+```
+
+才是当前最小触发面。此前 `PC_FORCE_LORA_FP32=1` 只改变了 LoRA 参数 dtype / 输入 cast，但没有阻止外层 autocast 把 matmul 计算降成 bf16。
+
+### 28.3 下一步：在 LoRA 分支内部禁用 autocast
+
+代码继续加入：
+
+```text
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+下一轮仍然用真实 Wan forward + local loss，但 LoRA 分支内部会进入：
+
+```text
+torch.amp.autocast("cuda", enabled=False)
+```
+
+预期日志应从：
+
+```text
+hidden_dtype=torch.bfloat16
+out_dtype=torch.bfloat16
+```
+
+变成：
+
+```text
+hidden_dtype=torch.float32
+out_dtype=torch.float32
+```
+
+判据：
+
+- 如果 `PC_LORA_DISABLE_AUTOCAST=1` 后通过，修复方向就非常明确：LoRA adapter 分支必须在 fp32 下计算，至少 H20 当前环境不能用 bf16 autocast LoRA backward；
+- 如果仍然 `SIGFPE`，再按真实 LoRA module 单独开关 / 替换真实 activation 数值继续二分。
