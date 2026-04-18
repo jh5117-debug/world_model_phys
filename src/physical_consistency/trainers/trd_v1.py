@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import gc
 import hashlib
+import inspect
 import logging
 import math
 import os
 import re
 import time
+from collections import Counter
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,11 +71,25 @@ def should_apply_student_gradient_checkpointing(args: argparse.Namespace) -> boo
     return True
 
 
-def student_gradient_checkpointing_use_reentrant(args: argparse.Namespace) -> bool:
-    """Use the reentrant checkpoint path for LoRA to avoid non-reentrant metadata mismatches."""
+def student_gradient_checkpointing_use_reentrant(
+    args: argparse.Namespace,
+    distributed_type: DistributedType | None = None,
+) -> bool:
+    """Return the checkpoint engine choice for the student blocks.
+
+    Reentrant checkpointing can avoid some DeepSpeed metadata edge cases, but
+    DDP cannot safely handle LoRA parameters reused inside reentrant checkpoint
+    replays without static-graph handling. Prefer non-reentrant under DDP unless
+    the caller explicitly overrides the setting.
+    """
     override = getattr(args, "student_checkpoint_use_reentrant", None)
     if override is not None:
         return bool(override)
+    if (
+        distributed_type == DistributedType.MULTI_GPU
+        and getattr(args, "student_tuning_mode", "full") == "lora"
+    ):
+        return False
     return getattr(args, "student_tuning_mode", "full") == "lora"
 
 
@@ -586,7 +602,17 @@ class TRDTrainingRunner:
             project_dir=str(Path(args.output_dir)),
             logging_dir=str(Path(args.output_root) / "logs" / "wandb"),
         )
-        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+        ddp_kwargs_payload: dict[str, Any] = {
+            "find_unused_parameters": bool(args.student_ddp_find_unused_parameters),
+        }
+        if "static_graph" in inspect.signature(DistributedDataParallelKwargs).parameters:
+            ddp_kwargs_payload["static_graph"] = bool(args.student_ddp_static_graph)
+        elif bool(args.student_ddp_static_graph):
+            LOGGER.warning(
+                "student_ddp_static_graph=true was requested, but this accelerate version "
+                "does not expose DistributedDataParallelKwargs.static_graph"
+            )
+        ddp_kwargs = DistributedDataParallelKwargs(**ddp_kwargs_payload)
         init_process_group_kwargs = InitProcessGroupKwargs(
             backend="nccl",
             timeout=timedelta(hours=args.distributed_timeout_hours),
@@ -620,6 +646,8 @@ class TRDTrainingRunner:
         self.val_loader = None
         self.model_bundle = None
         self.teacher = None
+        self._param_grad_trace_handles: list[Any] = []
+        self._param_grad_trace_counts: dict[str, int] = {}
         self.best_metrics_path = Path(args.output_dir) / "best_videophy2.json"
         self.best_checkpoint_path = Path(args.output_dir) / args.best_checkpoint_name
         self.visible_gpu_list = os.environ.get(
@@ -710,6 +738,181 @@ class TRDTrainingRunner:
 
         LOGGER.info("[PHASE] %s", " ".join(parts))
 
+    def _student_checkpoint_use_reentrant(self) -> bool:
+        use_reentrant = student_gradient_checkpointing_use_reentrant(
+            self.args,
+            self.accelerator.distributed_type,
+        )
+        override = getattr(self.args, "student_checkpoint_use_reentrant", None)
+        is_ddp_lora = (
+            self.accelerator.distributed_type == DistributedType.MULTI_GPU
+            and getattr(self.args, "student_tuning_mode", "full") == "lora"
+        )
+        if self.accelerator.is_main_process and is_ddp_lora and should_apply_student_gradient_checkpointing(self.args):
+            if override is None and not use_reentrant:
+                LOGGER.warning(
+                    "[DDP DIAG] Auto-selected non-reentrant checkpointing for DDP+LoRA. "
+                    "Reentrant checkpointing can mark LoRA parameters ready twice in DDP. "
+                    "Use --student_checkpoint_use_reentrant true only with --student_ddp_static_graph true "
+                    "or for a targeted diagnostic."
+                )
+            elif use_reentrant:
+                LOGGER.warning(
+                    "[DDP DIAG] DDP+LoRA is using reentrant checkpointing. If backward fails with "
+                    "'Expected to mark a variable ready only once', rerun with "
+                    "--student_checkpoint_use_reentrant false or --student_ddp_static_graph true."
+                )
+        return use_reentrant
+
+    def _iter_student_branch_models(self) -> list[tuple[str, nn.Module]]:
+        bundle = self.model_bundle
+        if isinstance(bundle, DualBranchTrainingBundle):
+            return [("low", bundle.low_model), ("high", bundle.high_model)]
+        if isinstance(bundle, SingleBranchTrainingBundle):
+            return [(bundle.branch, bundle.model)]
+        return []
+
+    def _named_parameters_including_duplicates(self, module: nn.Module) -> list[tuple[str, nn.Parameter]]:
+        try:
+            return list(module.named_parameters(remove_duplicate=False))
+        except TypeError:
+            return list(module.named_parameters())
+
+    def _format_counter(self, counter: Counter) -> str:
+        if not counter:
+            return "none"
+        return ",".join(f"{key}:{value}" for key, value in sorted(counter.items(), key=lambda item: str(item[0])))
+
+    def _log_student_graph_diagnostics(self, label: str) -> None:
+        if not getattr(self.args, "student_diagnose_training_graph", True):
+            return
+        if not self.accelerator.is_main_process:
+            return
+        use_reentrant = student_gradient_checkpointing_use_reentrant(
+            self.args,
+            self.accelerator.distributed_type,
+        )
+        LOGGER.info(
+            "[STUDENT DIAG] label=%s distributed_type=%s ddp_find_unused_parameters=%s "
+            "ddp_static_graph=%s gradient_checkpointing=%s checkpoint_use_reentrant=%s "
+            "checkpoint_mode=%s tuning_mode=%s lora_merge_mode=%s",
+            label,
+            self.accelerator.distributed_type,
+            self.args.student_ddp_find_unused_parameters,
+            self.args.student_ddp_static_graph,
+            self.args.gradient_checkpointing,
+            use_reentrant,
+            self.args.student_memory_efficient_checkpoint_mode,
+            self.args.student_tuning_mode,
+            getattr(self.args, "student_lora_merge_mode", "inplace"),
+        )
+        for branch, model in self._iter_student_branch_models():
+            block_container = getattr(model, "blocks", [])
+            checkpoint_modes = Counter(
+                getattr(block, "_pc_checkpoint_mode", "unpatched") for block in block_container
+            )
+            lora_merge_modes: Counter = Counter()
+            lora_modules = 0
+            for module in model.modules():
+                if module.__class__.__name__ == "LoRALinear":
+                    lora_modules += 1
+                    lora_merge_modes[getattr(module, "merge_mode", "unknown")] += 1
+            named_params = self._named_parameters_including_duplicates(model)
+            trainable_tensors = [(name, param) for name, param in named_params if param.requires_grad]
+            trainable_param_count = sum(param.numel() for _, param in trainable_tensors)
+            seen_param_ids: dict[int, str] = {}
+            duplicate_names: list[str] = []
+            for name, param in named_params:
+                param_id = id(param)
+                if param_id in seen_param_ids:
+                    duplicate_names.append(f"{seen_param_ids[param_id]}=={name}")
+                else:
+                    seen_param_ids[param_id] = name
+            LOGGER.info(
+                "[STUDENT DIAG] branch=%s blocks=%s checkpoint_modes=%s lora_modules=%s "
+                "lora_merge_modes=%s trainable_tensors=%s trainable_params=%s duplicate_parameter_refs=%s",
+                branch,
+                len(block_container),
+                self._format_counter(checkpoint_modes),
+                lora_modules,
+                self._format_counter(lora_merge_modes),
+                len(trainable_tensors),
+                trainable_param_count,
+                len(duplicate_names),
+            )
+            if duplicate_names:
+                LOGGER.warning(
+                    "[STUDENT DIAG] branch=%s duplicate_parameter_examples=%s",
+                    branch,
+                    ";".join(duplicate_names[:8]),
+                )
+        if (
+            self.accelerator.distributed_type == DistributedType.MULTI_GPU
+            and self.args.student_tuning_mode == "lora"
+            and self.args.gradient_checkpointing
+            and use_reentrant
+            and not self.args.student_ddp_static_graph
+        ):
+            LOGGER.warning(
+                "[STUDENT DIAG] Risk detected: DDP+LoRA+reentrant checkpointing without static_graph. "
+                "This matches PyTorch's 'marked ready twice' failure mode."
+            )
+
+    def _install_param_grad_trace(self) -> None:
+        if not getattr(self.args, "student_param_grad_trace", False):
+            return
+        if self.model_bundle is None:
+            return
+        if self._param_grad_trace_handles:
+            return
+        pattern_text = str(getattr(self.args, "student_param_grad_trace_pattern", "lora")).strip().lower()
+        patterns = [item.strip() for item in pattern_text.split(",") if item.strip()]
+        trace_all = not patterns or "*" in patterns
+
+        def _matches(name: str) -> bool:
+            lowered = name.lower()
+            return trace_all or any(pattern in lowered for pattern in patterns)
+
+        watched = 0
+        for name, param in self.model_bundle.named_parameters():
+            if not param.requires_grad or not _matches(name):
+                continue
+            watched += 1
+
+            def _make_hook(param_name: str):
+                def _hook(grad: torch.Tensor):
+                    count = self._param_grad_trace_counts.get(param_name, 0) + 1
+                    self._param_grad_trace_counts[param_name] = count
+                    if count > 1:
+                        LOGGER.warning(
+                            "[PARAM GRAD TRACE] duplicate_grad_hook rank=%s local_rank=%s "
+                            "micro_step=%s global_step=%s count=%s name=%s grad_shape=%s grad_dtype=%s",
+                            os.environ.get("RANK", "?"),
+                            os.environ.get("LOCAL_RANK", "?"),
+                            self._micro_step,
+                            self.global_step,
+                            count,
+                            param_name,
+                            tuple(grad.shape),
+                            grad.dtype,
+                        )
+                    return grad
+
+                return _hook
+
+            self._param_grad_trace_handles.append(param.register_hook(_make_hook(name)))
+        if self.accelerator.is_main_process:
+            LOGGER.info(
+                "[PARAM GRAD TRACE] installed hooks watched_tensors=%s pattern=%s",
+                watched,
+                pattern_text or "*",
+            )
+
+    def _reset_param_grad_trace_counts(self) -> None:
+        counts = getattr(self, "_param_grad_trace_counts", None)
+        if counts:
+            counts.clear()
+
     def initialize_tracking(self) -> None:
         """Create the shared W&B run before model loading."""
         if self._tracking_initialized:
@@ -798,6 +1001,7 @@ class TRDTrainingRunner:
                     )
                     self._log_gpu_memory(f"step_{self._micro_step}_after_forward", emit_console=False)
                     self._trace_training_phase("before_backward", scalars={"loss_total": metrics["loss_total"]})
+                    self._reset_param_grad_trace_counts()
                     self.accelerator.backward(metrics["loss_total"])
                     self._trace_training_phase("after_backward")
                     # The non-detached loss keeps the autograd graph alive, which
@@ -957,7 +1161,7 @@ class TRDTrainingRunner:
                 high_projector.load_state_dict(resume_state["high_projector"])
 
             if should_apply_student_gradient_checkpointing(self.args):
-                use_reentrant = student_gradient_checkpointing_use_reentrant(self.args)
+                use_reentrant = self._student_checkpoint_use_reentrant()
                 if self.accelerator.is_main_process:
                     LOGGER.info(
                         "Applying block-level gradient checkpointing for student models "
@@ -1005,7 +1209,7 @@ class TRDTrainingRunner:
                 projector.load_state_dict(resume_state[f"{branch}_projector"])
 
             if should_apply_student_gradient_checkpointing(self.args):
-                use_reentrant = student_gradient_checkpointing_use_reentrant(self.args)
+                use_reentrant = self._student_checkpoint_use_reentrant()
                 if self.accelerator.is_main_process:
                     LOGGER.info(
                         "Applying block-level gradient checkpointing for %s_noise_model "
@@ -1055,6 +1259,7 @@ class TRDTrainingRunner:
             eta_min=1e-6,
         )
 
+        self._log_student_graph_diagnostics("before_accelerator_prepare")
         self._log_gpu_memory("before_accelerator_prepare")
         (
             self.model_bundle,
@@ -1067,6 +1272,7 @@ class TRDTrainingRunner:
             self.train_loader_raw,
             scheduler,
         )
+        self._install_param_grad_trace()
         self._log_gpu_memory("after_accelerator_prepare")
         if resume_state:
             self.optimizer.load_state_dict(resume_state["optimizer"])
@@ -2071,6 +2277,11 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("student_ffn_chunk_size", 512)
     payload.setdefault("student_norm_chunk_size", 0)
     payload.setdefault("student_checkpoint_use_reentrant", None)
+    payload.setdefault("student_ddp_find_unused_parameters", True)
+    payload.setdefault("student_ddp_static_graph", False)
+    payload.setdefault("student_diagnose_training_graph", True)
+    payload.setdefault("student_param_grad_trace", False)
+    payload.setdefault("student_param_grad_trace_pattern", "lora")
     payload.setdefault("gradient_checkpointing", True)
     payload.setdefault("validation_every_steps", 0)
     payload.setdefault("validation_every_epochs", 1)
@@ -2160,6 +2371,11 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         payload["student_checkpoint_use_reentrant"] = None
     else:
         payload["student_checkpoint_use_reentrant"] = _coerce_bool(payload["student_checkpoint_use_reentrant"])
+    payload["student_ddp_find_unused_parameters"] = _coerce_bool(payload["student_ddp_find_unused_parameters"])
+    payload["student_ddp_static_graph"] = _coerce_bool(payload["student_ddp_static_graph"])
+    payload["student_diagnose_training_graph"] = _coerce_bool(payload["student_diagnose_training_graph"])
+    payload["student_param_grad_trace"] = _coerce_bool(payload["student_param_grad_trace"])
+    payload["student_param_grad_trace_pattern"] = str(payload["student_param_grad_trace_pattern"])
     if payload["student_ffn_chunk_size"] in ("", None):
         payload["student_ffn_chunk_size"] = 512
     else:
@@ -2291,6 +2507,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--student_lora_merge_mode", type=str, default="")
     parser.add_argument("--gradient_checkpointing", type=str, default="")
     parser.add_argument("--student_checkpoint_use_reentrant", type=str, default="")
+    parser.add_argument("--student_ddp_find_unused_parameters", type=str, default="")
+    parser.add_argument("--student_ddp_static_graph", type=str, default="")
+    parser.add_argument("--student_diagnose_training_graph", type=str, default="")
+    parser.add_argument("--student_param_grad_trace", type=str, default="")
+    parser.add_argument("--student_param_grad_trace_pattern", type=str, default="")
     parser.add_argument("--student_memory_efficient_modulation", type=str, default="")
     parser.add_argument("--student_memory_efficient_checkpoint_mode", type=str, default="")
     parser.add_argument("--student_ffn_chunk_size", type=int, default=None)

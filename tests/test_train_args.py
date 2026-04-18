@@ -23,6 +23,8 @@ import numpy as np
 from pathlib import Path
 from types import SimpleNamespace
 
+from accelerate import DistributedType
+
 
 class _CliArgs:
     config: str
@@ -45,6 +47,11 @@ class _CliArgs:
     student_lora_block_start = None
     student_lora_chunk_size = None
     student_lora_merge_mode = ""
+    student_ddp_find_unused_parameters = ""
+    student_ddp_static_graph = ""
+    student_diagnose_training_graph = ""
+    student_param_grad_trace = ""
+    student_param_grad_trace_pattern = ""
     max_train_micro_steps = None
 
     def __init__(self, config: str, env_file: str) -> None:
@@ -201,6 +208,11 @@ def test_build_args_supports_dual_training_defaults(tmp_path):
     assert args.student_memory_efficient_checkpoint_mode == "full"
     assert args.student_ffn_chunk_size == 512
     assert args.student_norm_chunk_size == 0
+    assert args.student_ddp_find_unused_parameters is True
+    assert args.student_ddp_static_graph is False
+    assert args.student_diagnose_training_graph is True
+    assert args.student_param_grad_trace is False
+    assert args.student_param_grad_trace_pattern == "lora"
     assert args.wandb_relation_image_every_steps == 25
     assert args.num_frames == 81
     assert args.validation_every_steps == 0
@@ -752,6 +764,33 @@ def test_build_args_accepts_checkpoint_reentrant_override(tmp_path):
     assert student_gradient_checkpointing_use_reentrant(args) is False
 
 
+def test_build_args_accepts_ddp_and_grad_trace_overrides(tmp_path):
+    config_path = tmp_path / "train.yaml"
+    env_path = tmp_path / "paths.env"
+    write_yaml(
+        config_path,
+        {
+            "experiment_name": "exp_ddp_diag",
+            "model_type": "dual",
+            "student_ddp_find_unused_parameters": False,
+            "student_ddp_static_graph": True,
+            "student_diagnose_training_graph": False,
+            "student_param_grad_trace": True,
+            "student_param_grad_trace_pattern": "lora_B",
+            "teacher_checkpoint_dir": str(tmp_path / "teacher"),
+        },
+    )
+    env_path.write_text("", encoding="utf-8")
+
+    args = build_args(_CliArgs(str(config_path), str(env_path)))
+
+    assert args.student_ddp_find_unused_parameters is False
+    assert args.student_ddp_static_graph is True
+    assert args.student_diagnose_training_graph is False
+    assert args.student_param_grad_trace is True
+    assert args.student_param_grad_trace_pattern == "lora_B"
+
+
 def test_should_apply_student_gradient_checkpointing_keeps_full_mode():
     args = _CliArgs(config="", env_file="")
     args.gradient_checkpointing = True
@@ -763,6 +802,20 @@ def test_student_gradient_checkpointing_use_reentrant_for_lora():
     args = _CliArgs(config="", env_file="")
     args.student_tuning_mode = "lora"
     assert student_gradient_checkpointing_use_reentrant(args) is True
+
+
+def test_student_gradient_checkpointing_use_reentrant_off_for_ddp_lora_default():
+    args = _CliArgs(config="", env_file="")
+    args.student_tuning_mode = "lora"
+    args.student_checkpoint_use_reentrant = None
+    assert student_gradient_checkpointing_use_reentrant(args, DistributedType.MULTI_GPU) is False
+
+
+def test_student_gradient_checkpointing_use_reentrant_ddp_lora_explicit_override():
+    args = _CliArgs(config="", env_file="")
+    args.student_tuning_mode = "lora"
+    args.student_checkpoint_use_reentrant = True
+    assert student_gradient_checkpointing_use_reentrant(args, DistributedType.MULTI_GPU) is True
 
 
 def test_student_gradient_checkpointing_use_reentrant_off_for_full():
