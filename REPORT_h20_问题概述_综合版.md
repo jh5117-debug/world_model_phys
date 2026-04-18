@@ -5092,3 +5092,115 @@ PC_LORA_DISABLE_AUTOCAST=1
 --trd_backward_mode full
 --max_train_micro_steps 3
 ```
+
+## 40. 2026-04-18 16:15 TRD full 3-step 结果：通过
+
+### 40.1 本轮配置
+
+本轮在第 39 轮最小有效修复基础上，重新打开完整 TRD backward：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+--trd_backward_mode full
+--max_train_micro_steps 3
+```
+
+同时保持 W&B disabled：
+
+```text
+WANDB_MODE=disabled
+PC_DISABLE_WANDB=1
+```
+
+LoRA 应用日志继续确认：
+
+```text
+lora_dtype=float32
+force_lora_fp32=True
+detach_base_out=False
+detach_input=False
+local_loss_probe=False
+clone_input=False
+clone_hidden=False
+trace_input_meta=False
+disable_autocast=True
+```
+
+### 40.2 关键观测
+
+本轮已经进入 teacher encode：
+
+```text
+[PHASE] label=before_teacher_encode ... video=shape(3, 17, 320, 576) dtype=torch.float32
+[PHASE] label=after_teacher_encode ... teacher_tokens=shape(1, 32, 576, 768) dtype=torch.float32 requires_grad=False
+```
+
+student forward 正常：
+
+```text
+[PHASE] label=after_student_forward ... pred=shape(16, 5, 40, 72) dtype=torch.float32 ... requires_grad=True
+student_tokens=shape(1, 5, 720, 768) dtype=torch.bfloat16 ... requires_grad=True
+```
+
+TRD loss 正常且 finite：
+
+```text
+[PHASE] label=after_trd_loss ... loss_total=0.0335121 loss_total_finite=True
+loss_trd=0.0145668 loss_trd_finite=True
+loss_trd_spatial=0.00178301 loss_trd_spatial_finite=True
+loss_trd_temporal=0.0127838 loss_trd_temporal_finite=True
+```
+
+完整 backward 通过：
+
+```text
+[PHASE] label=before_backward ... loss_total=0.0335121 loss_total_finite=True
+[PHASE] label=after_backward ...
+[PROGRESS] epoch=1/5 global_step=1/8350 micro_step=1 ... loss_total=0.0335 loss_fm=0.0321 loss_trd=0.0146
+```
+
+第 2、3 个 micro step 也继续通过：
+
+```text
+[PROGRESS] epoch=1/5 global_step=2/8350 micro_step=2 ... loss_total=0.0437 loss_fm=0.0408 loss_trd=0.0296
+[PROGRESS] epoch=1/5 global_step=3/8350 micro_step=3 ... loss_total=0.0843 loss_fm=0.0826 loss_trd=0.0177
+[MEM PROBE] reached max_train_micro_steps=3 global_step=3 micro_step=3 peak_mem=46.18GiB; exiting before checkpoint/validation
+```
+
+本轮没有出现 `Fatal Python error: Floating point exception`。
+
+### 40.3 结论
+
+这是一个明显进展：打开完整 TRD backward 后仍能稳定通过 3 个 micro step。
+
+因此可以进一步排除：
+
+- V-JEPA teacher encode；
+- TRD spatial loss；
+- TRD temporal loss；
+- TRD loss 参与 student token backward；
+- teacher tokens dtype/shape 路径；
+- TRD full backward 本身。
+
+当前根因判断进一步收敛为：
+
+```text
+H20 + bf16 LoRA adapter backward
+```
+
+当前最小有效修复仍是：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+### 40.4 下一步
+
+建议继续保持 W&B disabled，把 `--max_train_micro_steps` 从 3 提到 20，观察是否存在较晚出现的 batch/数据相关问题。
+
+如果 20 step 通过，再考虑两件事：
+
+1. 去掉 `--max_train_micro_steps` 开始真实训练；
+2. 或先把 W&B 从 disabled 改回 online，确认只是网络/初始化偶发问题，不影响训练本体。
