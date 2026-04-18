@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from pathlib import Path
+import time
+from collections.abc import Mapping
 from typing import Any
 
 from physical_consistency.common.io import ensure_dir
@@ -63,9 +67,10 @@ def _normalize_wandb_target(*, entity: str, project: str) -> tuple[str, str]:
 
 
 def log_dict(step: int, payload: dict[str, Any] | None, *, accelerator=None) -> None:
-    """Log a dict to W&B if payload exists."""
+    """Log a dict to W&B and optionally a local JSONL file if payload exists."""
     if not payload:
         return
+    _write_local_metrics(step, payload, accelerator=accelerator)
     if accelerator is not None:
         try:
             accelerator.log(payload, step=step)
@@ -78,3 +83,49 @@ def log_dict(step: int, payload: dict[str, Any] | None, *, accelerator=None) -> 
         return
     if wandb.run is not None:
         wandb.log(payload, step=step)
+
+
+def _write_local_metrics(step: int, payload: dict[str, Any], *, accelerator=None) -> None:
+    path_text = os.environ.get("PC_LOCAL_METRICS_PATH", "").strip()
+    if not path_text:
+        return
+    if accelerator is not None and not getattr(accelerator, "is_main_process", True):
+        return
+    path = Path(path_text)
+    try:
+        ensure_dir(path.parent)
+        record = {
+            "time": time.time(),
+            "step": int(step),
+            "payload": _to_jsonable(payload),
+        }
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    except Exception:
+        LOGGER.debug("Skipping local metrics write to %s", path, exc_info=True)
+
+
+def _to_jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(item) for item in value]
+    if hasattr(value, "detach"):
+        try:
+            tensor = value.detach()
+            if getattr(tensor, "ndim", None) == 0:
+                return float(tensor.item())
+            return {
+                "type": type(value).__name__,
+                "shape": list(getattr(tensor, "shape", ())),
+                "dtype": str(getattr(tensor, "dtype", "")),
+            }
+        except Exception:
+            pass
+    try:
+        json.dumps(value)
+        return value
+    except TypeError:
+        return repr(value)

@@ -5561,3 +5561,119 @@ grad_norm = clip_grad_norm_(_all_trainable_params(), max_grad_norm)
 而当前 `_all_trainable_params()` 基本就是 LoRA trainable params，因此该 `grad_norm` 就是 LoRA 梯度是否正常回传的直接信号。
 
 后续代码已补充：在 `[PROGRESS]` 行中打印 `grad_norm=...`。下一次 pull 后的新 run 可直接通过 progress 行确认 LoRA 梯度是否 finite/非零。
+
+## 44. 2026-04-18 正式训练策略：4 卡、W&B disabled、本地 JSONL 指标
+
+### 44.1 81f / 288x496 probe 结果
+
+本轮 `81 frames / 288 x 496` 已跑完 20-step probe：
+
+```text
+[PROGRESS] epoch=1/5 global_step=20/8350 micro_step=20 ... loss_total=0.0599 loss_fm=0.0595 loss_trd=0.0039 ... peak_mem=45.05GiB
+[MEM PROBE] reached max_train_micro_steps=20 global_step=20 micro_step=20 peak_mem=45.05GiB; exiting before checkpoint/validation
+```
+
+结论：
+
+- 81 帧路径稳定；
+- memory-efficient modulation 与 gradient checkpointing 生效；
+- H20 SIGFPE 修复仍有效；
+- 单卡显存只有约 45-46GiB，仍有明显余量。
+
+### 44.2 下一步正式训练目标
+
+用户当前可用 GPU：
+
+```text
+CUDA_VISIBLE_DEVICES=4,5,6,7
+```
+
+要真正使用 4 张卡，不能只运行：
+
+```text
+python -m physical_consistency.cli.train_trd_v1 --num_gpus 4
+```
+
+而需要用：
+
+```text
+python -m torch.distributed.run --standalone --nproc_per_node=4 -m physical_consistency.cli.train_trd_v1 ...
+```
+
+这样 Accelerate 才会看到 `WORLD_SIZE=4`，训练才是 4 进程 DDP。
+
+### 44.3 分辨率选择
+
+由于 81f / 288x496 只有约 45-46GiB 峰值，下一轮正式训练可以回到默认空间分辨率：
+
+```text
+81 frames / 480 x 832
+```
+
+这会显著提高 token 数：
+
+```text
+288x496: latent_grid=(21,36,62), seq_len=11718
+480x832: latent_grid=(21,60,104), seq_len=32760
+```
+
+预计显存会明显上升，更接近 H20 的合理利用区间。若 480x832 OOM，回退优先级为：
+
+```text
+448 x 768
+416 x 720
+384 x 672
+```
+
+### 44.4 W&B 替代记录
+
+W&B 当前不稳定，因此保持：
+
+```text
+WANDB_MODE=disabled
+PC_DISABLE_WANDB=1
+```
+
+为了替代 W&B，本地新增：
+
+```text
+PC_LOCAL_METRICS_PATH=logs/<run_name>_metrics.jsonl
+```
+
+后续所有 `log_dict()` payload 会追加写入 JSONL，包括 train loss、lr、grad_norm、epoch summary、validation/checkpoint 相关指标。这样即使 W&B 不可用，也可以从本地文件追溯训练过程。
+
+### 44.5 LoRA 梯度确认
+
+代码已把 `[PROGRESS]` 行增强为打印：
+
+```text
+grad_norm=...
+```
+
+当前只有 LoRA 参数可训练，因此该 `grad_norm` 基本就是 LoRA trainable params 的梯度范数。正式训练时判据：
+
+```text
+grad_norm finite 且不是长期 0
+```
+
+即可确认 LoRA 梯度仍在正常回传。
+
+### 44.6 速度与溯源取舍
+
+为了最快训练：
+
+- W&B disabled；
+- training 主流程不跑外部 validation；
+- 每个 epoch 保存 checkpoint；
+- 所有 train metrics 写入本地 JSONL；
+- 训练完成后再单独跑评估。
+
+建议正式训练参数：
+
+```text
+--validation_every_epochs 0
+--validation_every_steps 0
+--save_every_n_epochs 1
+```
+
+这比每个 epoch 内暂停训练做外部 validation 更快，同时每个 epoch checkpoint 都可用于回溯。
