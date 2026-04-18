@@ -3839,3 +3839,76 @@ LoRA parameter
 
 - 如果 `PC_LORA_PARAM_ONLY_SKIP_FORWARD=1` 可以通过，则说明只对 LoRA 参数做普通 autograd backward 是健康的，问题需要 LoRA `Linear/mm/addmm` activation backward 才触发；
 - 如果它仍然 `SIGFPE`，那就说明问题已经小到“参数本身的 backward / hook / Accelerate backward / 当前 PyTorch 环境”层面，需要继续用 no-hook、plain `loss.backward()`、toy tensor 脚本来切。
+
+## 26. 2026-04-18 14:42 param-only skip-forward 结果：参数 / hook / Accelerate 简单 backward 健康
+
+### 26.1 本轮实验配置和结果
+
+本轮使用：
+
+```text
+PC_DISABLE_TF32=1
+PC_FORCE_LORA_FP32=1
+PC_LORA_PARAM_ONLY_LOSS=1
+PC_LORA_PARAM_ONLY_SKIP_FORWARD=1
+```
+
+日志确认本轮没有进入 student forward，而是直接使用参数级 tiny loss：
+
+```text
+[PHASE] label=lora_param_only_skip_forward_probe ... loss_lora_param=6.31063e-07 loss_lora_param_finite=True
+[PHASE] label=before_backward ... loss_total=6.31063e-07 loss_total_finite=True
+[PHASE] label=after_backward
+[MEM PROBE] reached max_train_micro_steps=1 global_step=1 micro_step=1
+```
+
+### 26.2 新结论
+
+这轮通过非常重要，说明以下路径在当前环境里是健康的：
+
+- LoRA 参数本身参与 autograd；
+- `lora_b.weight` 参数 grad hook；
+- `accelerator.backward()` 的简单参数 loss；
+- optimizer step / grad clipping 前后的基本训练框架；
+- 不经过 Wan forward 时，当前 35 GiB 常驻模型状态不会自己触发 `SIGFPE`。
+
+因此当前 `SIGFPE` 需要至少经过 LoRA activation matmul 才能触发，最小嫌疑继续缩小为：
+
+```text
+activation input
+-> lora_A Linear/mm/addmm
+-> lora_B Linear/mm/addmm
+-> local loss
+-> backward
+```
+
+### 26.3 下一步：合成 LoRA matmul skip-forward
+
+代码继续加入：
+
+```text
+PC_LORA_SYNTHETIC_MATMUL_SKIP_FORWARD=1
+```
+
+这个 probe 仍然跳过 VAE/T5/Wan student forward，但会对已加载的 LoRA 模块构造合成随机输入，然后跑：
+
+```text
+synthetic detached x
+-> lora_A
+-> lora_B
+-> local scalar loss
+-> backward
+```
+
+建议第一轮直接覆盖最后 block 的 14 个 LoRA module：
+
+```text
+PC_LORA_SYNTHETIC_MODULE_START=0
+PC_LORA_SYNTHETIC_MODULE_LIMIT=14
+PC_LORA_SYNTHETIC_TOKENS=3600
+```
+
+判据：
+
+- 如果合成 LoRA matmul 也 `SIGFPE`，则基本坐实 H20/当前 PyTorch 环境中的 LoRA `Linear/mm/addmm` backward 是触发点，可以继续按 module index 二分；
+- 如果合成 LoRA matmul 通过，则纯 LoRA matmul 本身没问题，问题依赖真实 Wan forward 产出的 activation 形状/stride/dtype/数值分布或周边 autograd context。

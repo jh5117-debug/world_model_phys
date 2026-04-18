@@ -52,6 +52,7 @@ from physical_consistency.trainers.stage1_components import (
     build_dataloader,
     collect_lora_local_loss,
     collect_lora_parameter_loss,
+    collect_lora_synthetic_matmul_loss,
     compute_scheduler_total_steps,
     export_pretrained_state_dict,
     extract_lora_state_dict,
@@ -1457,6 +1458,37 @@ class TRDTrainingRunner:
     def training_step(self, batch: dict[str, Any]) -> dict[str, torch.Tensor]:
         """Compute FM + TRD for one batch."""
         trd_backward_mode = self.args.trd_backward_mode
+        if _env_flag("PC_LORA_SYNTHETIC_MATMUL_SKIP_FORWARD"):
+            loss_fm = collect_lora_synthetic_matmul_loss(self.model_bundle)
+            self._trace_training_phase(
+                "lora_synthetic_matmul_skip_forward_probe",
+                scalars={"loss_lora_synthetic": loss_fm},
+            )
+            zero = loss_fm.detach().new_zeros(())
+            spatial_matrix = torch.zeros(
+                self.args.relation_tokens,
+                self.args.relation_tokens,
+                dtype=torch.float32,
+                device="cpu",
+            )
+            temporal_matrix = torch.zeros(1, 1, dtype=torch.float32, device="cpu")
+            return {
+                "loss_total": loss_fm,
+                "loss_fm": loss_fm.detach(),
+                "loss_trd": zero,
+                "loss_trd_spatial": zero,
+                "loss_trd_temporal": zero,
+                "sample_sigma": zero,
+                "sample_timestep": zero,
+                "teacher_feat_norm": zero,
+                "student_feat_norm": zero,
+                "pred_target_cosine": zero,
+                "active_branch_is_high": zero,
+                "_spatial_student": spatial_matrix,
+                "_spatial_teacher": spatial_matrix,
+                "_temporal_student": temporal_matrix,
+                "_temporal_teacher": temporal_matrix,
+            }
         if _env_flag("PC_LORA_PARAM_ONLY_SKIP_FORWARD"):
             loss_fm = collect_lora_parameter_loss(self.model_bundle)
             self._trace_training_phase(

@@ -32,6 +32,17 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return int(default)
+    try:
+        return int(raw)
+    except ValueError:
+        LOGGER.warning("Invalid integer for %s=%r; using %s", name, raw, default)
+        return int(default)
+
+
 @contextlib.contextmanager
 def _sdpa_kernel_context():
     """Optionally force PyTorch SDPA fallback to its math backend."""
@@ -1385,6 +1396,54 @@ def collect_lora_parameter_loss(model: torch.nn.Module) -> torch.Tensor:
             losses.append(p.mean() + 1.0e-6 * p.square().mean())
     if not losses:
         raise RuntimeError("PC_LORA_PARAM_ONLY_LOSS=1 but no LoRA parameters were found")
+    return torch.stack(losses).mean()
+
+
+def collect_lora_synthetic_matmul_loss(model: torch.nn.Module) -> torch.Tensor:
+    """Return a LoRA matmul loss using synthetic detached activations."""
+
+    modules = _iter_lora_modules(model)
+    if not modules:
+        raise RuntimeError("PC_LORA_SYNTHETIC_MATMUL_LOSS=1 but no LoRA modules were found")
+
+    start = max(_env_int("PC_LORA_SYNTHETIC_MODULE_START", 0), 0)
+    limit = max(_env_int("PC_LORA_SYNTHETIC_MODULE_LIMIT", 1), 1)
+    tokens = max(_env_int("PC_LORA_SYNTHETIC_TOKENS", 3600), 1)
+    batch = max(_env_int("PC_LORA_SYNTHETIC_BATCH", 1), 1)
+    selected = modules[start : start + limit]
+    if not selected:
+        raise RuntimeError(
+            f"PC_LORA_SYNTHETIC_MATMUL_LOSS=1 selected no modules "
+            f"(start={start}, limit={limit}, available={len(modules)})"
+        )
+
+    losses: list[torch.Tensor] = []
+    descriptions: list[str] = []
+    for index, (name, module) in enumerate(selected, start=start):
+        dtype = module.lora_A.weight.dtype
+        device = module.lora_A.weight.device
+        x = torch.randn(
+            batch,
+            tokens,
+            module.lora_A.in_features,
+            device=device,
+            dtype=dtype,
+        )
+        hidden = module.lora_A(x)
+        out = module.lora_B(hidden)
+        losses.append(hidden.float().square().mean() + out.float().mean())
+        descriptions.append(
+            f"{index}:{name}:in={module.lora_A.in_features}:rank={module.rank}:out={module.lora_B.out_features}"
+        )
+
+    if _should_log_rank_zero():
+        LOGGER.info(
+            "PC_LORA_SYNTHETIC_MATMUL_LOSS=1: modules=%s batch=%s tokens=%s dtype=%s",
+            ";".join(descriptions),
+            batch,
+            tokens,
+            ",".join(sorted({str(module.lora_A.weight.dtype).replace("torch.", "") for _, module in selected})),
+        )
     return torch.stack(losses).mean()
 
 
