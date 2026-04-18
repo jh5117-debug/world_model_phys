@@ -4985,3 +4985,110 @@ PC_LORA_DISABLE_AUTOCAST=1
 ```
 
 并把 `--max_train_micro_steps` 从 1 提到 3，用默认 attention 路径确认不是单步偶然通过。
+
+## 39. 2026-04-18 16:06 最小有效修复 3-step 结果：通过
+
+### 39.1 本轮配置
+
+本轮恢复最小有效修复候选：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+同时保持：
+
+```text
+WANDB_MODE=disabled
+PC_DISABLE_WANDB=1
+REQUIRE_TRAIN_FLASH_ATTN=0
+--trd_backward_mode off
+--max_train_micro_steps 3
+```
+
+没有启用 `PC_FORCE_SDPA_FALLBACK` / `PC_FORCE_SDPA_MATH`，因此走默认 attention 路径。也没有启用 clone/trace/local-loss 等额外诊断开关。
+
+LoRA 应用日志确认：
+
+```text
+lora_dtype=float32
+force_lora_fp32=True
+detach_base_out=False
+detach_input=False
+local_loss_probe=False
+clone_input=False
+clone_hidden=False
+trace_input_meta=False
+disable_autocast=True
+```
+
+### 39.2 结果
+
+第 1 个 micro step 完整通过 forward / loss / backward：
+
+```text
+[PHASE] label=after_student_forward ... pred=shape(16, 5, 40, 72) dtype=torch.float32 ... requires_grad=True
+[PHASE] label=after_fm_loss ... loss_fm=0.0320554 loss_fm_finite=True
+[PHASE] label=before_backward ... loss_total=0.0320554 loss_total_finite=True
+[PHASE] label=after_backward ...
+[PROGRESS] epoch=1/5 global_step=1/8350 micro_step=1 ... loss_total=0.0321 ... peak_mem=46.03GiB
+```
+
+第 2、3 个 micro step 也继续通过：
+
+```text
+[PROGRESS] epoch=1/5 global_step=2/8350 micro_step=2 ... loss_total=0.0408 ... peak_mem=38.48GiB
+[PROGRESS] epoch=1/5 global_step=3/8350 micro_step=3 ... loss_total=0.0826 ... peak_mem=46.15GiB
+[MEM PROBE] reached max_train_micro_steps=3 global_step=3 micro_step=3 peak_mem=46.15GiB; exiting before checkpoint/validation
+```
+
+本轮没有出现 `Fatal Python error: Floating point exception`。
+
+### 39.3 结论
+
+这轮把 `--max_train_micro_steps` 从 1 提到 3 后仍然稳定通过，说明之前的通过不是单步偶然现象。
+
+结合第 38 轮去掉 `PC_FORCE_LORA_FP32=1` 后立刻失败，可以将当前最小有效修复确定为：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+当前最合理根因表述：
+
+> H20 上 bf16 LoRA adapter backward 路径会在 native autograd/CUDA 扩展层触发 SIGFPE；把 LoRA 参数与 LoRA 分支 matmul 固定为 fp32 可规避该问题。
+
+### 39.4 关于本轮 log 文件没有出现在 IDE 的原因
+
+H20 命令中的：
+
+```text
+2>&1 | tee logs/train_trd_v1_low.log
+```
+
+只会写入 H20 当前仓库：
+
+```text
+/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/logs/train_trd_v1_low.log
+```
+
+IDE 当前打开的是本地/另一份镜像：
+
+```text
+/home/hj/Multi-View-Physically-Consistent-World-Model/Physical_Consistency/train_trd_v1_low.log
+```
+
+这两个路径不是同一个文件视图，因此 H20 上的 `tee` 不会自动刷新 IDE 里打开的 `/home/hj/.../train_trd_v1_low.log`。需要以 H20 stdout 为准，或单独把 H20 的 `logs/train_trd_v1_low.log` 同步/复制回 `/home/hj/.../train_trd_v1_low.log`。
+
+### 39.5 下一步
+
+下一轮建议在最小修复固定后，先重新打开 TRD backward，但仍保留 W&B disabled，观察是否还有新的 TRD/teacher 相关问题：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+--trd_backward_mode both
+--max_train_micro_steps 3
+```
