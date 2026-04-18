@@ -960,8 +960,10 @@ class TRDTrainingRunner:
                 use_reentrant = student_gradient_checkpointing_use_reentrant(self.args)
                 if self.accelerator.is_main_process:
                     LOGGER.info(
-                        "Applying block-level gradient checkpointing for student models (use_reentrant=%s; skip_feature_block=%s)",
+                        "Applying block-level gradient checkpointing for student models "
+                        "(use_reentrant=%s; memory_efficient_mode=%s; skip_feature_block=%s)",
                         use_reentrant,
+                        self.args.student_memory_efficient_checkpoint_mode,
                         self.args.student_target_block,
                     )
                 skip_feature_block = {int(self.args.student_target_block)}
@@ -970,12 +972,14 @@ class TRDTrainingRunner:
                     "low_noise_model",
                     use_reentrant=use_reentrant,
                     skip_block_indices=skip_feature_block,
+                    memory_efficient_mode=self.args.student_memory_efficient_checkpoint_mode,
                 )
                 apply_gradient_checkpointing(
                     high_model,
                     "high_noise_model",
                     use_reentrant=use_reentrant,
                     skip_block_indices=skip_feature_block,
+                    memory_efficient_mode=self.args.student_memory_efficient_checkpoint_mode,
                 )
 
             if self.args.student_tuning_mode == "lora" and resume_state:
@@ -1004,9 +1008,11 @@ class TRDTrainingRunner:
                 use_reentrant = student_gradient_checkpointing_use_reentrant(self.args)
                 if self.accelerator.is_main_process:
                     LOGGER.info(
-                        "Applying block-level gradient checkpointing for %s_noise_model (use_reentrant=%s; skip_feature_block=%s)",
+                        "Applying block-level gradient checkpointing for %s_noise_model "
+                        "(use_reentrant=%s; memory_efficient_mode=%s; skip_feature_block=%s)",
                         branch,
                         use_reentrant,
+                        self.args.student_memory_efficient_checkpoint_mode,
                         self.args.student_target_block,
                     )
                 apply_gradient_checkpointing(
@@ -1014,6 +1020,7 @@ class TRDTrainingRunner:
                     f"{branch}_noise_model",
                     use_reentrant=use_reentrant,
                     skip_block_indices={int(self.args.student_target_block)},
+                    memory_efficient_mode=self.args.student_memory_efficient_checkpoint_mode,
                 )
 
             if self.args.student_tuning_mode == "lora" and resume_state:
@@ -2059,6 +2066,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("student_lora_block_start", 0)
     payload.setdefault("student_lora_chunk_size", 0)
     payload.setdefault("student_memory_efficient_modulation", True)
+    payload.setdefault("student_memory_efficient_checkpoint_mode", "full")
     payload.setdefault("student_ffn_chunk_size", 512)
     payload.setdefault("student_norm_chunk_size", 0)
     payload.setdefault("student_checkpoint_use_reentrant", None)
@@ -2132,6 +2140,14 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
                 f"student_lora_chunk_size must be non-negative, got {payload['student_lora_chunk_size']}"
             )
     payload["student_memory_efficient_modulation"] = _coerce_bool(payload["student_memory_efficient_modulation"])
+    payload["student_memory_efficient_checkpoint_mode"] = str(
+        payload["student_memory_efficient_checkpoint_mode"]
+    ).strip().lower()
+    if payload["student_memory_efficient_checkpoint_mode"] not in {"full", "inner", "none"}:
+        raise ValueError(
+            "student_memory_efficient_checkpoint_mode must be one of full, inner, none; "
+            f"got {payload['student_memory_efficient_checkpoint_mode']}"
+        )
     payload["gradient_checkpointing"] = _coerce_bool(payload["gradient_checkpointing"])
     if payload["student_checkpoint_use_reentrant"] in ("", None):
         payload["student_checkpoint_use_reentrant"] = None
@@ -2268,6 +2284,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient_checkpointing", type=str, default="")
     parser.add_argument("--student_checkpoint_use_reentrant", type=str, default="")
     parser.add_argument("--student_memory_efficient_modulation", type=str, default="")
+    parser.add_argument("--student_memory_efficient_checkpoint_mode", type=str, default="")
     parser.add_argument("--student_ffn_chunk_size", type=int, default=None)
     parser.add_argument("--student_norm_chunk_size", type=int, default=None)
     parser.add_argument("--trd_backward_mode", type=str, default="")

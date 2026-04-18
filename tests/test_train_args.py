@@ -196,6 +196,7 @@ def test_build_args_supports_dual_training_defaults(tmp_path):
     assert args.student_lora_dropout == 0.0
     assert args.student_lora_chunk_size == 0
     assert args.student_memory_efficient_modulation is True
+    assert args.student_memory_efficient_checkpoint_mode == "full"
     assert args.student_ffn_chunk_size == 512
     assert args.student_norm_chunk_size == 0
     assert args.wandb_relation_image_every_steps == 25

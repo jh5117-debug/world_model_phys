@@ -517,15 +517,24 @@ def apply_gradient_checkpointing(
     *,
     use_reentrant: bool = False,
     skip_block_indices: set[int] | None = None,
+    memory_efficient_mode: str = "full",
 ) -> None:
     """Apply the same DiT block checkpointing strategy as Stage-1."""
     from functools import wraps
     import torch.utils.checkpoint as checkpoint_module
 
     patched = 0
+    inner_patched = 0
     memory_efficient_patched = 0
+    memory_efficient_skipped = 0
     skipped = 0
     skip_block_indices = set(skip_block_indices or ())
+    memory_efficient_mode = str(memory_efficient_mode).strip().lower()
+    if memory_efficient_mode not in {"full", "inner", "none"}:
+        raise ValueError(
+            "memory_efficient_mode must be one of full, inner, none; "
+            f"got {memory_efficient_mode}"
+        )
     block_container = getattr(model, "blocks", None)
     if block_container is None:
         LOGGER.warning("No transformer blocks found for %s", model_name)
@@ -588,6 +597,7 @@ def apply_gradient_checkpointing(
         if block_index in skip_block_indices:
             block._pc_gradient_checkpointing_skipped = True
             block._pc_checkpoint_skip_reason = "requested"
+            block._pc_checkpoint_mode = "skipped"
             skipped += 1
             continue
         if getattr(block, "_pc_gradient_checkpointing_patched", False):
@@ -595,6 +605,20 @@ def apply_gradient_checkpointing(
 
         is_memory_efficient = bool(getattr(block, "_pc_memory_efficient_modulation_patched", False))
         if is_memory_efficient:
+            if memory_efficient_mode == "inner":
+                block._pc_inner_gradient_checkpointing = True
+                block._pc_checkpoint_use_reentrant = use_reentrant
+                block._pc_gradient_checkpointing_patched = True
+                block._pc_checkpoint_mode = "inner"
+                inner_patched += 1
+                continue
+            if memory_efficient_mode == "none":
+                block._pc_inner_gradient_checkpointing = False
+                block._pc_checkpoint_use_reentrant = use_reentrant
+                block._pc_gradient_checkpointing_patched = True
+                block._pc_checkpoint_mode = "none"
+                memory_efficient_skipped += 1
+                continue
             # The memory-efficient block already chunks expensive FFN math. Wrap
             # the whole block so attention/norm/camera activations are replayed
             # instead of retained across all Wan layers.
@@ -606,8 +630,17 @@ def apply_gradient_checkpointing(
         block.forward = _make_ckpt(original_forward)
         block._pc_gradient_checkpointing_patched = True
         block._pc_checkpoint_use_reentrant = use_reentrant
+        block._pc_checkpoint_mode = "full"
         patched += 1
     if _should_log_rank_zero():
+        if inner_patched:
+            LOGGER.info(
+                "Gradient checkpointing enabled inner FFN/camera checkpointing for %s "
+                "memory-efficient Wan blocks in %s (use_reentrant=%s; attention remains outside checkpoint)",
+                inner_patched,
+                model_name,
+                use_reentrant,
+            )
         if memory_efficient_patched:
             LOGGER.info(
                 "Gradient checkpointing wrapped %s memory-efficient Wan blocks in %s "
@@ -615,6 +648,12 @@ def apply_gradient_checkpointing(
                 memory_efficient_patched,
                 model_name,
                 use_reentrant,
+            )
+        if memory_efficient_skipped:
+            LOGGER.info(
+                "Gradient checkpointing left %s memory-efficient Wan blocks uncheckpointed in %s",
+                memory_efficient_skipped,
+                model_name,
             )
         if patched:
             LOGGER.info(
@@ -630,7 +669,7 @@ def apply_gradient_checkpointing(
                 model_name,
                 ",".join(str(index) for index in sorted(skip_block_indices)),
             )
-        if not patched:
+        if not patched and not inner_patched and not memory_efficient_skipped:
             LOGGER.warning("No transformer blocks were patched for gradient checkpointing in %s", model_name)
 
 
