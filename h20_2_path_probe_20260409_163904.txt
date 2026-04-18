@@ -1,0 +1,91 @@
+
+[1] Weight layout and base/stage1 candidates
+/home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1/Wan2.1_VAE.pth
+/home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1/google/umt5-xxl
+/home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1/high_noise_model
+/home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1/low_noise_model
+/home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1/models_t5_umt5-xxl-enc-bf16.pth
+/home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-base/Wan2.1_VAE.pth
+/home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-base/google/umt5-xxl
+/home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-base/high_noise_model
+/home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-base/low_noise_model
+/home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-base/models_t5_umt5-xxl-enc-bf16.pth
+/home/nvme03/workspace/world_model_phys/PHYS/weight/Wan2.1_VAE.pth
+/home/nvme03/workspace/world_model_phys/PHYS/weight/google/umt5-xxl
+/home/nvme03/workspace/world_model_phys/PHYS/weight/models_t5_umt5-xxl-enc-bf16.pth
+
+[2] LingBot original code candidates (wan)
+
+[3] Finetune eval code candidates
+
+[4] VideoPhy-2 repo files inside third_party
+/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/third_party/VideoREPA/evaluation/VIDEOPHY2/README.md
+/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/third_party/VideoREPA/evaluation/VIDEOPHY2/inference.py
+/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/third_party/VideoREPA/evaluation/VIDEOPHY2/template.py
+/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/third_party/videophy/VIDEOPHY2/README.md
+/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/third_party/videophy/VIDEOPHY2/inference.py
+/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/third_party/videophy/VIDEOPHY2/template.py
+
+[5] VideoPhy-2 AutoEval checkpoint dir candidates
+
+[5b] VideoPhy-2 AutoEval checkpoint contents
+[NOT FOUND] videophy_2_auto
+
+[6] VideoREPA teacher checkpoint candidates
+
+[7] Existing generated video roots for base/stage1/trd eval
+[MISSING] /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/runs/eval
+
+[8] Example generated mp4 files under eval roots
+[MISSING] /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/runs/eval
+
+[9] Dataset val clip sanity check
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0000/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0001/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0002/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0003/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0004/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0005/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0006/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0007/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0008/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0009/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0010/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0011/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0012/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0013/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0014/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0015/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0016/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0017/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0018/video.mp4
+/home/nvme03/workspace/world_model_phys/PHYS/Dataset/processed_csgo_v3/val/clips/Ep_000028_team_2_player_0001_inst_000_clip0019/video.mp4
+
+[10] Current path config file
+PROJECT_ROOT=/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys
+ASSET_ROOT=/home/nvme03/workspace/world_model_phys/PHYS
+WEIGHT_ROOT=${ASSET_ROOT}/weight
+
+BASE_MODEL_DIR=${WEIGHT_ROOT}/Lingbot-base
+STAGE1_CKPT_DIR=${WEIGHT_ROOT}/Lingbot-Stage1
+STAGE1_FINAL_DIR=${WEIGHT_ROOT}/Lingbot-Stage1
+DATASET_DIR=${ASSET_ROOT}/Dataset/processed_csgo_v3
+RAW_DATA_DIR=${DATASET_DIR}/train
+
+# Fill these two when the original LingBot code checkout is available on H20-2.
+# Example:
+# LINGBOT_CODE_DIR=${ASSET_ROOT}/code/lingbot-world
+# FINETUNE_CODE_DIR=${ASSET_ROOT}/code/finetune_v3/lingbot-csgo-finetune
+LINGBOT_CODE_DIR=
+FINETUNE_CODE_DIR=
+
+OUTPUT_ROOT=${PROJECT_ROOT}
+WANDB_DIR=${PROJECT_ROOT}/runs/wandb
+VIDEOPHY_REPO_DIR=${PROJECT_ROOT}/third_party/videophy
+VIDEOREPA_REPO_DIR=${PROJECT_ROOT}/third_party/VideoREPA
+TEACHER_CKPT_DIR=${VIDEOREPA_REPO_DIR}/ckpt/VideoMAEv2
+
+# Change this if your downloaded VideoPhy-2 AutoEval checkpoint lives elsewhere.
+VIDEOPHY2_CKPT_DIR=${WEIGHT_ROOT}/videophy_2_auto
+
+saved to: /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/h20_2_path_probe_20260409_163904.txt

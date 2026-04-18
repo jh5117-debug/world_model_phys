@@ -1,0 +1,527 @@
+th
+/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/links/lingbot_code/wan/modules/t5.py:494: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  model.load_state_dict(torch.load(checkpoint_path, map_location='cpu'))
+[2026-04-16 12:11:52,054] INFO root: loading links/base_model/models_t5_umt5-xxl-enc-bf16.pth
+/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/links/lingbot_code/wan/modules/t5.py:494: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  model.load_state_dict(torch.load(checkpoint_path, map_location='cpu'))
+[2026-04-16 12:11:52,131] INFO root: loading links/base_model/models_t5_umt5-xxl-enc-bf16.pth
+/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/links/lingbot_code/wan/modules/t5.py:494: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  model.load_state_dict(torch.load(checkpoint_path, map_location='cpu'))
+[2026-04-16 12:12:08,424] INFO physical_consistency.trainers.stage1_components: Loading low_noise_model from links/stage1_epoch2
+An error occurred while trying to fetch links/stage1_epoch2: Error no file named diffusion_pytorch_model.safetensors found in directory links/stage1_epoch2.
+Defaulting to unsafe serialization. Pass `allow_pickle=False` to raise an error instead.
+[2026-04-16 12:12:08,487] INFO physical_consistency.trainers.stage1_components: Loading low_noise_model from links/stage1_epoch2
+An error occurred while trying to fetch links/stage1_epoch2: Error no file named diffusion_pytorch_model.safetensors found in directory links/stage1_epoch2.
+Defaulting to unsafe serialization. Pass `allow_pickle=False` to raise an error instead.
+[2026-04-16 12:12:08,491] INFO physical_consistency.trainers.stage1_components: Loading low_noise_model from links/stage1_epoch2
+An error occurred while trying to fetch links/stage1_epoch2: Error no file named diffusion_pytorch_model.safetensors found in directory links/stage1_epoch2.
+Defaulting to unsafe serialization. Pass `allow_pickle=False` to raise an error instead.
+[2026-04-16 12:12:08,497] INFO physical_consistency.trainers.stage1_components: Loading low_noise_model from links/stage1_epoch2
+An error occurred while trying to fetch links/stage1_epoch2: Error no file named diffusion_pytorch_model.safetensors found in directory links/stage1_epoch2.
+Defaulting to unsafe serialization. Pass `allow_pickle=False` to raise an error instead.
+[2026-04-16 12:12:27,803] INFO physical_consistency.trainers.stage1_components: Memory-efficient modulation patched 40 blocks for low_noise_model (ffn_chunk_size=4096)
+[2026-04-16 12:12:28,752] INFO physical_consistency.trainers.stage1_components: Applied standard LoRA to 560 linear layers for low_noise_model (rank=16, alpha=16, dropout=0.000, trainable=102891520/18648535104)
+[2026-04-16 12:12:28,756] INFO physical_consistency.trainers.stage1_components: Loading high_noise_model from links/stage1_epoch2
+An error occurred while trying to fetch links/stage1_epoch2: Error no file named diffusion_pytorch_model.safetensors found in directory links/stage1_epoch2.
+Defaulting to unsafe serialization. Pass `allow_pickle=False` to raise an error instead.
+[2026-04-16 12:12:28,760] INFO physical_consistency.trainers.trd_v1: [GPU MEM] after_low_model_load device=cuda:0 allocated=0.49 GiB reserved=0.50 GiB max_allocated=0.49 GiB
+[2026-04-16 12:12:28,760] INFO physical_consistency.trainers.stage1_components: Loading high_noise_model from links/stage1_epoch2
+An error occurred while trying to fetch links/stage1_epoch2: Error no file named diffusion_pytorch_model.safetensors found in directory links/stage1_epoch2.
+Defaulting to unsafe serialization. Pass `allow_pickle=False` to raise an error instead.
+[2026-04-16 12:12:28,763] INFO physical_consistency.trainers.stage1_components: Loading high_noise_model from links/stage1_epoch2
+An error occurred while trying to fetch links/stage1_epoch2: Error no file named diffusion_pytorch_model.safetensors found in directory links/stage1_epoch2.
+Defaulting to unsafe serialization. Pass `allow_pickle=False` to raise an error instead.
+[2026-04-16 12:12:28,763] INFO physical_consistency.trainers.stage1_components: Loading high_noise_model from links/stage1_epoch2
+An error occurred while trying to fetch links/stage1_epoch2: Error no file named diffusion_pytorch_model.safetensors found in directory links/stage1_epoch2.
+Defaulting to unsafe serialization. Pass `allow_pickle=False` to raise an error instead.
+[2026-04-16 12:12:47,279] INFO physical_consistency.trainers.stage1_components: Memory-efficient modulation patched 40 blocks for high_noise_model (ffn_chunk_size=4096)
+[2026-04-16 12:12:48,231] INFO physical_consistency.trainers.stage1_components: Applied standard LoRA to 560 linear layers for high_noise_model (rank=16, alpha=16, dropout=0.000, trainable=102891520/18648535104)
+[2026-04-16 12:12:48,238] INFO physical_consistency.trainers.trd_v1: [GPU MEM] after_high_model_load device=cuda:0 allocated=0.49 GiB reserved=0.50 GiB max_allocated=0.49 GiB
+[2026-04-16 12:12:48,277] INFO physical_consistency.trainers.trd_v1: Applying block-level gradient checkpointing for student models (use_reentrant=True)
+[2026-04-16 12:12:48,277] INFO physical_consistency.trainers.stage1_components: Gradient checkpointing patched 40 blocks for low_noise_model (use_reentrant=True)
+[2026-04-16 12:12:48,278] INFO physical_consistency.trainers.stage1_components: Gradient checkpointing patched 40 blocks for high_noise_model (use_reentrant=True)
+[2026-04-16 12:12:48,278] INFO physical_consistency.trainers.trd_v1: [GPU MEM] after_dual_bundle_construct device=cuda:0 allocated=0.49 GiB reserved=0.50 GiB max_allocated=0.49 GiB
+[2026-04-16 12:12:48,290] INFO physical_consistency.trainers.trd_v1: [GPU MEM] before_accelerator_prepare device=cuda:0 allocated=0.49 GiB reserved=0.50 GiB max_allocated=0.49 GiB
+[2026-04-16 12:12:48,298] [INFO] [config.py:733:__init__] Config mesh_device None world_size = 4
+[2026-04-16 12:12:48,300] [INFO] [logging.py:128:log_dist] [Rank 0] DeepSpeed info: version=0.16.3, git-hash=unknown, git-branch=unknown
+[2026-04-16 12:12:48,300] [INFO] [config.py:733:__init__] Config mesh_device None world_size = 4
+[2026-04-16 12:12:48,301] [INFO] [config.py:733:__init__] Config mesh_device None world_size = 4
+[2026-04-16 12:12:48,302] [INFO] [config.py:733:__init__] Config mesh_device None world_size = 4
+[2026-04-16 12:13:04,076] [INFO] [logging.py:128:log_dist] [Rank 0] DeepSpeed Flops Profiler Enabled: False
+[2026-04-16 12:13:04,085] [INFO] [logging.py:128:log_dist] [Rank 0] Using client Optimizer as basic optimizer
+[2026-04-16 12:13:04,085] [INFO] [logging.py:128:log_dist] [Rank 0] Removing param_group that has no 'params' in the basic Optimizer
+[2026-04-16 12:13:04,704] [INFO] [logging.py:128:log_dist] [Rank 0] DeepSpeed Basic Optimizer = AdamW
+[2026-04-16 12:13:04,704] [INFO] [utils.py:59:is_zero_supported_optimizer] Checking ZeRO support for optimizer=AdamW type=<class 'torch.optim.adamw.AdamW'>
+[2026-04-16 12:13:04,704] [INFO] [logging.py:128:log_dist] [Rank 0] Creating fp16 ZeRO stage 3 optimizer, MiCS is enabled False, Hierarchical params gather False
+[2026-04-16 12:13:04,704] [INFO] [logging.py:128:log_dist] [Rank 0] Creating torch.bfloat16 ZeRO stage 3 optimizer
+[2026-04-16 12:13:04,746] [INFO] [config.py:733:__init__] Config mesh_device None world_size = 4
+[2026-04-16 12:13:04,751] [INFO] [config.py:733:__init__] Config mesh_device None world_size = 4
+[2026-04-16 12:13:04,764] [INFO] [config.py:733:__init__] Config mesh_device None world_size = 4
+[2026-04-16 12:13:04,847] [INFO] [utils.py:781:see_memory_usage] Stage 3 initialize beginning
+[2026-04-16 12:13:04,848] [INFO] [utils.py:782:see_memory_usage] MA 70.14 GB         Max_MA 70.14 GB         CA 70.16 GB         Max_CA 70 GB 
+[2026-04-16 12:13:04,848] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 161.83 GB, percent = 8.0%
+[2026-04-16 12:13:04,861] [INFO] [stage3.py:169:__init__] Reduce bucket size 200000000
+[2026-04-16 12:13:04,861] [INFO] [stage3.py:170:__init__] Prefetch bucket size 200000000
+[2026-04-16 12:13:04,931] [INFO] [utils.py:781:see_memory_usage] DeepSpeedZeRoOffload initialize [begin]
+[2026-04-16 12:13:04,932] [INFO] [utils.py:782:see_memory_usage] MA 70.14 GB         Max_MA 70.14 GB         CA 70.16 GB         Max_CA 70 GB 
+[2026-04-16 12:13:04,933] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 161.83 GB, percent = 8.0%
+[2026-04-16 12:13:04,971] [INFO] [config.py:733:__init__] Config mesh_device None world_size = 4
+Parameter Offload: Total persistent parameters: 219424384 in 3948 params
+[2026-04-16 12:13:07,384] [INFO] [utils.py:781:see_memory_usage] DeepSpeedZeRoOffload initialize [end]
+[2026-04-16 12:13:07,385] [INFO] [utils.py:782:see_memory_usage] MA 17.87 GB         Max_MA 70.14 GB         CA 70.23 GB         Max_CA 70 GB 
+[2026-04-16 12:13:07,385] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 162.21 GB, percent = 8.1%
+[2026-04-16 12:13:07,527] [INFO] [utils.py:781:see_memory_usage] Before creating fp16 partitions
+[2026-04-16 12:13:07,528] [INFO] [utils.py:782:see_memory_usage] MA 17.87 GB         Max_MA 17.87 GB         CA 70.23 GB         Max_CA 70 GB 
+[2026-04-16 12:13:07,528] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 162.21 GB, percent = 8.1%
+[2026-04-16 12:13:08,108] [INFO] [utils.py:781:see_memory_usage] After creating fp16 partitions: 1
+[2026-04-16 12:13:08,109] [INFO] [utils.py:782:see_memory_usage] MA 17.87 GB         Max_MA 17.87 GB         CA 18.91 GB         Max_CA 70 GB 
+[2026-04-16 12:13:08,109] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 162.22 GB, percent = 8.1%
+[2026-04-16 12:13:08,219] [INFO] [utils.py:781:see_memory_usage] Before creating fp32 partitions
+[2026-04-16 12:13:08,219] [INFO] [utils.py:782:see_memory_usage] MA 17.87 GB         Max_MA 17.87 GB         CA 18.91 GB         Max_CA 19 GB 
+[2026-04-16 12:13:08,220] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 162.21 GB, percent = 8.1%
+[2026-04-16 12:13:08,332] [INFO] [utils.py:781:see_memory_usage] After creating fp32 partitions
+[2026-04-16 12:13:08,332] [INFO] [utils.py:782:see_memory_usage] MA 18.07 GB         Max_MA 18.17 GB         CA 19.21 GB         Max_CA 19 GB 
+[2026-04-16 12:13:08,332] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 162.21 GB, percent = 8.1%
+[2026-04-16 12:13:08,439] [INFO] [utils.py:781:see_memory_usage] Before initializing optimizer states
+[2026-04-16 12:13:08,439] [INFO] [utils.py:782:see_memory_usage] MA 18.07 GB         Max_MA 18.07 GB         CA 19.21 GB         Max_CA 19 GB 
+[2026-04-16 12:13:08,439] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 162.21 GB, percent = 8.1%
+[2026-04-16 12:13:08,546] [INFO] [utils.py:781:see_memory_usage] After initializing optimizer states
+[2026-04-16 12:13:08,546] [INFO] [utils.py:782:see_memory_usage] MA 18.07 GB         Max_MA 18.26 GB         CA 19.41 GB         Max_CA 19 GB 
+[2026-04-16 12:13:08,547] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 162.21 GB, percent = 8.1%
+[2026-04-16 12:13:08,547] [INFO] [stage3.py:529:_setup_for_real_optimizer] optimizer state initialized
+[2026-04-16 12:13:09,147] [INFO] [utils.py:781:see_memory_usage] After initializing ZeRO optimizer
+[2026-04-16 12:13:09,148] [INFO] [utils.py:782:see_memory_usage] MA 18.54 GB         Max_MA 18.55 GB         CA 19.78 GB         Max_CA 20 GB 
+[2026-04-16 12:13:09,148] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 162.23 GB, percent = 8.1%
+[2026-04-16 12:13:09,148] [INFO] [logging.py:128:log_dist] [Rank 0] DeepSpeed Final Optimizer = DeepSpeedZeroOptimizer_Stage3
+[2026-04-16 12:13:09,148] [INFO] [logging.py:128:log_dist] [Rank 0] DeepSpeed using configured LR scheduler = None
+[2026-04-16 12:13:09,148] [INFO] [logging.py:128:log_dist] [Rank 0] DeepSpeed LR Scheduler = None
+[2026-04-16 12:13:09,148] [INFO] [logging.py:128:log_dist] [Rank 0] step=0, skipped=0, lr=[1e-05], mom=[(0.9, 0.999)]
+[2026-04-16 12:13:09,159] [INFO] [config.py:999:print] DeepSpeedEngine configuration:
+[2026-04-16 12:13:09,159] [INFO] [config.py:1003:print]   activation_checkpointing_config  {
+    "partition_activations": false, 
+    "contiguous_memory_optimization": false, 
+    "cpu_checkpointing": false, 
+    "number_checkpoints": null, 
+    "synchronize_checkpoint_boundary": false, 
+    "profile": false
+}
+[2026-04-16 12:13:09,159] [INFO] [config.py:1003:print]   aio_config ................... {'block_size': 1048576, 'queue_depth': 8, 'thread_count': 1, 'single_submit': False, 'overlap_events': True, 'use_gds': False}
+[2026-04-16 12:13:09,159] [INFO] [config.py:1003:print]   amp_enabled .................. False
+[2026-04-16 12:13:09,159] [INFO] [config.py:1003:print]   amp_params ................... False
+[2026-04-16 12:13:09,159] [INFO] [config.py:1003:print]   autotuning_config ............ {
+    "enabled": false, 
+    "start_step": null, 
+    "end_step": null, 
+    "metric_path": null, 
+    "arg_mappings": null, 
+    "metric": "throughput", 
+    "model_info": null, 
+    "results_dir": "autotuning_results", 
+    "exps_dir": "autotuning_exps", 
+    "overwrite": true, 
+    "fast": true, 
+    "start_profile_step": 3, 
+    "end_profile_step": 5, 
+    "tuner_type": "gridsearch", 
+    "tuner_early_stopping": 5, 
+    "tuner_num_trials": 50, 
+    "model_info_path": null, 
+    "mp_size": 1, 
+    "max_train_batch_size": null, 
+    "min_train_batch_size": 1, 
+    "max_train_micro_batch_size_per_gpu": 1.024000e+03, 
+    "min_train_micro_batch_size_per_gpu": 1, 
+    "num_tuning_micro_batch_sizes": 3
+}
+[2026-04-16 12:13:09,159] [INFO] [config.py:1003:print]   bfloat16_enabled ............. True
+[2026-04-16 12:13:09,159] [INFO] [config.py:1003:print]   bfloat16_immediate_grad_update  False
+[2026-04-16 12:13:09,159] [INFO] [config.py:1003:print]   checkpoint_parallel_write_pipeline  False
+[2026-04-16 12:13:09,159] [INFO] [config.py:1003:print]   checkpoint_tag_validation_enabled  True
+[2026-04-16 12:13:09,159] [INFO] [config.py:1003:print]   checkpoint_tag_validation_fail  False
+[2026-04-16 12:13:09,159] [INFO] [config.py:1003:print]   comms_config ................. <deepspeed.comm.config.DeepSpeedCommsConfig object at 0x7f3132240a60>
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   communication_data_type ...... None
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   compression_config ........... {'weight_quantization': {'shared_parameters': {'enabled': False, 'quantizer_kernel': False, 'schedule_offset': 0, 'quantize_groups': 1, 'quantize_verbose': False, 'quantization_type': 'symmetric', 'quantize_weight_in_forward': False, 'rounding': 'nearest', 'fp16_mixed_quantize': False, 'quantize_change_ratio': 0.001}, 'different_groups': {}}, 'activation_quantization': {'shared_parameters': {'enabled': False, 'quantization_type': 'symmetric', 'range_calibration': 'dynamic', 'schedule_offset': 1000}, 'different_groups': {}}, 'sparse_pruning': {'shared_parameters': {'enabled': False, 'method': 'l1', 'schedule_offset': 1000}, 'different_groups': {}}, 'row_pruning': {'shared_parameters': {'enabled': False, 'method': 'l1', 'schedule_offset': 1000}, 'different_groups': {}}, 'head_pruning': {'shared_parameters': {'enabled': False, 'method': 'topk', 'schedule_offset': 1000}, 'different_groups': {}}, 'channel_pruning': {'shared_parameters': {'enabled': False, 'method': 'l1', 'schedule_offset': 1000}, 'different_groups': {}}, 'layer_reduction': {'enabled': False}}
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   curriculum_enabled_legacy .... False
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   curriculum_params_legacy ..... False
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   data_efficiency_config ....... {'enabled': False, 'seed': 1234, 'data_sampling': {'enabled': False, 'num_epochs': 1000, 'num_workers': 0, 'curriculum_learning': {'enabled': False}}, 'data_routing': {'enabled': False, 'random_ltd': {'enabled': False, 'layer_token_lr_schedule': {'enabled': False}}}}
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   data_efficiency_enabled ...... False
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   dataloader_drop_last ......... False
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   disable_allgather ............ False
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   dump_state ................... False
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   dynamic_loss_scale_args ...... None
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   eigenvalue_enabled ........... False
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   eigenvalue_gas_boundary_resolution  1
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   eigenvalue_layer_name ........ bert.encoder.layer
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   eigenvalue_layer_num ......... 0
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   eigenvalue_max_iter .......... 100
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   eigenvalue_stability ......... 1e-06
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   eigenvalue_tol ............... 0.01
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   eigenvalue_verbose ........... False
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   elasticity_enabled ........... False
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   flops_profiler_config ........ {
+    "enabled": false, 
+    "recompute_fwd_factor": 0.0, 
+    "profile_step": 1, 
+    "module_depth": -1, 
+    "top_modules": 1, 
+    "detailed": true, 
+    "output_file": null
+}
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   fp16_auto_cast ............... None
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   fp16_enabled ................. False
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   fp16_master_weights_and_gradients  False
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   global_rank .................. 0
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   grad_accum_dtype ............. None
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   gradient_accumulation_steps .. 4
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   gradient_clipping ............ 1.0
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   gradient_predivide_factor .... 1.0
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   graph_harvesting ............. False
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   hybrid_engine ................ enabled=False max_out_tokens=512 inference_tp_size=1 release_inference_cache=False pin_parameters=True tp_gather_partition_size=8
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   initial_dynamic_scale ........ 1
+[2026-04-16 12:13:09,160] [INFO] [config.py:1003:print]   load_universal_checkpoint .... False
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   loss_scale ................... 1.0
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   memory_breakdown ............. False
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   mics_hierarchial_params_gather  False
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   mics_shard_size .............. -1
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   monitor_config ............... tensorboard=TensorBoardConfig(enabled=False, output_path='', job_name='DeepSpeedJobName') comet=CometConfig(enabled=False, samples_log_interval=100, project=None, workspace=None, api_key=None, experiment_name=None, experiment_key=None, online=None, mode=None) wandb=WandbConfig(enabled=False, group=None, team=None, project='deepspeed') csv_monitor=CSVConfig(enabled=False, output_path='', job_name='DeepSpeedJobName')
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   nebula_config ................ {
+    "enabled": false, 
+    "persistent_storage_path": null, 
+    "persistent_time_interval": 100, 
+    "num_of_version_in_retention": 2, 
+    "enable_nebula_load": true, 
+    "load_path": null
+}
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   optimizer_legacy_fusion ...... False
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   optimizer_name ............... None
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   optimizer_params ............. None
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   pipeline ..................... {'stages': 'auto', 'partition': 'best', 'seed_layers': False, 'activation_checkpoint_interval': 0, 'pipe_partitioned': True, 'grad_partitioned': True}
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   pld_enabled .................. False
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   pld_params ................... False
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   prescale_gradients ........... False
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   scheduler_name ............... None
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   scheduler_params ............. None
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   seq_parallel_communication_data_type  torch.float32
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   sparse_attention ............. None
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   sparse_gradients_enabled ..... False
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   steps_per_print .............. inf
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   timers_config ................ enabled=True synchronized=True
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   train_batch_size ............. 16
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   train_micro_batch_size_per_gpu  1
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   use_data_before_expert_parallel_  False
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   use_node_local_storage ....... False
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   wall_clock_breakdown ......... False
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   weight_quantization_config ... None
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   world_size ................... 4
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   zero_allow_untested_optimizer  True
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   zero_config .................. stage=3 contiguous_gradients=True reduce_scatter=True reduce_bucket_size=200000000 use_multi_rank_bucket_allreduce=True allgather_partitions=True allgather_bucket_size=200000000 overlap_comm=True load_from_fp32_weights=True elastic_checkpoint=False offload_param=None offload_optimizer=None sub_group_size=1000000000 cpu_offload_param=None cpu_offload_use_pin_memory=None cpu_offload=None prefetch_bucket_size=200000000 param_persistence_threshold=1000000 model_persistence_threshold=9223372036854775807 max_live_parameters=1000000000 max_reuse_distance=1000000000 gather_16bit_weights_on_model_save=True module_granularity_threshold=0 use_all_reduce_for_fetch_params=False stage3_gather_fp16_weights_on_model_save=False ignore_unused_parameters=True legacy_stage1=False round_robin_gradients=False zero_hpz_partition_size=1 zero_quantized_weights=False zero_quantized_nontrainable_weights=False zero_quantized_gradients=False zeropp_loco_param=None mics_shard_size=-1 mics_hierarchical_params_gather=False memory_efficient_linear=True pipeline_loading_checkpoint=False override_module_apply=True
+[2026-04-16 12:13:09,161] [INFO] [config.py:1003:print]   zero_enabled ................. True
+[2026-04-16 12:13:09,162] [INFO] [config.py:1003:print]   zero_force_ds_cpu_optimizer .. True
+[2026-04-16 12:13:09,162] [INFO] [config.py:1003:print]   zero_optimization_stage ...... 3
+[2026-04-16 12:13:09,162] [INFO] [config.py:989:print_user_config]   json = {
+    "train_batch_size": 16, 
+    "train_micro_batch_size_per_gpu": 1, 
+    "gradient_accumulation_steps": 4, 
+    "gradient_clipping": 1.0, 
+    "zero_optimization": {
+        "stage": 3, 
+        "overlap_comm": true, 
+        "contiguous_gradients": true, 
+        "reduce_bucket_size": 2.000000e+08, 
+        "allgather_bucket_size": 2.000000e+08, 
+        "stage3_prefetch_bucket_size": 2.000000e+08, 
+        "stage3_param_persistence_threshold": 1.000000e+06, 
+        "stage3_gather_16bit_weights_on_model_save": true
+    }, 
+    "bf16": {
+        "enabled": true
+    }, 
+    "steps_per_print": inf, 
+    "fp16": {
+        "enabled": false
+    }, 
+    "zero_allow_untested_optimizer": true
+}
+[2026-04-16 12:13:09,163] INFO physical_consistency.trainers.trd_v1: [GPU MEM] after_accelerator_prepare device=cuda:0 allocated=18.54 GiB reserved=19.78 GiB max_allocated=18.54 GiB
+/home/nvme03/workspace/world_model_phys/.conda_envs/phys-main/lib/python3.10/site-packages/timm/models/layers/__init__.py:49: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+/home/nvme03/workspace/world_model_phys/.conda_envs/phys-main/lib/python3.10/site-packages/timm/models/layers/__init__.py:49: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+/home/nvme03/workspace/world_model_phys/.conda_envs/phys-main/lib/python3.10/site-packages/timm/models/layers/__init__.py:49: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+/home/nvme03/workspace/world_model_phys/.conda_envs/phys-main/lib/python3.10/site-packages/timm/models/layers/__init__.py:49: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+[2026-04-16 12:13:12,472] INFO physical_consistency.teachers.vjepa2: Loaded V-JEPA 2.1 teacher from ../weight/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt (variant=vjepa2_1_vit_base_384, dtype=torch.bfloat16, offload_after_encode=False, storage_device=cuda:3)
+[2026-04-16 12:13:12,474] INFO physical_consistency.teachers.vjepa2: Loaded V-JEPA 2.1 teacher from ../weight/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt (variant=vjepa2_1_vit_base_384, dtype=torch.bfloat16, offload_after_encode=False, storage_device=cuda:2)
+[2026-04-16 12:13:12,475] INFO physical_consistency.teachers.vjepa2: Loaded V-JEPA 2.1 teacher from ../weight/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt (variant=vjepa2_1_vit_base_384, dtype=torch.bfloat16, offload_after_encode=False, storage_device=cuda:1)
+[2026-04-16 12:13:12,685] INFO physical_consistency.teachers.vjepa2: Loaded V-JEPA 2.1 teacher from ../weight/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt (variant=vjepa2_1_vit_base_384, dtype=torch.bfloat16, offload_after_encode=False, storage_device=cuda:0)
+[2026-04-16 12:13:12,690] INFO physical_consistency.trainers.trd_v1: [GPU MEM] after_teacher_load device=cuda:0 allocated=18.71 GiB reserved=19.58 GiB max_allocated=18.71 GiB
+/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/src/physical_consistency/trainers/trd_v1.py:1110: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  resume_state = torch.load(
+/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/src/physical_consistency/trainers/trd_v1.py:1110: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  resume_state = torch.load(
+/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/src/physical_consistency/trainers/trd_v1.py:1110: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  resume_state = torch.load(
+[2026-04-16 12:19:19,431] INFO root: loading links/base_model/Wan2.1_VAE.pth
+[2026-04-16 12:19:19,459] INFO root: loading links/base_model/Wan2.1_VAE.pth
+[2026-04-16 12:19:19,473] INFO root: loading links/base_model/Wan2.1_VAE.pth
+[2026-04-16 12:19:21,931] INFO physical_consistency.trainers.trd_v1: [GPU MEM] after_runtime_release device=cuda:0 allocated=18.08 GiB reserved=18.83 GiB max_allocated=19.90 GiB
+/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/src/physical_consistency/trainers/trd_v1.py:1110: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  resume_state = torch.load(
+[2026-04-16 12:19:22,559] INFO root: loading links/base_model/Wan2.1_VAE.pth
+[2026-04-16 12:20:15,744] INFO root: loading links/base_model/models_t5_umt5-xxl-enc-bf16.pth
+[2026-04-16 12:20:17,109] INFO root: loading links/base_model/models_t5_umt5-xxl-enc-bf16.pth
+[2026-04-16 12:20:17,264] INFO root: loading links/base_model/models_t5_umt5-xxl-enc-bf16.pth
+[2026-04-16 12:20:22,242] INFO root: loading links/base_model/models_t5_umt5-xxl-enc-bf16.pth
+[2026-04-16 12:20:24,161] INFO physical_consistency.trainers.stage1_components: Loading low_noise_model from /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1
+An error occurred while trying to fetch /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1: Error no file named diffusion_pytorch_model.safetensors found in directory /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1.
+Defaulting to unsafe serialization. Pass `allow_pickle=False` to raise an error instead.
+[2026-04-16 12:20:26,069] INFO physical_consistency.trainers.stage1_components: Loading low_noise_model from /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1
+An error occurred while trying to fetch /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1: Error no file named diffusion_pytorch_model.safetensors found in directory /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1.
+Defaulting to unsafe serialization. Pass `allow_pickle=False` to raise an error instead.
+[2026-04-16 12:20:26,200] INFO physical_consistency.trainers.stage1_components: Loading low_noise_model from /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1
+An error occurred while trying to fetch /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1: Error no file named diffusion_pytorch_model.safetensors found in directory /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1.
+Defaulting to unsafe serialization. Pass `allow_pickle=False` to raise an error instead.
+[2026-04-16 12:20:31,082] INFO physical_consistency.trainers.stage1_components: Loading low_noise_model from /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1
+An error occurred while trying to fetch /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1: Error no file named diffusion_pytorch_model.safetensors found in directory /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1.
+Defaulting to unsafe serialization. Pass `allow_pickle=False` to raise an error instead.
+[2026-04-16 12:20:42,977] INFO physical_consistency.trainers.stage1_components: Loading high_noise_model from /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1
+An error occurred while trying to fetch /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1: Error no file named diffusion_pytorch_model.safetensors found in directory /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1.
+Defaulting to unsafe serialization. Pass `allow_pickle=False` to raise an error instead.
+[2026-04-16 12:20:44,743] INFO physical_consistency.trainers.stage1_components: Loading high_noise_model from /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1
+An error occurred while trying to fetch /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1: Error no file named diffusion_pytorch_model.safetensors found in directory /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1.
+Defaulting to unsafe serialization. Pass `allow_pickle=False` to raise an error instead.
+[2026-04-16 12:20:45,031] INFO physical_consistency.trainers.stage1_components: Loading high_noise_model from /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1
+An error occurred while trying to fetch /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1: Error no file named diffusion_pytorch_model.safetensors found in directory /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1.
+Defaulting to unsafe serialization. Pass `allow_pickle=False` to raise an error instead.
+[2026-04-16 12:20:48,750] INFO physical_consistency.trainers.stage1_components: Memory-efficient modulation patched 40 blocks for low_noise_model (ffn_chunk_size=4096)
+[2026-04-16 12:20:49,708] INFO physical_consistency.trainers.stage1_components: Applied standard LoRA to 560 linear layers for low_noise_model (rank=16, alpha=16, dropout=0.000, trainable=102891520/18648535104)
+[2026-04-16 12:20:49,717] INFO physical_consistency.trainers.trd_v1: [GPU MEM] after_low_model_load device=cuda:0 allocated=18.57 GiB reserved=19.19 GiB max_allocated=18.57 GiB
+[2026-04-16 12:20:49,717] INFO physical_consistency.trainers.stage1_components: Loading high_noise_model from /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1
+An error occurred while trying to fetch /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1: Error no file named diffusion_pytorch_model.safetensors found in directory /home/nvme03/workspace/world_model_phys/PHYS/weight/Lingbot-Stage1.
+Defaulting to unsafe serialization. Pass `allow_pickle=False` to raise an error instead.
+[2026-04-16 12:21:01,909] INFO physical_consistency.trainers.stage1_components: Loaded 1120 LoRA tensors for low_noise_model
+[2026-04-16 12:21:02,005] INFO physical_consistency.trainers.stage1_components: Loaded 1120 LoRA tensors for high_noise_model
+[2026-04-16 12:21:02,037] [INFO] [config.py:733:__init__] Config mesh_device None world_size = 4
+[2026-04-16 12:21:03,845] INFO physical_consistency.trainers.stage1_components: Loaded 1120 LoRA tensors for low_noise_model
+[2026-04-16 12:21:03,945] INFO physical_consistency.trainers.stage1_components: Loaded 1120 LoRA tensors for high_noise_model
+[2026-04-16 12:21:03,972] [INFO] [config.py:733:__init__] Config mesh_device None world_size = 4
+[2026-04-16 12:21:04,388] INFO physical_consistency.trainers.stage1_components: Loaded 1120 LoRA tensors for low_noise_model
+[2026-04-16 12:21:04,490] INFO physical_consistency.trainers.stage1_components: Loaded 1120 LoRA tensors for high_noise_model
+[2026-04-16 12:21:04,519] [INFO] [config.py:733:__init__] Config mesh_device None world_size = 4
+[2026-04-16 12:21:08,237] INFO physical_consistency.trainers.stage1_components: Memory-efficient modulation patched 40 blocks for high_noise_model (ffn_chunk_size=4096)
+[2026-04-16 12:21:09,243] INFO physical_consistency.trainers.stage1_components: Applied standard LoRA to 560 linear layers for high_noise_model (rank=16, alpha=16, dropout=0.000, trainable=102891520/18648535104)
+[2026-04-16 12:21:09,252] INFO physical_consistency.trainers.trd_v1: [GPU MEM] after_high_model_load device=cuda:0 allocated=18.57 GiB reserved=19.19 GiB max_allocated=18.57 GiB
+[2026-04-16 12:21:09,300] INFO physical_consistency.trainers.trd_v1: Applying block-level gradient checkpointing for student models (use_reentrant=True)
+[2026-04-16 12:21:09,301] INFO physical_consistency.trainers.stage1_components: Gradient checkpointing patched 40 blocks for low_noise_model (use_reentrant=True)
+[2026-04-16 12:21:09,301] INFO physical_consistency.trainers.stage1_components: Gradient checkpointing patched 40 blocks for high_noise_model (use_reentrant=True)
+[2026-04-16 12:21:09,406] INFO physical_consistency.trainers.stage1_components: Loaded 1120 LoRA tensors for low_noise_model
+[2026-04-16 12:21:09,503] INFO physical_consistency.trainers.stage1_components: Loaded 1120 LoRA tensors for high_noise_model
+[2026-04-16 12:21:09,503] INFO physical_consistency.trainers.trd_v1: [GPU MEM] after_dual_bundle_construct device=cuda:0 allocated=18.57 GiB reserved=19.19 GiB max_allocated=18.57 GiB
+[2026-04-16 12:21:09,518] INFO physical_consistency.trainers.trd_v1: [GPU MEM] before_accelerator_prepare device=cuda:0 allocated=18.57 GiB reserved=19.19 GiB max_allocated=18.57 GiB
+[2026-04-16 12:21:09,531] [INFO] [logging.py:128:log_dist] [Rank 0] DeepSpeed info: version=0.16.3, git-hash=unknown, git-branch=unknown
+[2026-04-16 12:21:09,531] [INFO] [config.py:733:__init__] Config mesh_device None world_size = 4
+[2026-04-16 12:21:27,985] [INFO] [logging.py:128:log_dist] [Rank 0] DeepSpeed Flops Profiler Enabled: False
+[2026-04-16 12:21:27,994] [INFO] [logging.py:128:log_dist] [Rank 0] Using client Optimizer as basic optimizer
+[2026-04-16 12:21:27,994] [INFO] [logging.py:128:log_dist] [Rank 0] Removing param_group that has no 'params' in the basic Optimizer
+[2026-04-16 12:21:28,605] [INFO] [logging.py:128:log_dist] [Rank 0] DeepSpeed Basic Optimizer = AdamW
+[2026-04-16 12:21:28,605] [INFO] [utils.py:59:is_zero_supported_optimizer] Checking ZeRO support for optimizer=AdamW type=<class 'torch.optim.adamw.AdamW'>
+[2026-04-16 12:21:28,606] [INFO] [logging.py:128:log_dist] [Rank 0] Creating fp16 ZeRO stage 3 optimizer, MiCS is enabled False, Hierarchical params gather False
+[2026-04-16 12:21:28,606] [INFO] [logging.py:128:log_dist] [Rank 0] Creating torch.bfloat16 ZeRO stage 3 optimizer
+[2026-04-16 12:21:28,657] [INFO] [config.py:733:__init__] Config mesh_device None world_size = 4
+[2026-04-16 12:21:28,661] [INFO] [config.py:733:__init__] Config mesh_device None world_size = 4
+[2026-04-16 12:21:28,667] [INFO] [config.py:733:__init__] Config mesh_device None world_size = 4
+[2026-04-16 12:21:28,861] [INFO] [utils.py:781:see_memory_usage] Stage 3 initialize beginning
+[2026-04-16 12:21:28,861] [INFO] [utils.py:782:see_memory_usage] MA 88.22 GB         Max_MA 88.22 GB         CA 88.82 GB         Max_CA 89 GB 
+[2026-04-16 12:21:28,861] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 167.77 GB, percent = 8.3%
+[2026-04-16 12:21:28,875] [INFO] [stage3.py:169:__init__] Reduce bucket size 200000000
+[2026-04-16 12:21:28,875] [INFO] [stage3.py:170:__init__] Prefetch bucket size 200000000
+[2026-04-16 12:21:29,018] [INFO] [utils.py:781:see_memory_usage] DeepSpeedZeRoOffload initialize [begin]
+[2026-04-16 12:21:29,018] [INFO] [utils.py:782:see_memory_usage] MA 88.22 GB         Max_MA 88.22 GB         CA 88.82 GB         Max_CA 89 GB 
+[2026-04-16 12:21:29,019] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 167.77 GB, percent = 8.3%
+[2026-04-16 12:21:29,059] [INFO] [config.py:733:__init__] Config mesh_device None world_size = 4
+Parameter Offload: Total persistent parameters: 219424384 in 3948 params
+[2026-04-16 12:21:30,510] [INFO] [utils.py:781:see_memory_usage] DeepSpeedZeRoOffload initialize [end]
+[2026-04-16 12:21:30,510] [INFO] [utils.py:782:see_memory_usage] MA 35.95 GB         Max_MA 88.22 GB         CA 88.9 GB         Max_CA 89 GB 
+[2026-04-16 12:21:30,510] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 167.91 GB, percent = 8.3%
+[2026-04-16 12:21:30,703] [INFO] [utils.py:781:see_memory_usage] Before creating fp16 partitions
+[2026-04-16 12:21:30,703] [INFO] [utils.py:782:see_memory_usage] MA 35.95 GB         Max_MA 35.95 GB         CA 88.9 GB         Max_CA 89 GB 
+[2026-04-16 12:21:30,703] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 167.91 GB, percent = 8.3%
+[2026-04-16 12:21:31,579] [INFO] [utils.py:781:see_memory_usage] After creating fp16 partitions: 1
+[2026-04-16 12:21:31,581] [INFO] [utils.py:782:see_memory_usage] MA 35.95 GB         Max_MA 35.95 GB         CA 37.59 GB         Max_CA 89 GB 
+[2026-04-16 12:21:31,581] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 167.93 GB, percent = 8.3%
+[2026-04-16 12:21:31,767] [INFO] [utils.py:781:see_memory_usage] Before creating fp32 partitions
+[2026-04-16 12:21:31,767] [INFO] [utils.py:782:see_memory_usage] MA 35.95 GB         Max_MA 35.95 GB         CA 37.59 GB         Max_CA 38 GB 
+[2026-04-16 12:21:31,767] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 167.91 GB, percent = 8.3%
+[2026-04-16 12:21:31,944] [INFO] [utils.py:781:see_memory_usage] After creating fp32 partitions
+[2026-04-16 12:21:31,945] [INFO] [utils.py:782:see_memory_usage] MA 36.14 GB         Max_MA 36.24 GB         CA 37.88 GB         Max_CA 38 GB 
+[2026-04-16 12:21:31,945] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 167.91 GB, percent = 8.3%
+[2026-04-16 12:21:32,251] [INFO] [utils.py:781:see_memory_usage] Before initializing optimizer states
+[2026-04-16 12:21:32,252] [INFO] [utils.py:782:see_memory_usage] MA 36.14 GB         Max_MA 36.14 GB         CA 37.88 GB         Max_CA 38 GB 
+[2026-04-16 12:21:32,252] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 167.9 GB, percent = 8.3%
+[2026-04-16 12:21:32,427] [INFO] [utils.py:781:see_memory_usage] After initializing optimizer states
+[2026-04-16 12:21:32,428] [INFO] [utils.py:782:see_memory_usage] MA 36.14 GB         Max_MA 36.34 GB         CA 38.08 GB         Max_CA 38 GB 
+[2026-04-16 12:21:32,428] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 167.9 GB, percent = 8.3%
+[2026-04-16 12:21:32,429] [INFO] [stage3.py:529:_setup_for_real_optimizer] optimizer state initialized
+[2026-04-16 12:21:33,146] [INFO] [utils.py:781:see_memory_usage] After initializing ZeRO optimizer
+[2026-04-16 12:21:33,147] [INFO] [utils.py:782:see_memory_usage] MA 36.62 GB         Max_MA 36.63 GB         CA 38.46 GB         Max_CA 38 GB 
+[2026-04-16 12:21:33,147] [INFO] [utils.py:789:see_memory_usage] CPU Virtual Memory:  used = 167.91 GB, percent = 8.3%
+[2026-04-16 12:21:33,147] [INFO] [logging.py:128:log_dist] [Rank 0] DeepSpeed Final Optimizer = DeepSpeedZeroOptimizer_Stage3
+[2026-04-16 12:21:33,147] [INFO] [logging.py:128:log_dist] [Rank 0] DeepSpeed using configured LR scheduler = None
+[2026-04-16 12:21:33,147] [INFO] [logging.py:128:log_dist] [Rank 0] DeepSpeed LR Scheduler = None
+[2026-04-16 12:21:33,147] [INFO] [logging.py:128:log_dist] [Rank 0] step=0, skipped=0, lr=[1e-05], mom=[(0.9, 0.999)]
+[2026-04-16 12:21:33,159] [INFO] [config.py:999:print] DeepSpeedEngine configuration:
+[2026-04-16 12:21:33,159] [INFO] [config.py:1003:print]   activation_checkpointing_config  {
+    "partition_activations": false, 
+    "contiguous_memory_optimization": false, 
+    "cpu_checkpointing": false, 
+    "number_checkpoints": null, 
+    "synchronize_checkpoint_boundary": false, 
+    "profile": false
+}
+[2026-04-16 12:21:33,159] [INFO] [config.py:1003:print]   aio_config ................... {'block_size': 1048576, 'queue_depth': 8, 'thread_count': 1, 'single_submit': False, 'overlap_events': True, 'use_gds': False}
+[2026-04-16 12:21:33,159] [INFO] [config.py:1003:print]   amp_enabled .................. False
+[2026-04-16 12:21:33,159] [INFO] [config.py:1003:print]   amp_params ................... False
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   autotuning_config ............ {
+    "enabled": false, 
+    "start_step": null, 
+    "end_step": null, 
+    "metric_path": null, 
+    "arg_mappings": null, 
+    "metric": "throughput", 
+    "model_info": null, 
+    "results_dir": "autotuning_results", 
+    "exps_dir": "autotuning_exps", 
+    "overwrite": true, 
+    "fast": true, 
+    "start_profile_step": 3, 
+    "end_profile_step": 5, 
+    "tuner_type": "gridsearch", 
+    "tuner_early_stopping": 5, 
+    "tuner_num_trials": 50, 
+    "model_info_path": null, 
+    "mp_size": 1, 
+    "max_train_batch_size": null, 
+    "min_train_batch_size": 1, 
+    "max_train_micro_batch_size_per_gpu": 1.024000e+03, 
+    "min_train_micro_batch_size_per_gpu": 1, 
+    "num_tuning_micro_batch_sizes": 3
+}
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   bfloat16_enabled ............. True
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   bfloat16_immediate_grad_update  False
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   checkpoint_parallel_write_pipeline  False
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   checkpoint_tag_validation_enabled  True
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   checkpoint_tag_validation_fail  False
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   comms_config ................. <deepspeed.comm.config.DeepSpeedCommsConfig object at 0x7f1894621bd0>
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   communication_data_type ...... None
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   compression_config ........... {'weight_quantization': {'shared_parameters': {'enabled': False, 'quantizer_kernel': False, 'schedule_offset': 0, 'quantize_groups': 1, 'quantize_verbose': False, 'quantization_type': 'symmetric', 'quantize_weight_in_forward': False, 'rounding': 'nearest', 'fp16_mixed_quantize': False, 'quantize_change_ratio': 0.001}, 'different_groups': {}}, 'activation_quantization': {'shared_parameters': {'enabled': False, 'quantization_type': 'symmetric', 'range_calibration': 'dynamic', 'schedule_offset': 1000}, 'different_groups': {}}, 'sparse_pruning': {'shared_parameters': {'enabled': False, 'method': 'l1', 'schedule_offset': 1000}, 'different_groups': {}}, 'row_pruning': {'shared_parameters': {'enabled': False, 'method': 'l1', 'schedule_offset': 1000}, 'different_groups': {}}, 'head_pruning': {'shared_parameters': {'enabled': False, 'method': 'topk', 'schedule_offset': 1000}, 'different_groups': {}}, 'channel_pruning': {'shared_parameters': {'enabled': False, 'method': 'l1', 'schedule_offset': 1000}, 'different_groups': {}}, 'layer_reduction': {'enabled': False}}
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   curriculum_enabled_legacy .... False
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   curriculum_params_legacy ..... False
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   data_efficiency_config ....... {'enabled': False, 'seed': 1234, 'data_sampling': {'enabled': False, 'num_epochs': 1000, 'num_workers': 0, 'curriculum_learning': {'enabled': False}}, 'data_routing': {'enabled': False, 'random_ltd': {'enabled': False, 'layer_token_lr_schedule': {'enabled': False}}}}
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   data_efficiency_enabled ...... False
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   dataloader_drop_last ......... False
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   disable_allgather ............ False
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   dump_state ................... False
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   dynamic_loss_scale_args ...... None
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   eigenvalue_enabled ........... False
+[2026-04-16 12:21:33,160] [INFO] [config.py:1003:print]   eigenvalue_gas_boundary_resolution  1
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   eigenvalue_layer_name ........ bert.encoder.layer
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   eigenvalue_layer_num ......... 0
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   eigenvalue_max_iter .......... 100
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   eigenvalue_stability ......... 1e-06
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   eigenvalue_tol ............... 0.01
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   eigenvalue_verbose ........... False
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   elasticity_enabled ........... False
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   flops_profiler_config ........ {
+    "enabled": false, 
+    "recompute_fwd_factor": 0.0, 
+    "profile_step": 1, 
+    "module_depth": -1, 
+    "top_modules": 1, 
+    "detailed": true, 
+    "output_file": null
+}
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   fp16_auto_cast ............... None
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   fp16_enabled ................. False
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   fp16_master_weights_and_gradients  False
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   global_rank .................. 0
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   grad_accum_dtype ............. None
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   gradient_accumulation_steps .. 4
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   gradient_clipping ............ 1.0
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   gradient_predivide_factor .... 1.0
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   graph_harvesting ............. False
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   hybrid_engine ................ enabled=False max_out_tokens=512 inference_tp_size=1 release_inference_cache=False pin_parameters=True tp_gather_partition_size=8
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   initial_dynamic_scale ........ 1
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   load_universal_checkpoint .... False
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   loss_scale ................... 1.0
+[2026-04-16 12:21:33,161] [INFO] [config.py:1003:print]   memory_breakdown ............. False
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   mics_hierarchial_params_gather  False
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   mics_shard_size .............. -1
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   monitor_config ............... tensorboard=TensorBoardConfig(enabled=False, output_path='', job_name='DeepSpeedJobName') comet=CometConfig(enabled=False, samples_log_interval=100, project=None, workspace=None, api_key=None, experiment_name=None, experiment_key=None, online=None, mode=None) wandb=WandbConfig(enabled=False, group=None, team=None, project='deepspeed') csv_monitor=CSVConfig(enabled=False, output_path='', job_name='DeepSpeedJobName')
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   nebula_config ................ {
+    "enabled": false, 
+    "persistent_storage_path": null, 
+    "persistent_time_interval": 100, 
+    "num_of_version_in_retention": 2, 
+    "enable_nebula_load": true, 
+    "load_path": null
+}
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   optimizer_legacy_fusion ...... False
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   optimizer_name ............... None
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   optimizer_params ............. None
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   pipeline ..................... {'stages': 'auto', 'partition': 'best', 'seed_layers': False, 'activation_checkpoint_interval': 0, 'pipe_partitioned': True, 'grad_partitioned': True}
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   pld_enabled .................. False
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   pld_params ................... False
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   prescale_gradients ........... False
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   scheduler_name ............... None
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   scheduler_params ............. None
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   seq_parallel_communication_data_type  torch.float32
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   sparse_attention ............. None
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   sparse_gradients_enabled ..... False
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   steps_per_print .............. inf
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   timers_config ................ enabled=True synchronized=True
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   train_batch_size ............. 16
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   train_micro_batch_size_per_gpu  1
+[2026-04-16 12:21:33,162] [INFO] [config.py:1003:print]   use_data_before_expert_parallel_  False
+[2026-04-16 12:21:33,163] [INFO] [config.py:1003:print]   use_node_local_storage ....... False
+[2026-04-16 12:21:33,163] [INFO] [config.py:1003:print]   wall_clock_breakdown ......... False
+[2026-04-16 12:21:33,163] [INFO] [config.py:1003:print]   weight_quantization_config ... None
+[2026-04-16 12:21:33,163] [INFO] [config.py:1003:print]   world_size ................... 4
+[2026-04-16 12:21:33,163] [INFO] [config.py:1003:print]   zero_allow_untested_optimizer  True
+[2026-04-16 12:21:33,163] [INFO] [config.py:1003:print]   zero_config .................. stage=3 contiguous_gradients=True reduce_scatter=True reduce_bucket_size=200000000 use_multi_rank_bucket_allreduce=True allgather_partitions=True allgather_bucket_size=200000000 overlap_comm=True load_from_fp32_weights=True elastic_checkpoint=False offload_param=None offload_optimizer=None sub_group_size=1000000000 cpu_offload_param=None cpu_offload_use_pin_memory=None cpu_offload=None prefetch_bucket_size=200000000 param_persistence_threshold=1000000 model_persistence_threshold=9223372036854775807 max_live_parameters=1000000000 max_reuse_distance=1000000000 gather_16bit_weights_on_model_save=True module_granularity_threshold=0 use_all_reduce_for_fetch_params=False stage3_gather_fp16_weights_on_model_save=False ignore_unused_parameters=True legacy_stage1=False round_robin_gradients=False zero_hpz_partition_size=1 zero_quantized_weights=False zero_quantized_nontrainable_weights=False zero_quantized_gradients=False zeropp_loco_param=None mics_shard_size=-1 mics_hierarchical_params_gather=False memory_efficient_linear=True pipeline_loading_checkpoint=False override_module_apply=True
+[2026-04-16 12:21:33,163] [INFO] [config.py:1003:print]   zero_enabled ................. True
+[2026-04-16 12:21:33,163] [INFO] [config.py:1003:print]   zero_force_ds_cpu_optimizer .. True
+[2026-04-16 12:21:33,163] [INFO] [config.py:1003:print]   zero_optimization_stage ...... 3
+[2026-04-16 12:21:33,163] [INFO] [config.py:989:print_user_config]   json = {
+    "train_batch_size": 16, 
+    "train_micro_batch_size_per_gpu": 1, 
+    "gradient_accumulation_steps": 4, 
+    "gradient_clipping": 1.0, 
+    "zero_optimization": {
+        "stage": 3, 
+        "overlap_comm": true, 
+        "contiguous_gradients": true, 
+        "reduce_bucket_size": 2.000000e+08, 
+        "allgather_bucket_size": 2.000000e+08, 
+        "stage3_prefetch_bucket_size": 2.000000e+08, 
+        "stage3_param_persistence_threshold": 1.000000e+06, 
+        "stage3_gather_16bit_weights_on_model_save": true
+    }, 
+    "bf16": {
+        "enabled": true
+    }, 
+    "steps_per_print": inf, 
+    "fp16": {
+        "enabled": false
+    }, 
+    "zero_allow_untested_optimizer": true
+}
+[2026-04-16 12:21:33,164] INFO physical_consistency.trainers.trd_v1: [GPU MEM] after_accelerator_prepare device=cuda:0 allocated=36.62 GiB reserved=38.46 GiB max_allocated=36.62 GiB
+[2026-04-16 12:21:35,170] INFO physical_consistency.teachers.vjepa2: Loaded V-JEPA 2.1 teacher from ../weight/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt (variant=vjepa2_1_vit_base_384, dtype=torch.bfloat16, offload_after_encode=False, storage_device=cuda:3)
+[2026-04-16 12:21:35,175] INFO physical_consistency.teachers.vjepa2: Loaded V-JEPA 2.1 teacher from ../weight/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt (variant=vjepa2_1_vit_base_384, dtype=torch.bfloat16, offload_after_encode=False, storage_device=cuda:2)
+[2026-04-16 12:21:35,177] INFO physical_consistency.teachers.vjepa2: Loaded V-JEPA 2.1 teacher from ../weight/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt (variant=vjepa2_1_vit_base_384, dtype=torch.bfloat16, offload_after_encode=False, storage_device=cuda:1)
+[2026-04-16 12:21:35,422] INFO physical_consistency.teachers.vjepa2: Loaded V-JEPA 2.1 teacher from ../weight/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt (variant=vjepa2_1_vit_base_384, dtype=torch.bfloat16, offload_after_encode=False, storage_device=cuda:0)
+[2026-04-16 12:21:35,423] INFO physical_consistency.trainers.trd_v1: [GPU MEM] after_teacher_load device=cuda:0 allocated=36.79 GiB reserved=38.46 GiB max_allocated=36.79 GiB
+[2026-04-16 12:21:36,964] INFO physical_consistency.trainers.trd_v1: [GPU MEM] after_runtime_release device=cuda:0 allocated=35.75 GiB reserved=37.53 GiB max_allocated=36.79 GiB
+[SMOKE OK] restored runtime successfully from checkpoints/exp_stage1_epoch2_trd_v1_smoke_restore/smoke_restore_candidate
+(phys-main) ubuntu@instance-afs92r3e:/home/nvme03/workspace/world_model_phys/PHYS/world_model_phys$ 

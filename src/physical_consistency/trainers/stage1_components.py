@@ -161,6 +161,53 @@ def _patch_wan_rope_apply_to_preserve_dtype(wan_model_module) -> None:
         LOGGER.info("Patched Wan rope_apply to preserve q/k dtype for training memory")
 
 
+
+def _patch_flash_attention_sdpa_fallback(wan_attention_module) -> None:
+    """Replace flash_attention with SDPA fallback when PC_FORCE_SDPA_FALLBACK=1.
+
+    This avoids modifying the external lingbot code directory.  The patch is
+    applied at runtime so that ``git pull`` on H20 is sufficient to pick it up.
+    The environment variable is checked once at import time.
+    """
+    if not _env_flag("PC_FORCE_SDPA_FALLBACK"):
+        return
+    if getattr(wan_attention_module, "_pc_sdpa_fallback_patched", False):
+        return
+
+    sdpa_fn = getattr(wan_attention_module, "_sdpa_fallback", None)
+    if sdpa_fn is None:
+        LOGGER.warning(
+            "PC_FORCE_SDPA_FALLBACK=1 but wan.modules.attention has no "
+            "_sdpa_fallback; cannot patch flash_attention"
+        )
+        return
+
+    original_flash_attention = wan_attention_module.flash_attention
+
+    def _flash_attention_via_sdpa(
+        q, k, v,
+        q_lens=None, k_lens=None,
+        dropout_p=0., softmax_scale=None, q_scale=None,
+        causal=False, window_size=(-1, -1),
+        deterministic=False, dtype=torch.bfloat16, version=None,
+    ):
+        return sdpa_fn(
+            q=q, k=k, v=v,
+            q_lens=q_lens, k_lens=k_lens,
+            dropout_p=dropout_p, softmax_scale=softmax_scale,
+            q_scale=q_scale, causal=causal, dtype=dtype,
+        )
+
+    wan_attention_module._pc_original_flash_attention = original_flash_attention
+    wan_attention_module.flash_attention = _flash_attention_via_sdpa
+    wan_attention_module._pc_sdpa_fallback_patched = True
+    if _should_log_rank_zero():
+        LOGGER.info(
+            "PC_FORCE_SDPA_FALLBACK=1: patched flash_attention -> SDPA fallback "
+            "(flash-attn backward will NOT be used)"
+        )
+
+
 MODEL_SUBFOLDERS = ("low_noise_model", "high_noise_model")
 MODEL_TYPE_TO_SUBFOLDER = {
     "low": "low_noise_model",
@@ -297,6 +344,10 @@ class LingBotStage1Helper:
         )
 
         _patch_wan_rope_apply_to_preserve_dtype(wan_model_module)
+
+        import wan.modules.attention as wan_attention_module
+        _patch_flash_attention_sdpa_fallback(wan_attention_module)
+
         self.WanModel = WanModel
         self.T5EncoderModel = T5EncoderModel
         self.Wan2_1_VAE = Wan2_1_VAE

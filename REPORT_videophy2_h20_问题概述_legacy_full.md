@@ -2188,3 +2188,300 @@ bash scripts/run_train_trd_v1_dual.sh \
 ```bash
 tail -n 200 -F /home/nvme03/workspace/world_model_phys/PHYS/world_model_phys/logs/train_trd_v1_dual.log
 ```
+
+## 22. 2026-04-18 TRD-v1 H20 `SIGFPE` 专项诊断阶段总结
+
+这一节追加记录 2026-04-18 这一轮围绕 `physical_consistency.cli.train_trd_v1` 的专项排障。注意：本节只总结当前诊断结论，不代表核心问题已经被修复。
+
+### 22.1 这一轮到底在诊断什么
+
+从本轮对话开始到当前节点，主线一直是同一个问题：
+
+- H20 上启动 `TRD-v1 / Stage1 student` 训练；
+- forward、loss 计算看起来可以完成；
+- 进入 `accelerator.backward(loss_total)` 后，Python 进程被 native 层 `SIGFPE` 杀掉；
+- 日志表现为：
+
+```text
+Fatal Python error: Floating point exception
+...
+torch/autograd/graph.py, line 825 in _engine_run_backward
+torch/autograd/__init__.py, line 347 in backward
+torch/_tensor.py, line 581 in backward
+accelerate/accelerator.py, line 2241 in backward
+physical_consistency/trainers/trd_v1.py, line 1005 in train
+...
+traceback : Signal 8 (SIGFPE)
+```
+
+因此，本轮不是在调 VideoPhy-2 AutoEval，也不是在调 LingBot generation-only pipeline，而是在调一个新的训练路径：
+
+- Wan2.1 / LingBot student；
+- Stage1 checkpoint；
+- LoRA adapter 训练；
+- memory-efficient Wan block patch；
+- gradient checkpointing；
+- Flow Matching loss；
+- 可选 TRD loss；
+- Accelerate / DDP；
+- H20 CUDA runtime。
+
+### 22.2 已经解决或排除的旁支问题
+
+#### 22.2.1 启动脚本路径问题
+
+一开始误用了：
+
+```bash
+bash scripts/train_trd_v1.sh
+```
+
+实际当前项目里的入口是：
+
+```bash
+bash scripts/run_train_trd_v1.sh
+```
+
+这是启动命令问题，不是训练图本身问题，已经纠正。
+
+#### 22.2.2 DDP ready-twice 报错已经不再是当前阻塞点
+
+之前曾出现过 DDP 报错：
+
+```text
+Expected to mark a variable ready only once
+...
+model.blocks.39.ffn.2.lora_B.weight
+```
+
+后来通过以下组合绕开 / 排除：
+
+- `--student_checkpoint_use_reentrant false`
+- `--student_lora_merge_mode out_of_place`
+- `--student_diagnose_training_graph true`
+- `--student_param_grad_trace true`
+
+诊断日志显示：
+
+```text
+duplicate_parameter_refs=0
+lora_merge_modes=out_of_place:560
+```
+
+后续当前阻塞点已经不是 ready-twice，而是 native `SIGFPE`。
+
+#### 22.2.3 OOM 与 SIGFPE 已经区分
+
+在 `checkpoint_mode=none` 的一次 probe 中，如果没有显式指定小分辨率 / 短帧数，会回到默认大尺寸，出现 forward OOM。这个 OOM 是配置问题，不是核心 `SIGFPE`。
+
+正确的小 probe 参数是：
+
+```text
+num_frames=17
+height=320
+width=576
+latent_grid=(5,40,72)
+seq_len=3600
+```
+
+在这个尺寸下：
+
+- `checkpoint_mode=none` 可以跑到 backward 前，但仍然 `SIGFPE`；
+- `checkpoint_mode=full` 显存更低，也仍然 `SIGFPE`；
+- 最新单卡 `checkpoint_mode=full` 的 backward 前显存只有约 `38.67 GiB allocated`，因此不是 OOM。
+
+#### 22.2.4 TRD loss 已排除
+
+多轮 probe 使用：
+
+```text
+--trd_backward_mode off
+```
+
+日志显示：
+
+```text
+loss_trd=0
+loss_total=loss_fm
+```
+
+即使完全关闭 TRD loss，仍然在 `loss_fm.backward()` 期间 `SIGFPE`。因此当前问题不是 V-JEPA / VideoMAE teacher loss 的 backward 直接造成。
+
+#### 22.2.5 loss 数值异常已排除
+
+相关日志显示：
+
+```text
+loss_total_finite=True
+loss_fm_finite=True
+sample_sigma_finite=True
+sample_timestep_finite=True
+```
+
+所以当前不是 Python 层显式 NaN / Inf loss 导致的普通数值错误。
+
+#### 22.2.6 full checkpoint replay 不是必要条件
+
+已测过：
+
+- `student_memory_efficient_checkpoint_mode=full`
+- `student_memory_efficient_checkpoint_mode=none`
+
+二者都会在 backward 中触发 `SIGFPE`。因此不能简单归因于 full block checkpoint replay 重算。
+
+#### 22.2.7 `find_unused_parameters` 不是根因
+
+已测过：
+
+- `ddp_find_unused_parameters=True`
+- `ddp_find_unused_parameters=False`
+
+二者都会触发 `SIGFPE`。关闭它可以减少 DDP 额外图遍历和 warning，但没有修复核心问题。
+
+#### 22.2.8 多卡 DDP / NCCL 已经基本降级为非主因
+
+最新关键 probe 是单卡：
+
+```text
+CUDA_VISIBLE_DEVICES=0
+num_gpus=1
+world_size=1
+student_memory_efficient_checkpoint_mode=full
+student_checkpoint_use_reentrant=false
+student_lora_merge_mode=out_of_place
+trd_backward_mode=off
+```
+
+该 run 仍然在 `accelerator.backward()` / `torch.autograd._engine_run_backward` 中触发：
+
+```text
+Signal 8 (SIGFPE)
+```
+
+这说明问题不是 8 卡 allreduce、NCCL、DDP bucket 或 rank 间同步造成的主问题，而是单卡 backward graph 中的 native kernel / extension / CUDA path。
+
+### 22.3 当前已知显存账本
+
+在 `checkpoint_mode=full`、17 帧、320x576、单卡 probe 中：
+
+```text
+after_accelerator_prepare allocated=35.43 GiB
+after_teacher_load       allocated=35.43 GiB
+before_student_forward   allocated=35.52 GiB
+after_student_forward    allocated=38.70 GiB
+before_backward          allocated=38.67 GiB
+max_allocated            46.32 GiB
+```
+
+说明：
+
+- student 常驻模型 / LoRA / DDP wrapper 约 `35 GiB`；
+- teacher 采用 `storage_device=cpu`，几乎不增加 GPU 常驻显存；
+- full checkpoint 下 forward activation 增量约 `3.2 GiB`；
+- 当前单卡 full checkpoint probe 并不接近 96G H20 OOM 边界。
+
+在之前 `checkpoint_mode=none`、同样 17 帧尺寸下：
+
+```text
+after_student_forward allocated≈85.28 GiB
+before_backward       allocated≈85.25 GiB
+```
+
+因此 activation 的显存主因已经清楚：不 checkpoint 时，Wan student forward graph 会额外吃掉约 `50 GiB`。但这只是显存事实，不是当前 `SIGFPE` 的充分解释，因为 full checkpoint 低显存下也会炸。
+
+### 22.4 当前最强结论
+
+当前核心结论是：
+
+> H20 上的 `SIGFPE` 已经收敛到 `Wan2.1 / LingBot student + LoRA + memory-efficient block patch + attention/flash-attn/bf16 CUDA path` 这个训练 backward 图。它不是 TRD teacher loss，不是普通 OOM，不是多卡 DDP/NCCL，同样也不是 `find_unused_parameters` 或 loss NaN。
+
+目前更像是某个 native CUDA backward kernel 在 H20 上被这个训练图触发。候选区域包括：
+
+- Wan attention / flash-attn backward；
+- LoRA adapter backward 与大范围 adapter 注入；
+- memory-efficient modulation / FFN chunk patch 生成的 backward graph；
+- RoPE q/k dtype preserve patch 之后的 dtype 组合；
+- H20 + 当前 PyTorch / CUDA / flash-attn 版本的兼容性边界。
+
+### 22.5 为什么 VideoREPA 和 LingBot Stage1 没有遇到这个问题
+
+目前看，最关键的解释是：它们没有覆盖当前这条 backward 图。
+
+#### 22.5.1 VideoREPA 在当前项目中主要是 teacher / eval 角色
+
+VideoREPA 侧主要提供 teacher 特征或评测相关组件。teacher forward / feature extraction 能跑，并不代表 Wan2.1 student 的训练 backward 能跑。
+
+当前 `SIGFPE` 发生在 student 的 `loss_fm.backward()` 中，而不是 teacher forward 中。并且 `trd_backward_mode=off` 时 teacher loss 已经完全关闭，问题仍然存在。
+
+因此，不能把“VideoREPA 没炸”直接等价为“当前 student backward 图也应该没问题”。
+
+#### 22.5.2 LingBot-base / LingBot-Stage1 之前跑通的是 generation / evaluation
+
+此前 H20 上已经跑通的 LingBot-base / LingBot-Stage1 主要是 generation-only 或 evaluation pipeline：
+
+- `no_grad` 推理；
+- 没有 optimizer；
+- 没有 LoRA adapter backward；
+- 没有 full training autograd graph；
+- 没有 student block checkpoint backward；
+- 没有对 Wan blocks 做训练态大规模梯度回传。
+
+推理路径和训练 backward 路径完全不同。推理稳定只能证明模型权重和基本 forward / sampling 链路可用，不能证明当前 LoRA + patched Wan block 的 backward 链路可用。
+
+#### 22.5.3 当前 TRD-v1 是新的组合系统
+
+当前训练不是原始 LingBot Stage1 训练脚本原封不动复现，也不是 VideoREPA 原始训练脚本原封不动复现，而是一个组合系统：
+
+```text
+LingBot / Wan2.1 student
++ Stage1 checkpoint
++ LoRA 560 linear layers
++ memory-efficient Wan block patch
++ optional block checkpointing
++ Flow Matching loss
++ optional TRD teacher loss
++ H20 / flash-attn / Accelerate
+```
+
+因此，最合理的判断是：
+
+> 问题不在“VideoREPA 权重坏了”或“LingBot Stage1 权重坏了”，而在我们新搭出来的 TRD-v1 student training path，尤其是 patched Wan student backward graph。
+
+### 22.6 下一步推荐的二分方向
+
+后续如果继续诊断，建议不要再优先纠缠 DDP，而是从训练图本身二分。
+
+#### 22.6.1 缩小 LoRA 范围
+
+例如只训练最后一个 block：
+
+```text
+--student_lora_block_start 39
+```
+
+如果只训最后 block 可以通过，而全量 560 个 LoRA module 会炸，说明问题和 LoRA 注入范围 / 某些 block 的 adapter backward 有关。
+
+#### 22.6.2 关闭或替换 attention backend
+
+当前脚本会检查 `flash-attn` 可 import，但还没有明确的训练参数用来强制禁用 flash-attn。下一步需要确认 LingBot Wan attention 是否能切到 PyTorch SDPA math backend。
+
+如果关闭 flash-attn 后单卡 backward 通过，那么主因基本就是 attention backward kernel / H20 兼容性。
+
+#### 22.6.3 绕开 memory-efficient Wan block patch
+
+如果原始 Wan block forward + LoRA backward 可以通过，而 memory-efficient patch 路径会 `SIGFPE`，则问题应集中在当前 patch 生成的 autograd graph。
+
+#### 22.6.4 加更细粒度 backward trace
+
+当前 faulthandler 只能看到 Python 主栈在 `_engine_run_backward`，看不到具体哪个 CUDA op。后续可以考虑：
+
+- 对 LoRA A/B 参数记录第一个成功回传的 hook；
+- 对 block 级 backward hook 记录最后进入的 block；
+- 设置 `CUDA_LAUNCH_BLOCKING=1` 做同步定位；
+- 若必要，再用 `TORCH_SHOW_CPP_STACKTRACES=1` 或 CUDA compute sanitizer 做 native 层定位。
+
+### 22.7 本阶段一句话结论
+
+截至 2026-04-18 11:01 左右，核心 `SIGFPE` 尚未修复，但已经从“大概是 DDP / OOM / TRD loss / checkpoint / teacher”的宽泛怀疑，收敛为：
+
+> 单卡也能复现的 Wan student backward native CUDA 问题；最可疑区域是 LoRA + patched Wan block + attention/flash-attn/bf16 在 H20 上的组合。
