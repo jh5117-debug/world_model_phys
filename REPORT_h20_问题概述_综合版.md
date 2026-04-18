@@ -4167,3 +4167,88 @@ PC_LORA_DETACH_INPUT=1
 
 - 如果通过，说明真实 FM loss 本身没有问题，下一步再去掉 `PC_LORA_DETACH_BASE_OUT=1` / `PC_LORA_DETACH_INPUT=1`，验证完整训练图；
 - 如果仍然 `SIGFPE`，说明除了 LoRA bf16 compute 以外，FM loss 牵回来的某段非 LoRA graph 仍有另一个触发点，需要继续缩小。
+
+## 30. 2026-04-18 15:09 真实 FM loss + LoRA fp32 compute + detach 结果：通过
+
+### 30.1 本轮实验配置和结果
+
+本轮去掉了上一轮的 LoRA local loss：
+
+```text
+PC_LORA_LOCAL_LOSS=0 / 未设置
+```
+
+并保留：
+
+```text
+PC_DISABLE_TF32=1
+PC_FORCE_SDPA_FALLBACK=1
+PC_FORCE_SDPA_MATH=1
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+PC_LORA_DETACH_BASE_OUT=1
+PC_LORA_DETACH_INPUT=1
+PC_LORA_INPUT_CONTIGUOUS_CLONE=1
+PC_LORA_HIDDEN_CONTIGUOUS_CLONE=1
+PC_LORA_TRACE_INPUT_META=1
+```
+
+日志确认本轮已经回到真实 FM loss：
+
+```text
+[PHASE] label=after_student_forward ... pred=shape(16, 5, 40, 72) dtype=torch.float32 ... requires_grad=True
+[PHASE] label=after_fm_loss ... loss_fm=0.0320364 loss_fm_finite=True
+[PHASE] label=trd_loss_off ... loss_total=0.0320364 loss_total_finite=True
+[PHASE] label=before_backward ... loss_total=0.0320364 loss_total_finite=True
+[PHASE] label=after_backward ...
+[PROGRESS] epoch=1/5 global_step=1/8350 micro_step=1 ...
+[MEM PROBE] reached max_train_micro_steps=1 global_step=1 micro_step=1 ... exiting before checkpoint/validation
+```
+
+同时 LoRA trace 继续确认 LoRA 分支是在 fp32 下计算：
+
+```text
+hidden_dtype=torch.float32
+out_dtype=torch.float32
+disable_autocast=True
+```
+
+本轮没有出现 `Fatal Python error: Floating point exception`。最后退出仍然是一步探针的预期行为。
+
+### 30.2 新结论
+
+当前已经确认：
+
+- 真实 `pred -> FM loss -> backward` 本身可以通过；
+- 只要 LoRA adapter 分支内部禁用 autocast 并保持 fp32 compute，FM loss 不会复现此前 SIGFPE；
+- 在 `PC_LORA_DETACH_BASE_OUT=1` 和 `PC_LORA_DETACH_INPUT=1` 同时开启时，完整 student forward、FM loss、Accelerate backward 都是健康的；
+- 因此问题进一步集中在：去掉 detach 后，真实训练图中 LoRA 梯度是否能安全穿回 Wan block 的上游 / frozen base 分支。
+
+### 30.3 下一步：先去掉 LoRA input detach，保留 base output detach
+
+下一轮建议只去掉：
+
+```text
+PC_LORA_DETACH_INPUT=1
+```
+
+但暂时保留：
+
+```text
+PC_LORA_DETACH_BASE_OUT=1
+PC_LORA_DISABLE_AUTOCAST=1
+PC_FORCE_LORA_FP32=1
+```
+
+这样可以单独验证：
+
+```text
+真实 FM loss -> LoRA adapter fp32 backward -> LoRA input 上游真实 Wan graph
+```
+
+是否健康。
+
+判据：
+
+- 如果通过，说明 LoRA 梯度穿回上游 Wan graph 没问题，下一轮再去掉 `PC_LORA_DETACH_BASE_OUT=1`；
+- 如果失败，说明 base output branch 还没进入 backward 时，仅 LoRA input 的上游真实 graph 就能触发 SIGFPE，需要继续按 block 内 attention / FFN / cam path 二分。
