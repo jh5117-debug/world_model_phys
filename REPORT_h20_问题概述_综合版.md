@@ -4590,3 +4590,99 @@ PC_FORCE_SDPA_MATH=1
 
 - 如果通过，说明禁用 TF32 也不是必要条件；
 - 如果失败，则说明 LoRA fp32 compute 在 H20 上还需要避开 TF32 matmul 路径，后续正式修复需保留 `PC_DISABLE_TF32=1` 或等效 matmul precision 设置。
+
+## 35. 2026-04-18 15:45 TF32 default 结果：禁用 TF32 不是必要条件
+
+### 35.1 本轮实验配置和结果
+
+本轮去掉了：
+
+```text
+PC_DISABLE_TF32=1
+```
+
+保留核心修复候选：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+同时仍保留 attention 隔离开关：
+
+```text
+PC_FORCE_SDPA_FALLBACK=1
+PC_FORCE_SDPA_MATH=1
+```
+
+LoRA 应用日志确认仍是最小 LoRA 修复配置：
+
+```text
+detach_base_out=False
+detach_input=False
+local_loss_probe=False
+clone_input=False
+clone_hidden=False
+trace_input_meta=False
+disable_autocast=True
+```
+
+训练结果：
+
+```text
+[PHASE] label=after_student_forward ... pred=shape(16, 5, 40, 72) dtype=torch.float32 ... requires_grad=True
+[PHASE] label=after_fm_loss ... loss_fm=0.0320678 loss_fm_finite=True
+[PHASE] label=before_backward ... loss_total=0.0320678 loss_total_finite=True
+[PHASE] label=after_backward ...
+[PROGRESS] epoch=1/5 global_step=1/8350 micro_step=1 ...
+[MEM PROBE] reached max_train_micro_steps=1 global_step=1 micro_step=1 ... exiting before checkpoint/validation
+```
+
+本轮没有出现 `Fatal Python error: Floating point exception`。
+
+### 35.2 新结论
+
+可以排除：
+
+```text
+PC_DISABLE_TF32=1
+```
+
+是必要修复。TF32 默认状态下，只要 LoRA adapter 分支保持 fp32 compute 并禁用 autocast，完整 FM backward 图仍然通过。
+
+当前最小有效修复候选仍然是：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+还没有排除的隔离项是：
+
+```text
+PC_FORCE_SDPA_FALLBACK=1
+PC_FORCE_SDPA_MATH=1
+```
+
+### 35.3 下一步：去掉 PC_FORCE_SDPA_MATH，保留 SDPA fallback
+
+下一轮建议去掉：
+
+```text
+PC_FORCE_SDPA_MATH=1
+```
+
+保留：
+
+```text
+PC_FORCE_SDPA_FALLBACK=1
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+这样仍然不使用 Wan/flash-attn 的原始 `flash_attention`，但允许 PyTorch SDPA 自己选择 backend。
+
+判据：
+
+- 如果通过，说明强制 SDPA math backend 不是必要条件；
+- 如果失败，则说明 PyTorch SDPA 非 math backend 仍可能触发问题，后续需要保留 `PC_FORCE_SDPA_MATH=1`。
