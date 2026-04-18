@@ -4317,3 +4317,94 @@ WANDB_MODE=disabled
 
 - 如果通过，下一步去掉 `PC_LORA_DETACH_BASE_OUT=1`；
 - 如果失败，说明仅 LoRA input 上游真实 graph 进入 backward 时仍会触发问题，需要继续按 block 内模块二分。
+
+## 32. 2026-04-18 15:32 no-input-detach 结果：LoRA 梯度穿回上游 Wan graph 通过
+
+### 32.1 本轮实验配置和结果
+
+本轮禁用了 W&B，并重复上一轮因 W&B timeout 未完成的 no-input-detach 实验：
+
+```text
+WANDB_MODE=disabled
+PC_DISABLE_WANDB=1
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+PC_LORA_DETACH_BASE_OUT=1
+PC_LORA_DETACH_INPUT 未设置
+PC_LORA_INPUT_CONTIGUOUS_CLONE=1
+PC_LORA_HIDDEN_CONTIGUOUS_CLONE=1
+PC_LORA_TRACE_INPUT_META=1
+```
+
+日志首先确认 W&B 已被成功跳过：
+
+```text
+PC_DISABLE_WANDB/WANDB_MODE disabled: skipping W&B tracker initialization
+```
+
+LoRA 应用日志确认本轮确实没有 detach input：
+
+```text
+detach_base_out=True
+detach_input=False
+local_loss_probe=False
+disable_autocast=True
+```
+
+训练图结果：
+
+```text
+[PHASE] label=after_student_forward ... pred=shape(16, 5, 40, 72) dtype=torch.float32 ... requires_grad=True
+[PHASE] label=after_fm_loss ... loss_fm=0.0320364 loss_fm_finite=True
+[PHASE] label=before_backward ... loss_total=0.0320364 loss_total_finite=True
+[PHASE] label=after_backward ...
+[PROGRESS] epoch=1/5 global_step=1/8350 micro_step=1 ...
+[MEM PROBE] reached max_train_micro_steps=1 global_step=1 micro_step=1 ... exiting before checkpoint/validation
+```
+
+本轮没有出现 `Fatal Python error: Floating point exception`。最后退出仍然是一步探针的正常行为。
+
+### 32.2 新结论
+
+现在可以进一步确认：
+
+- W&B 不是训练图问题，禁用后 probe 可以正常继续；
+- `PC_LORA_DISABLE_AUTOCAST=1` + `PC_FORCE_LORA_FP32=1` 仍然是关键稳定条件；
+- 去掉 `PC_LORA_DETACH_INPUT=1` 后，真实 FM loss 的梯度可以穿过 LoRA adapter，并继续进入 LoRA input 的上游真实 Wan graph；
+- 因此 “LoRA input 上游 graph” 不是当前最小触发点。
+
+当前剩下最值得验证的边界是：
+
+```text
+PC_LORA_DETACH_BASE_OUT=1
+```
+
+也就是 frozen base output 分支是否能完整进入 backward 图。
+
+### 32.3 下一步：去掉 base output detach，验证完整 FM backward 图
+
+下一轮去掉：
+
+```text
+PC_LORA_DETACH_BASE_OUT=1
+```
+
+同时继续不设置：
+
+```text
+PC_LORA_DETACH_INPUT=1
+```
+
+保留：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+PC_FORCE_SDPA_FALLBACK=1
+PC_FORCE_SDPA_MATH=1
+```
+
+判据：
+
+- 如果通过，说明完整 FM backward 图在 LoRA fp32 compute 下已经可以工作，后续再移除 clone/trace 等诊断开关，进入更接近正式训练的验证；
+- 如果失败，则说明 base output 分支进入 backward 后仍有触发点，需要继续按 Wan block 内 self-attn / cross-attn / FFN / cam 分支二分。
