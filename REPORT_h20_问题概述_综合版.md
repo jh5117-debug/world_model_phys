@@ -5084,11 +5084,11 @@ IDE 当前打开的是本地/另一份镜像：
 
 ### 39.5 下一步
 
-下一轮建议在最小修复固定后，先重新打开 TRD backward，但仍保留 W&B disabled，观察是否还有新的 TRD/teacher 相关问题：
+下一轮建议在最小修复固定后，先重新打开完整 TRD backward，但仍保留 W&B disabled，观察是否还有新的 TRD/teacher 相关问题：
 
 ```text
 PC_FORCE_LORA_FP32=1
 PC_LORA_DISABLE_AUTOCAST=1
---trd_backward_mode both
+--trd_backward_mode full
 --max_train_micro_steps 3
 ```
