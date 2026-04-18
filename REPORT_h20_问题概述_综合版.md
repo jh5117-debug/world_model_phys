@@ -3774,3 +3774,68 @@ PC_DISABLE_TF32=1 + PC_LORA_LOCAL_LOSS=1
 
 - 如果禁用 TF32 后 local loss 通过，说明问题很可能是 H20 + 当前 PyTorch/CUDA 的 TF32/cublasLt matmul backward 路径，直接修复方向就是训练时禁用 TF32；
 - 如果禁用 TF32 后 local loss 仍炸，再跑 `PC_LORA_PARAM_ONLY_LOSS=1`；若 param-only 通过，则进一步坐实 LoRA `Linear/mm/addmm` backward 是触发点；若 param-only 也炸，再继续查 hooks / Accelerate backward / optimizer wrapper。
+
+## 25. 2026-04-18 14:38 no-TF32 local loss 结果：TF32 不是充分根因
+
+### 25.1 本轮实验配置和结果
+
+本轮在上一轮 `PC_LORA_LOCAL_LOSS=1` 基础上加入：
+
+```text
+PC_DISABLE_TF32=1
+```
+
+日志确认：
+
+```text
+PC_DISABLE_TF32=1: disabled CUDA TF32 matmul/cudnn paths (matmul.allow_tf32=False, cudnn.allow_tf32=False)
+```
+
+同时 local loss 仍然生效：
+
+```text
+local_loss_probe=True
+[PHASE] label=lora_local_loss_probe ... loss_lora_local=0.0472017 loss_lora_local_finite=True
+[PHASE] label=before_backward ... loss_total=0.0472017 loss_total_finite=True
+Fatal Python error: Floating point exception
+```
+
+### 25.2 新结论
+
+禁用 TF32 后仍然 `SIGFPE`，所以当前不能把问题简单归因为 TF32 matmul 精度路径。剩余嫌疑继续集中在：
+
+```text
+LoRA local loss 的 autograd graph
+-> LoRA Linear/mm/addmm backward
+-> 或 backward hook / Accelerate backward wrapper / CUDA runtime 组合
+```
+
+### 25.3 下一步更干净的参数级 probe
+
+代码继续加入：
+
+```text
+PC_LORA_PARAM_ONLY_SKIP_FORWARD=1
+```
+
+这个开关会在 `training_step` 开头直接返回一个只依赖 LoRA 参数本身的 tiny loss：
+
+```text
+LoRA parameter
+-> mean / square mean
+-> backward
+```
+
+它会跳过：
+
+- VAE encode；
+- T5 encode；
+- Wan student forward；
+- LoRA A/B activation matmul；
+- FM loss；
+- TRD loss。
+
+判据：
+
+- 如果 `PC_LORA_PARAM_ONLY_SKIP_FORWARD=1` 可以通过，则说明只对 LoRA 参数做普通 autograd backward 是健康的，问题需要 LoRA `Linear/mm/addmm` activation backward 才触发；
+- 如果它仍然 `SIGFPE`，那就说明问题已经小到“参数本身的 backward / hook / Accelerate backward / 当前 PyTorch 环境”层面，需要继续用 no-hook、plain `loss.backward()`、toy tensor 脚本来切。
