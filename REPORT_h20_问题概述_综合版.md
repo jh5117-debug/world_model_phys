@@ -4408,3 +4408,94 @@ PC_FORCE_SDPA_MATH=1
 
 - 如果通过，说明完整 FM backward 图在 LoRA fp32 compute 下已经可以工作，后续再移除 clone/trace 等诊断开关，进入更接近正式训练的验证；
 - 如果失败，则说明 base output 分支进入 backward 后仍有触发点，需要继续按 Wan block 内 self-attn / cross-attn / FFN / cam 分支二分。
+
+## 33. 2026-04-18 15:37 full-graph 结果：完整 FM backward 图通过
+
+### 33.1 本轮实验配置和结果
+
+本轮去掉了最后一个 detach：
+
+```text
+PC_LORA_DETACH_BASE_OUT 未设置
+PC_LORA_DETACH_INPUT 未设置
+```
+
+保留核心修复候选和诊断开关：
+
+```text
+WANDB_MODE=disabled
+PC_DISABLE_WANDB=1
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+PC_LORA_INPUT_CONTIGUOUS_CLONE=1
+PC_LORA_HIDDEN_CONTIGUOUS_CLONE=1
+PC_LORA_TRACE_INPUT_META=1
+PC_FORCE_SDPA_FALLBACK=1
+PC_FORCE_SDPA_MATH=1
+```
+
+LoRA 应用日志确认本轮已经是完整图：
+
+```text
+detach_base_out=False
+detach_input=False
+local_loss_probe=False
+disable_autocast=True
+```
+
+训练结果：
+
+```text
+[PHASE] label=after_student_forward ... pred=shape(16, 5, 40, 72) dtype=torch.float32 ... requires_grad=True
+[PHASE] label=after_fm_loss ... loss_fm=0.0320364 loss_fm_finite=True
+[PHASE] label=before_backward ... loss_total=0.0320364 loss_total_finite=True
+[PHASE] label=after_backward ...
+[PROGRESS] epoch=1/5 global_step=1/8350 micro_step=1 ...
+[MEM PROBE] reached max_train_micro_steps=1 global_step=1 micro_step=1 ... exiting before checkpoint/validation
+```
+
+本轮没有出现 `Fatal Python error: Floating point exception`。最后退出是一步探针的正常行为。
+
+### 33.2 新结论
+
+这是目前最强的修复证据：
+
+```text
+完整 FM backward 图 + LoRA fp32 compute + LoRA 内部禁用 autocast = 通过
+```
+
+因此可以把此前的问题进一步归纳为：
+
+```text
+不是 frozen base 分支本身必炸；
+不是 LoRA input 上游真实 Wan graph 必炸；
+不是 FM loss 必炸；
+不是 SDPA math/fallback 或 flash-attn 单独导致；
+而是 LoRA adapter 分支在真实 Wan autocast bf16 环境下参与 backward 时触发 H20 native SIGFPE。
+```
+
+当前已经可以把 `PC_FORCE_LORA_FP32=1 + PC_LORA_DISABLE_AUTOCAST=1` 视为修复候选，而不是单纯诊断开关。
+
+### 33.3 下一步：撤掉 clone/trace 诊断开关，只保留核心修复
+
+下一轮去掉：
+
+```text
+PC_LORA_INPUT_CONTIGUOUS_CLONE=1
+PC_LORA_HIDDEN_CONTIGUOUS_CLONE=1
+PC_LORA_TRACE_INPUT_META=1
+```
+
+保留：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+PC_FORCE_SDPA_FALLBACK=1
+PC_FORCE_SDPA_MATH=1
+```
+
+判据：
+
+- 如果通过，说明 clone/trace 不是必要修复，LoRA fp32 compute 才是核心；
+- 如果失败，再把 clone 逐个加回，判断是否除了 autocast 以外还需要 contiguous clone。
