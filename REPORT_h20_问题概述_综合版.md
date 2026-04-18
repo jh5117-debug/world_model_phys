@@ -5314,3 +5314,138 @@ max_train_micro_steps=20
 下一步建议去掉 `--max_train_micro_steps`，保持 W&B disabled，先跑一次真实训练流程。这样可以验证 checkpoint/validation 前后的路径。
 
 如果真实训练也稳定，再单独恢复 W&B online。
+
+## 42. 2026-04-18 16:32 real training 运行中：已超过 35 step，训练步稳定
+
+### 42.1 本轮配置
+
+本轮去掉了 `--max_train_micro_steps`，开始真实训练流程。关键修复仍然保留：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+W&B 仍然关闭：
+
+```text
+WANDB_MODE=disabled
+PC_DISABLE_WANDB=1
+```
+
+本轮命令指定了低分辨率/短帧数：
+
+```text
+--num_frames 17
+--height 320
+--width 576
+```
+
+log 中序列几何确认：
+
+```text
+[SEQ GEOM] num_frames=17 latent_grid=(5,40,72) patch_size=(1, 2, 2) seq_len=3600
+```
+
+teacher/student 输入也确认当前视频张量是：
+
+```text
+video=shape(3, 17, 320, 576)
+```
+
+### 42.2 结果
+
+LoRA 配置继续正确：
+
+```text
+lora_dtype=float32
+force_lora_fp32=True
+detach_base_out=False
+detach_input=False
+local_loss_probe=False
+clone_input=False
+clone_hidden=False
+trace_input_meta=False
+disable_autocast=True
+trainable=2572288/18548215872
+```
+
+训练计划：
+
+```text
+epochs=5
+micro_steps_per_epoch=1670
+optimizer_steps_per_epoch=1670
+total_optimizer_steps=8350
+grad_accum=1
+dataset_samples=1670
+world_size=1
+```
+
+真实训练已经超过 20-step probe，并继续到至少 step 35：
+
+```text
+[PROGRESS] epoch=1/5 global_step=20/8350 micro_step=20 ... loss_total=0.0634 loss_fm=0.0629 loss_trd=0.0052
+[PROGRESS] epoch=1/5 global_step=25/8350 micro_step=25 ... loss_total=0.0337 loss_fm=0.0334 loss_trd=0.0024
+[PROGRESS] epoch=1/5 global_step=30/8350 micro_step=30 ... loss_total=0.2223 loss_fm=0.2214 loss_trd=0.0090
+[PROGRESS] epoch=1/5 global_step=35/8350 micro_step=35 ... loss_total=0.0611 loss_fm=0.0610 loss_trd=0.0004
+```
+
+截至 step 35：
+
+- 未出现 `Fatal Python error: Floating point exception`；
+- 未出现 CUDA OOM；
+- 未出现 loss NaN/Inf；
+- peak memory 主要在约 `38.56GiB` 与 `46.18GiB` 两档之间波动；
+- optimizer step 在持续推进，`global_step` 正常增长。
+
+### 42.3 当前判断
+
+对于当前实验规格：
+
+```text
+low model
+17 frames
+320 x 576
+1 GPU
+TRD full backward
+LoRA block_start=39
+```
+
+原先遇到的训练步 SIGFPE/OOM 问题已经解决或规避。
+
+LoRA 训练路径也已经恢复到可训练状态：
+
+```text
+trainable_tensors=28
+trainable_params=2572288
+after_backward 正常
+optimizer step 正常推进
+```
+
+这说明已经不再是“LoRA 完全没有进入训练”的状态。
+
+### 42.4 仍需最后确认的边界
+
+还不能说整个训练任务 100% 完成验证，因为目前尚未观察到：
+
+- 第一次 checkpoint 保存成功；
+- validation 成功；
+- W&B online 恢复后成功初始化与同步；
+- 更高规格配置，例如默认 `81 frames / 480 x 832`。
+
+### 42.5 关于 log 文件名
+
+本轮命令末尾仍然出现了多余尾巴：
+
+```text
+2>&1 | tee logs/train_trd_v1_low_real.loge \se \ull \
+```
+
+这会写到 `logs/train_trd_v1_low_real.loge`，不是预期的：
+
+```text
+logs/train_trd_v1_low_real.log
+```
+
+终端输出本身是有效训练结果；后续建议复制命令时删除 `\se \ull \` 尾巴，并固定使用干净的 `tee logs/train_trd_v1_low_real.log`。
