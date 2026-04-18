@@ -4076,3 +4076,94 @@ out_dtype=torch.float32
 
 - 如果 `PC_LORA_DISABLE_AUTOCAST=1` 后通过，修复方向就非常明确：LoRA adapter 分支必须在 fp32 下计算，至少 H20 当前环境不能用 bf16 autocast LoRA backward；
 - 如果仍然 `SIGFPE`，再按真实 LoRA module 单独开关 / 替换真实 activation 数值继续二分。
+
+## 29. 2026-04-18 15:02 LoRA disable autocast 结果：真实 Wan forward local-loss backward 首次通过
+
+### 29.1 本轮实验配置和结果
+
+本轮在上一轮 real activation clone 的基础上继续加入：
+
+```text
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+完整关键开关为：
+
+```text
+PC_DISABLE_TF32=1
+PC_FORCE_SDPA_FALLBACK=1
+PC_FORCE_SDPA_MATH=1
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+PC_LORA_DETACH_BASE_OUT=1
+PC_LORA_DETACH_INPUT=1
+PC_LORA_LOCAL_LOSS=1
+PC_LORA_INPUT_CONTIGUOUS_CLONE=1
+PC_LORA_HIDDEN_CONTIGUOUS_CLONE=1
+PC_LORA_TRACE_INPUT_META=1
+```
+
+日志确认 LoRA 分支已经不再被外层 bf16 autocast 降精度：
+
+```text
+hidden_dtype=torch.float32
+out_dtype=torch.float32
+disable_autocast=True
+```
+
+这次真实 Wan forward + LoRA local loss 成功通过 backward：
+
+```text
+[PHASE] label=lora_local_loss_probe ... loss_lora_local=0.047238 loss_lora_local_finite=True
+[PHASE] label=before_backward ... loss_total=0.047238 loss_total_finite=True
+[PHASE] label=after_backward ...
+[PROGRESS] epoch=1/5 global_step=1/8350 micro_step=1 ...
+[MEM PROBE] reached max_train_micro_steps=1 global_step=1 micro_step=1 ... exiting before checkpoint/validation
+```
+
+注意最后的退出不是崩溃，而是一步探针的正常停止；本轮没有出现 `Fatal Python error: Floating point exception`。
+
+### 29.2 新结论
+
+到目前为止，已经确认这些路径是好的，不能单独解释 `SIGFPE`：
+
+- 单纯 LoRA 参数参与 backward；
+- Accelerate 的 `accelerator.backward()`；
+- `lora_b.weight` hook；
+- 14 个 LoRA module 的合成 fp32 `lora_A -> lora_B` matmul backward；
+- real Wan activation 的 contiguous clone；
+- 禁用 TF32；
+- 禁用 flash-attn 并强制 SDPA math backend；
+- detached base output / detached LoRA input；
+- 真实 Wan forward + LoRA local loss，只要 LoRA 分支内部禁用 autocast 并保持 fp32 compute。
+
+因此当前最强定位是：
+
+```text
+H20 当前环境下，真实 Wan forward 内部的 LoRA adapter 如果被外层 autocast 成 bf16，
+其 backward 会触发 native SIGFPE；LoRA adapter 改为 fp32 compute 后 local-loss backward 通过。
+```
+
+这个结果已经从“诊断”进入“修复候选”阶段。下一步不再继续 local loss，而是恢复真实 FM loss，保留 `PC_LORA_DISABLE_AUTOCAST=1`，先仍然保留 detach 开关，验证完整 pred -> FM loss -> backward 是否通过。
+
+### 29.3 下一步：恢复真实 FM loss，保留 LoRA fp32 compute
+
+下一轮去掉：
+
+```text
+PC_LORA_LOCAL_LOSS=1
+```
+
+保留：
+
+```text
+PC_LORA_DISABLE_AUTOCAST=1
+PC_FORCE_LORA_FP32=1
+PC_LORA_DETACH_BASE_OUT=1
+PC_LORA_DETACH_INPUT=1
+```
+
+判据：
+
+- 如果通过，说明真实 FM loss 本身没有问题，下一步再去掉 `PC_LORA_DETACH_BASE_OUT=1` / `PC_LORA_DETACH_INPUT=1`，验证完整训练图；
+- 如果仍然 `SIGFPE`，说明除了 LoRA bf16 compute 以外，FM loss 牵回来的某段非 LoRA graph 仍有另一个触发点，需要继续缩小。
