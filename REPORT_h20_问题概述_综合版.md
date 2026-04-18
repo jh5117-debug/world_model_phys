@@ -3680,3 +3680,97 @@ LoRA output -> pred -> FM loss downstream backward
 截至 2026-04-18 14:20，当前 `SIGFPE` 已经不再像是 DDP、TRD、checkpoint、flash-attn、LoRA bf16 或 LoRA 上游传播问题；最强假设已经变成：
 
 > FM loss 从 `pred` 往回拉时，LoRA 输出之后的 Wan downstream backward 路径中存在某个 H20 上不稳定的 native op。下一步用 `PC_LORA_LOCAL_LOSS=1` 把 FM / pred 下游路径切掉，验证 LoRA 最小 backward 是否本身健康。
+
+## 24. 2026-04-18 14:30 LoRA local loss 结果：问题继续缩到 LoRA matmul backward
+
+### 24.1 本轮实验配置
+
+H20 上运行的关键开关：
+
+```text
+PC_FORCE_SDPA_FALLBACK=1
+PC_FORCE_SDPA_MATH=1
+PC_FORCE_LORA_FP32=1
+PC_LORA_DETACH_BASE_OUT=1
+PC_LORA_DETACH_INPUT=1
+PC_LORA_LOCAL_LOSS=1
+```
+
+同时：
+
+```text
+distributed_type=DistributedType.NO
+gradient_checkpointing=False
+checkpoint_modes=unpatched:40
+lora_modules=14
+```
+
+日志确认 local loss probe 生效：
+
+```text
+local_loss_probe=True
+[PHASE] label=lora_local_loss_probe ... loss_lora_local=0.047227 loss_lora_local_finite=True
+[PHASE] label=before_backward ... loss_total=0.047227 loss_total_finite=True
+Fatal Python error: Floating point exception
+```
+
+### 24.2 新结论
+
+这轮非常关键：`PC_LORA_LOCAL_LOSS=1` 已经不再使用 FM MSE loss，也不再需要从 `pred` 的 downstream path 往回传。loss 直接来自 LoRA forward 内部的：
+
+```text
+lora_hidden.float().square().mean() + lora_out.float().mean()
+```
+
+并且本轮同时打开了：
+
+```text
+detach_base_out=True
+detach_input=True
+force_lora_fp32=True
+```
+
+所以现在可以把上一节的“LoRA output -> pred/FM downstream”假设再往下修正：当前最小触发面已经非常接近 LoRA 分支自身的 CUDA matmul backward。
+
+目前剩余最可疑区域变成：
+
+```text
+detached activation
+-> LoRA A fp32 linear
+-> LoRA B fp32 linear
+-> local scalar loss
+-> backward native CUDA op
+```
+
+这意味着：
+
+- FM loss / `pred` downstream path 不是必要条件；
+- frozen Wan base branch 不是必要条件；
+- LoRA 输入向更早 Wan block 传播不是必要条件；
+- LoRA bf16 不是必要条件；
+- 更可疑的是 H20 上某个 `Linear/mm/addmm` backward、TF32/cublasLt 路径、参数 hook 或 Accelerate backward wrapper 与当前环境组合的问题。
+
+### 24.3 已加入的下一步 probe
+
+代码已经继续加入两个更小的开关：
+
+```text
+PC_DISABLE_TF32=1
+PC_LORA_PARAM_ONLY_LOSS=1
+```
+
+其中：
+
+- `PC_DISABLE_TF32=1` 会设置 `torch.backends.cuda.matmul.allow_tf32=False`、`torch.backends.cudnn.allow_tf32=False`，并把 float32 matmul precision 设为 `highest`，用于排查 fp32 LoRA matmul 是否实际走到 TF32 / cublasLt 路径；
+- `PC_LORA_PARAM_ONLY_LOSS=1` 会用只依赖 LoRA 参数本身的 tiny loss，不经过任何 LoRA activation matmul，用来判断“只要 backward 到 LoRA 参数就会炸”还是“必须经过 LoRA matmul backward 才会炸”。
+
+下一步优先跑：
+
+```text
+PC_DISABLE_TF32=1 + PC_LORA_LOCAL_LOSS=1
+```
+
+判据：
+
+- 如果禁用 TF32 后 local loss 通过，说明问题很可能是 H20 + 当前 PyTorch/CUDA 的 TF32/cublasLt matmul backward 路径，直接修复方向就是训练时禁用 TF32；
+- 如果禁用 TF32 后 local loss 仍炸，再跑 `PC_LORA_PARAM_ONLY_LOSS=1`；若 param-only 通过，则进一步坐实 LoRA `Linear/mm/addmm` backward 是触发点；若 param-only 也炸，再继续查 hooks / Accelerate backward / optimizer wrapper。

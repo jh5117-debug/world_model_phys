@@ -51,6 +51,7 @@ from physical_consistency.trainers.stage1_components import (
     apply_gradient_checkpointing,
     build_dataloader,
     collect_lora_local_loss,
+    collect_lora_parameter_loss,
     compute_scheduler_total_steps,
     export_pretrained_state_dict,
     extract_lora_state_dict,
@@ -67,6 +68,25 @@ LOGGER = logging.getLogger(__name__)
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _configure_cuda_probe_flags() -> None:
+    """Apply process-wide CUDA debug toggles before model construction."""
+
+    if not _env_flag("PC_DISABLE_TF32"):
+        return
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    try:
+        torch.set_float32_matmul_precision("highest")
+    except Exception:
+        LOGGER.debug("Failed to set float32 matmul precision", exc_info=True)
+    LOGGER.info(
+        "PC_DISABLE_TF32=1: disabled CUDA TF32 matmul/cudnn paths "
+        "(matmul.allow_tf32=%s, cudnn.allow_tf32=%s)",
+        torch.backends.cuda.matmul.allow_tf32,
+        torch.backends.cudnn.allow_tf32,
+    )
 
 
 def should_apply_student_gradient_checkpointing(args: argparse.Namespace) -> bool:
@@ -1517,7 +1537,10 @@ class TRDTrainingRunner:
 
         pred_rest = pred[:, 1:]
         target_rest = target[:, 1:]
-        if _env_flag("PC_LORA_LOCAL_LOSS"):
+        if _env_flag("PC_LORA_PARAM_ONLY_LOSS"):
+            loss_fm = collect_lora_parameter_loss(self.model_bundle)
+            self._trace_training_phase("lora_param_only_loss_probe", scalars={"loss_lora_param": loss_fm})
+        elif _env_flag("PC_LORA_LOCAL_LOSS"):
             loss_fm = collect_lora_local_loss(self.model_bundle)
             self._trace_training_phase("lora_local_loss_probe", scalars={"loss_lora_local": loss_fm})
         else:
@@ -2550,6 +2573,7 @@ def main() -> None:
     else:
         _require_existing_path("teacher_checkpoint_dir", args.teacher_checkpoint_dir)
     configure_logging(Path(args.output_root) / "logs" / f"train_{args.experiment_name}_{args.model_type}.log")
+    _configure_cuda_probe_flags()
     set_seed(args.seed)
 
     runner = TRDTrainingRunner(args)

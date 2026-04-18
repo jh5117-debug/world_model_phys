@@ -1375,6 +1375,19 @@ def collect_lora_local_loss(model: torch.nn.Module) -> torch.Tensor:
     return torch.stack(losses).mean()
 
 
+def collect_lora_parameter_loss(model: torch.nn.Module) -> torch.Tensor:
+    """Return a tiny loss that touches only LoRA parameters, no matmul graph."""
+
+    losses: list[torch.Tensor] = []
+    for _, module in _iter_lora_modules(model):
+        for parameter in (module.lora_A.weight, module.lora_B.weight):
+            p = parameter.float()
+            losses.append(p.mean() + 1.0e-6 * p.square().mean())
+    if not losses:
+        raise RuntimeError("PC_LORA_PARAM_ONLY_LOSS=1 but no LoRA parameters were found")
+    return torch.stack(losses).mean()
+
+
 def extract_lora_state_dict(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     """Return just the trainable LoRA adapter tensors for one model."""
     return {
