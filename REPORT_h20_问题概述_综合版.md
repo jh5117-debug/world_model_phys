@@ -3912,3 +3912,75 @@ PC_LORA_SYNTHETIC_TOKENS=3600
 
 - 如果合成 LoRA matmul 也 `SIGFPE`，则基本坐实 H20/当前 PyTorch 环境中的 LoRA `Linear/mm/addmm` backward 是触发点，可以继续按 module index 二分；
 - 如果合成 LoRA matmul 通过，则纯 LoRA matmul 本身没问题，问题依赖真实 Wan forward 产出的 activation 形状/stride/dtype/数值分布或周边 autograd context。
+
+## 27. 2026-04-18 14:48 synthetic LoRA matmul 结果：纯 LoRA matmul backward 健康
+
+### 27.1 本轮实验配置和结果
+
+本轮使用：
+
+```text
+PC_DISABLE_TF32=1
+PC_FORCE_LORA_FP32=1
+PC_LORA_SYNTHETIC_MATMUL_SKIP_FORWARD=1
+PC_LORA_SYNTHETIC_MODULE_START=0
+PC_LORA_SYNTHETIC_MODULE_LIMIT=14
+PC_LORA_SYNTHETIC_TOKENS=3600
+```
+
+日志确认 14 个最后 block LoRA module 全部参与合成 matmul：
+
+```text
+PC_LORA_SYNTHETIC_MATMUL_LOSS=1: modules=0:model.blocks.39.self_attn.q ... 13:model.blocks.39.cam_shift_layer ... batch=1 tokens=3600 dtype=float32
+[PHASE] label=lora_synthetic_matmul_skip_forward_probe ... loss_lora_synthetic=0.333384 loss_lora_synthetic_finite=True
+[PHASE] label=before_backward ... loss_total=0.333384 loss_total_finite=True
+[PHASE] label=after_backward
+[MEM PROBE] reached max_train_micro_steps=1 global_step=1 micro_step=1
+```
+
+### 27.2 新结论
+
+这轮进一步排除了“LoRA Linear/mm/addmm backward 本身在 H20 上必炸”。现在已经确认健康的路径包括：
+
+- LoRA 参数级 backward；
+- 14 个 LoRA module 的合成 fp32 `lora_A -> lora_B` matmul backward；
+- `lora_b.weight` hook；
+- `accelerator.backward()`；
+- 禁用 TF32 后的合成 LoRA matmul。
+
+因此，之前真实 forward + local loss 的 `SIGFPE` 更像依赖真实 Wan forward 产出的 activation 条件，例如：
+
+- activation stride / contiguity / storage layout；
+- activation 真实数值分布；
+- real Wan forward 留下的 autograd context；
+- 某个真实 LoRA 输入不是合成 probe 覆盖的标准 contiguous layout。
+
+注意：`_trace_training_phase` 已经在每个 phase 前执行 `torch.cuda.synchronize()`。因此它不像是普通 forward 异步 CUDA error 延迟到 backward 才暴露；更像是 backward 确实在处理真实 LoRA activation 时触发。
+
+### 27.3 下一步：真实 activation 强制 contiguous clone
+
+代码继续加入：
+
+```text
+PC_LORA_INPUT_CONTIGUOUS_CLONE=1
+PC_LORA_HIDDEN_CONTIGUOUS_CLONE=1
+PC_LORA_TRACE_INPUT_META=1
+```
+
+下一步回到真实 Wan forward + LoRA local loss，但在 LoRA 分支里强制：
+
+```text
+real Wan activation
+-> detach
+-> fp32
+-> contiguous clone
+-> lora_A
+-> hidden contiguous clone
+-> lora_B
+-> local loss
+```
+
+判据：
+
+- 如果这轮通过，说明真实 activation 的 stride/storage/contiguity 是触发点，后续修复可在 LoRA 分支固定 clone/contiguous；
+- 如果仍然 `SIGFPE`，则问题更可能依赖真实 activation 数值分布或真实 forward 周边上下文，需要继续记录每个 LoRA module 的 input meta，并按 module 关闭/替换真实 activation 二分。

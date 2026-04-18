@@ -1192,7 +1192,12 @@ class LoRALinear(torch.nn.Module):
         self.detach_base_out = _env_flag("PC_LORA_DETACH_BASE_OUT")
         self.detach_input = _env_flag("PC_LORA_DETACH_INPUT")
         self.record_local_loss = _env_flag("PC_LORA_LOCAL_LOSS")
+        self.clone_input = _env_flag("PC_LORA_INPUT_CONTIGUOUS_CLONE")
+        self.clone_hidden = _env_flag("PC_LORA_HIDDEN_CONTIGUOUS_CLONE")
+        self.trace_input_meta = _env_flag("PC_LORA_TRACE_INPUT_META")
         self._pc_lora_local_losses: list[torch.Tensor] = []
+        self._pc_lora_name = "<unregistered>"
+        self._pc_lora_trace_logged = False
         self.dropout = torch.nn.Dropout(float(dropout)) if dropout > 0 else torch.nn.Identity()
         lora_dtype = torch.float32 if _env_flag("PC_FORCE_LORA_FP32") else base.weight.dtype
         self.lora_A = torch.nn.Linear(
@@ -1216,11 +1221,41 @@ class LoRALinear(torch.nn.Module):
 
     def _lora_forward(self, x: torch.Tensor, *, out_dtype: torch.dtype) -> torch.Tensor:
         lora_dtype = self.lora_A.weight.dtype
+        raw_x = x
         if self.detach_input:
             x = x.detach()
         lora_input = self.dropout(x.to(dtype=lora_dtype))
+        if self.clone_input:
+            lora_input = lora_input.contiguous().clone()
         lora_hidden = self.lora_A(lora_input)
+        if self.clone_hidden:
+            lora_hidden = lora_hidden.contiguous().clone()
         lora_out = self.lora_B(lora_hidden)
+        if self.trace_input_meta and not self._pc_lora_trace_logged and _should_log_rank_zero():
+            LOGGER.info(
+                "PC_LORA_TRACE_INPUT_META name=%s raw_shape=%s raw_dtype=%s raw_stride=%s raw_contig=%s raw_requires_grad=%s input_shape=%s input_dtype=%s input_stride=%s input_contig=%s hidden_shape=%s hidden_dtype=%s hidden_stride=%s hidden_contig=%s out_shape=%s out_dtype=%s out_stride=%s out_contig=%s clone_input=%s clone_hidden=%s",
+                self._pc_lora_name,
+                tuple(raw_x.shape),
+                raw_x.dtype,
+                raw_x.stride(),
+                raw_x.is_contiguous(),
+                raw_x.requires_grad,
+                tuple(lora_input.shape),
+                lora_input.dtype,
+                lora_input.stride(),
+                lora_input.is_contiguous(),
+                tuple(lora_hidden.shape),
+                lora_hidden.dtype,
+                lora_hidden.stride(),
+                lora_hidden.is_contiguous(),
+                tuple(lora_out.shape),
+                lora_out.dtype,
+                lora_out.stride(),
+                lora_out.is_contiguous(),
+                self.clone_input,
+                self.clone_hidden,
+            )
+            self._pc_lora_trace_logged = True
         if self.record_local_loss:
             self._pc_lora_local_losses.append(lora_hidden.float().square().mean() + lora_out.float().mean())
         if lora_out.dtype != out_dtype:
@@ -1313,6 +1348,7 @@ def apply_lora_to_wan_model(
             chunk_size=lora_chunk_size,
             merge_mode=merge_mode,
         )
+        parent._modules[child_name]._pc_lora_name = full_name
         replaced += 1
 
     if replaced == 0:
@@ -1326,6 +1362,9 @@ def apply_lora_to_wan_model(
     detach_base_out = False
     detach_input = False
     local_loss_probe = False
+    clone_input = False
+    clone_hidden = False
+    trace_input_meta = False
     for _, module in _iter_lora_modules(model):
         module.lora_A.weight.requires_grad = True
         module.lora_B.weight.requires_grad = True
@@ -1334,6 +1373,9 @@ def apply_lora_to_wan_model(
         detach_base_out = detach_base_out or module.detach_base_out
         detach_input = detach_input or module.detach_input
         local_loss_probe = local_loss_probe or module.record_local_loss
+        clone_input = clone_input or module.clone_input
+        clone_hidden = clone_hidden or module.clone_hidden
+        trace_input_meta = trace_input_meta or module.trace_input_meta
     for parameter in model.parameters():
         total_params += parameter.numel()
         if parameter.requires_grad:
@@ -1353,10 +1395,13 @@ def apply_lora_to_wan_model(
         "detach_base_out": detach_base_out,
         "detach_input": detach_input,
         "local_loss_probe": local_loss_probe,
+        "clone_input": clone_input,
+        "clone_hidden": clone_hidden,
+        "trace_input_meta": trace_input_meta,
     }
     if _should_log_rank_zero():
         LOGGER.info(
-            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, block_start=%s, lora_chunk_size=%s, merge_mode=%s, lora_dtype=%s, force_lora_fp32=%s, detach_base_out=%s, detach_input=%s, local_loss_probe=%s, trainable=%s/%s)",
+            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, block_start=%s, lora_chunk_size=%s, merge_mode=%s, lora_dtype=%s, force_lora_fp32=%s, detach_base_out=%s, detach_input=%s, local_loss_probe=%s, clone_input=%s, clone_hidden=%s, trace_input_meta=%s, trainable=%s/%s)",
             replaced,
             model_name,
             rank,
@@ -1370,6 +1415,9 @@ def apply_lora_to_wan_model(
             detach_base_out,
             detach_input,
             local_loss_probe,
+            clone_input,
+            clone_hidden,
+            trace_input_meta,
             trainable_params,
             total_params,
         )
