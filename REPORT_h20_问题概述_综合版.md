@@ -4499,3 +4499,94 @@ PC_FORCE_SDPA_MATH=1
 
 - 如果通过，说明 clone/trace 不是必要修复，LoRA fp32 compute 才是核心；
 - 如果失败，再把 clone 逐个加回，判断是否除了 autocast 以外还需要 contiguous clone。
+
+## 34. 2026-04-18 15:41 minimal 结果：clone/trace 不是必要修复
+
+### 34.1 本轮实验配置和结果
+
+本轮撤掉了上一轮的 LoRA clone/trace 诊断开关：
+
+```text
+PC_LORA_INPUT_CONTIGUOUS_CLONE 未设置
+PC_LORA_HIDDEN_CONTIGUOUS_CLONE 未设置
+PC_LORA_TRACE_INPUT_META 未设置
+```
+
+保留核心修复候选：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+同时仍保留环境隔离开关：
+
+```text
+PC_DISABLE_TF32=1
+PC_FORCE_SDPA_FALLBACK=1
+PC_FORCE_SDPA_MATH=1
+WANDB_MODE=disabled
+PC_DISABLE_WANDB=1
+```
+
+LoRA 应用日志确认本轮是完整图且没有 clone/trace：
+
+```text
+detach_base_out=False
+detach_input=False
+local_loss_probe=False
+clone_input=False
+clone_hidden=False
+trace_input_meta=False
+disable_autocast=True
+```
+
+训练结果：
+
+```text
+[PHASE] label=after_student_forward ... pred=shape(16, 5, 40, 72) dtype=torch.float32 ... requires_grad=True
+[PHASE] label=after_fm_loss ... loss_fm=0.0320364 loss_fm_finite=True
+[PHASE] label=before_backward ... loss_total=0.0320364 loss_total_finite=True
+[PHASE] label=after_backward ...
+[PROGRESS] epoch=1/5 global_step=1/8350 micro_step=1 ...
+[MEM PROBE] reached max_train_micro_steps=1 global_step=1 micro_step=1 ... exiting before checkpoint/validation
+```
+
+本轮没有出现 `Fatal Python error: Floating point exception`。
+
+### 34.2 新结论
+
+现在可以排除：
+
+- `PC_LORA_INPUT_CONTIGUOUS_CLONE=1` 是必要修复；
+- `PC_LORA_HIDDEN_CONTIGUOUS_CLONE=1` 是必要修复；
+- `PC_LORA_TRACE_INPUT_META=1` 对行为有保护作用。
+
+也就是说，clone/trace 只是诊断辅助，不是修复关键。当前最小有效修复候选进一步收敛为：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+### 34.3 下一步：去掉 PC_DISABLE_TF32
+
+下一轮建议去掉：
+
+```text
+PC_DISABLE_TF32=1
+```
+
+保留：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+PC_FORCE_SDPA_FALLBACK=1
+PC_FORCE_SDPA_MATH=1
+```
+
+判据：
+
+- 如果通过，说明禁用 TF32 也不是必要条件；
+- 如果失败，则说明 LoRA fp32 compute 在 H20 上还需要避开 TF32 matmul 路径，后续正式修复需保留 `PC_DISABLE_TF32=1` 或等效 matmul precision 设置。
