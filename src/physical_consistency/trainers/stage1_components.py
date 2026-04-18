@@ -1178,6 +1178,7 @@ class LoRALinear(torch.nn.Module):
         self.scaling = float(self.alpha) / float(self.rank)
         self.chunk_size = int(chunk_size) if chunk_size is not None and chunk_size > 0 else None
         self.merge_mode = merge_mode
+        self.detach_base_out = _env_flag("PC_LORA_DETACH_BASE_OUT")
         self.dropout = torch.nn.Dropout(float(dropout)) if dropout > 0 else torch.nn.Identity()
         lora_dtype = torch.float32 if _env_flag("PC_FORCE_LORA_FP32") else base.weight.dtype
         self.lora_A = torch.nn.Linear(
@@ -1209,13 +1210,15 @@ class LoRALinear(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         base_out = self.base(x)
+        if self.detach_base_out:
+            base_out = base_out.detach()
         if self.chunk_size is None or x.ndim < 3 or x.shape[1] <= self.chunk_size:
             lora_out = self._lora_forward(x, out_dtype=base_out.dtype)
-            if self.merge_mode == "out_of_place":
+            if self.merge_mode == "out_of_place" or self.detach_base_out:
                 return base_out + lora_out * self.scaling
             return base_out.add_(lora_out, alpha=self.scaling)
 
-        if self.merge_mode == "out_of_place":
+        if self.merge_mode == "out_of_place" or self.detach_base_out:
             lora_chunks = []
             for start in range(0, x.shape[1], self.chunk_size):
                 stop = min(start + self.chunk_size, x.shape[1])
@@ -1299,11 +1302,13 @@ def apply_lora_to_wan_model(
     trainable_params = 0
     total_params = 0
     lora_dtypes: set[torch.dtype] = set()
+    detach_base_out = False
     for _, module in _iter_lora_modules(model):
         module.lora_A.weight.requires_grad = True
         module.lora_B.weight.requires_grad = True
         lora_dtypes.add(module.lora_A.weight.dtype)
         lora_dtypes.add(module.lora_B.weight.dtype)
+        detach_base_out = detach_base_out or module.detach_base_out
     for parameter in model.parameters():
         total_params += parameter.numel()
         if parameter.requires_grad:
@@ -1320,10 +1325,11 @@ def apply_lora_to_wan_model(
         "merge_mode": merge_mode,
         "lora_dtype": lora_dtype_text,
         "force_lora_fp32": _env_flag("PC_FORCE_LORA_FP32"),
+        "detach_base_out": detach_base_out,
     }
     if _should_log_rank_zero():
         LOGGER.info(
-            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, block_start=%s, lora_chunk_size=%s, merge_mode=%s, lora_dtype=%s, force_lora_fp32=%s, trainable=%s/%s)",
+            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, block_start=%s, lora_chunk_size=%s, merge_mode=%s, lora_dtype=%s, force_lora_fp32=%s, detach_base_out=%s, trainable=%s/%s)",
             replaced,
             model_name,
             rank,
@@ -1334,6 +1340,7 @@ def apply_lora_to_wan_model(
             merge_mode,
             lora_dtype_text,
             _env_flag("PC_FORCE_LORA_FP32"),
+            detach_base_out,
             trainable_params,
             total_params,
         )
