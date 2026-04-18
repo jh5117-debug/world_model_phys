@@ -445,6 +445,7 @@ def test_apply_lora_to_wan_model_replaces_block_linears_and_freezes_base_params(
     assert trainable_names
     assert all(".lora_" in name for name in trainable_names)
     assert "outside.weight" not in trainable_names
+    assert model._pc_lora_config["merge_mode"] == "inplace"
 
 
 def test_lora_linear_chunked_forward_matches_unchunked_and_backprops():
@@ -452,19 +453,51 @@ def test_lora_linear_chunked_forward_matches_unchunked_and_backprops():
     base = torch.nn.Linear(4, 4, bias=False)
     plain = LoRALinear(base, rank=2, alpha=2, dropout=0.0)
     chunked = LoRALinear(torch.nn.Linear(4, 4, bias=False), rank=2, alpha=2, dropout=0.0, chunk_size=2)
+    safe_chunked = LoRALinear(
+        torch.nn.Linear(4, 4, bias=False),
+        rank=2,
+        alpha=2,
+        dropout=0.0,
+        chunk_size=2,
+        merge_mode="out_of_place",
+    )
     chunked.load_state_dict(plain.state_dict())
+    safe_chunked.load_state_dict(plain.state_dict())
 
     x_plain = torch.randn(1, 5, 4, requires_grad=True)
     x_chunked = x_plain.detach().clone().requires_grad_(True)
+    x_safe = x_plain.detach().clone().requires_grad_(True)
 
     out_plain = plain(x_plain)
     out_chunked = chunked(x_chunked)
+    out_safe = safe_chunked(x_safe)
 
     assert torch.allclose(out_plain, out_chunked)
+    assert torch.allclose(out_plain, out_safe)
     out_chunked.sum().backward()
+    out_safe.sum().backward()
     assert x_chunked.grad is not None
     assert chunked.lora_A.weight.grad is not None
     assert chunked.lora_B.weight.grad is not None
+    assert x_safe.grad is not None
+    assert safe_chunked.lora_A.weight.grad is not None
+    assert safe_chunked.lora_B.weight.grad is not None
+
+
+def test_apply_lora_to_wan_model_accepts_out_of_place_merge_mode():
+    model = _TinyLoRAModel(dim=4)
+    apply_lora_to_wan_model(
+        model,
+        model_name="tiny",
+        rank=2,
+        alpha=2,
+        dropout=0.0,
+        merge_mode="out-of-place",
+    )
+
+    assert isinstance(model.blocks[0].linear, LoRALinear)
+    assert model.blocks[0].linear.merge_mode == "out_of_place"
+    assert model._pc_lora_config["merge_mode"] == "out_of_place"
 
 
 def test_lora_state_dict_round_trip_and_merge_export():

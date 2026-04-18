@@ -357,6 +357,7 @@ class LingBotStage1Helper:
                 dropout=getattr(self.args, "student_lora_dropout", 0.0),
                 block_start=getattr(self.args, "student_lora_block_start", 0),
                 lora_chunk_size=getattr(self.args, "student_lora_chunk_size", None),
+                merge_mode=getattr(self.args, "student_lora_merge_mode", "inplace"),
             )
         model.train()
         return model
@@ -1066,15 +1067,20 @@ class LoRALinear(torch.nn.Module):
         alpha: int,
         dropout: float,
         chunk_size: int | None = None,
+        merge_mode: str = "inplace",
     ) -> None:
         super().__init__()
         if rank <= 0:
             raise ValueError(f"LoRA rank must be positive, got {rank}")
+        merge_mode = str(merge_mode).strip().lower().replace("-", "_")
+        if merge_mode not in {"inplace", "out_of_place"}:
+            raise ValueError(f"LoRA merge_mode must be one of inplace, out_of_place; got {merge_mode}")
         self.base = base
         self.rank = int(rank)
         self.alpha = int(alpha)
         self.scaling = float(self.alpha) / float(self.rank)
         self.chunk_size = int(chunk_size) if chunk_size is not None and chunk_size > 0 else None
+        self.merge_mode = merge_mode
         self.dropout = torch.nn.Dropout(float(dropout)) if dropout > 0 else torch.nn.Identity()
         self.lora_A = torch.nn.Linear(
             base.in_features,
@@ -1099,7 +1105,16 @@ class LoRALinear(torch.nn.Module):
         base_out = self.base(x)
         if self.chunk_size is None or x.ndim < 3 or x.shape[1] <= self.chunk_size:
             lora_out = self.lora_B(self.lora_A(self.dropout(x)))
+            if self.merge_mode == "out_of_place":
+                return base_out + lora_out * self.scaling
             return base_out.add_(lora_out, alpha=self.scaling)
+
+        if self.merge_mode == "out_of_place":
+            lora_chunks = []
+            for start in range(0, x.shape[1], self.chunk_size):
+                stop = min(start + self.chunk_size, x.shape[1])
+                lora_chunks.append(self.lora_B(self.lora_A(self.dropout(x[:, start:stop]))))
+            return base_out + torch.cat(lora_chunks, dim=1) * self.scaling
 
         for start in range(0, x.shape[1], self.chunk_size):
             stop = min(start + self.chunk_size, x.shape[1])
@@ -1122,6 +1137,7 @@ def apply_lora_to_wan_model(
     target_prefixes: tuple[str, ...] = ("blocks",),
     block_start: int = 0,
     lora_chunk_size: int | None = None,
+    merge_mode: str = "inplace",
 ) -> None:
     """Replace selected Wan linear layers with standard LoRA adapters."""
 
@@ -1130,6 +1146,9 @@ def apply_lora_to_wan_model(
         raise ValueError(f"LoRA block_start must be non-negative, got {block_start}")
     if lora_chunk_size is not None and lora_chunk_size <= 0:
         lora_chunk_size = None
+    merge_mode = str(merge_mode).strip().lower().replace("-", "_")
+    if merge_mode not in {"inplace", "out_of_place"}:
+        raise ValueError(f"LoRA merge_mode must be one of inplace, out_of_place; got {merge_mode}")
 
     def _block_index(full_name: str) -> int | None:
         parts = full_name.split(".")
@@ -1162,6 +1181,7 @@ def apply_lora_to_wan_model(
             alpha=alpha,
             dropout=dropout,
             chunk_size=lora_chunk_size,
+            merge_mode=merge_mode,
         )
         replaced += 1
 
@@ -1187,10 +1207,11 @@ def apply_lora_to_wan_model(
         "target_prefixes": tuple(target_prefixes),
         "block_start": block_start,
         "lora_chunk_size": lora_chunk_size,
+        "merge_mode": merge_mode,
     }
     if _should_log_rank_zero():
         LOGGER.info(
-            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, block_start=%s, lora_chunk_size=%s, trainable=%s/%s)",
+            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, block_start=%s, lora_chunk_size=%s, merge_mode=%s, trainable=%s/%s)",
             replaced,
             model_name,
             rank,
@@ -1198,6 +1219,7 @@ def apply_lora_to_wan_model(
             dropout,
             block_start,
             lora_chunk_size or "disabled",
+            merge_mode,
             trainable_params,
             total_params,
         )
