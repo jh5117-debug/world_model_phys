@@ -4686,3 +4686,102 @@ PC_LORA_DISABLE_AUTOCAST=1
 
 - 如果通过，说明强制 SDPA math backend 不是必要条件；
 - 如果失败，则说明 PyTorch SDPA 非 math backend 仍可能触发问题，后续需要保留 `PC_FORCE_SDPA_MATH=1`。
+
+## 36. 2026-04-18 15:50 SDPA default 结果：强制 SDPA math 不是必要条件
+
+### 36.1 本轮实验配置和结果
+
+本轮去掉了：
+
+```text
+PC_FORCE_SDPA_MATH=1
+```
+
+保留：
+
+```text
+PC_FORCE_SDPA_FALLBACK=1
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+日志确认仍然 patch 到 SDPA fallback，但没有强制 SDPA math backend：
+
+```text
+PC_FORCE_SDPA_FALLBACK=1: patched wan.modules.attention+wan.modules.model flash_attention -> SDPA fallback
+```
+
+本轮没有出现：
+
+```text
+PC_FORCE_SDPA_MATH=1: forcing PyTorch SDPA math backend
+```
+
+LoRA 应用日志确认仍是最小 LoRA 修复配置：
+
+```text
+detach_base_out=False
+detach_input=False
+local_loss_probe=False
+clone_input=False
+clone_hidden=False
+trace_input_meta=False
+disable_autocast=True
+```
+
+训练结果：
+
+```text
+[PHASE] label=after_student_forward ... pred=shape(16, 5, 40, 72) dtype=torch.float32 ... requires_grad=True
+[PHASE] label=after_fm_loss ... loss_fm=0.0320519 loss_fm_finite=True
+[PHASE] label=before_backward ... loss_total=0.0320519 loss_total_finite=True
+[PHASE] label=after_backward ...
+[PROGRESS] epoch=1/5 global_step=1/8350 micro_step=1 ...
+[MEM PROBE] reached max_train_micro_steps=1 global_step=1 micro_step=1 ... exiting before checkpoint/validation
+```
+
+本轮没有出现 `Fatal Python error: Floating point exception`。
+
+### 36.2 新结论
+
+可以排除：
+
+```text
+PC_FORCE_SDPA_MATH=1
+```
+
+是必要修复。也就是说，在 `PC_FORCE_SDPA_FALLBACK=1` 仍然生效的情况下，PyTorch SDPA 默认 backend 可以通过。
+
+目前还没有排除的 attention 隔离项只剩：
+
+```text
+PC_FORCE_SDPA_FALLBACK=1
+```
+
+当前最小修复候选仍然是：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+### 36.3 下一步：去掉 SDPA fallback，回到默认 Wan attention
+
+下一轮去掉：
+
+```text
+PC_FORCE_SDPA_FALLBACK=1
+PC_FORCE_SDPA_MATH=1
+```
+
+保留：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+判据：
+
+- 如果通过，说明 attention fallback / SDPA patch 全部不是必要修复，核心就是 LoRA fp32 compute；
+- 如果失败，说明默认 Wan attention / flash-attn 路径仍有问题，正式训练需保留 `PC_FORCE_SDPA_FALLBACK=1`。
