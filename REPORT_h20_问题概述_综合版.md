@@ -5449,3 +5449,115 @@ logs/train_trd_v1_low_real.log
 ```
 
 终端输出本身是有效训练结果；后续建议复制命令时删除 `\se \ull \` 尾巴，并固定使用干净的 `tee logs/train_trd_v1_low_real.log`。
+
+## 43. 2026-04-18 16:46 81f / 288x496 运行中：显存稳定，memory-efficient 生效
+
+### 43.1 本轮配置
+
+本轮把帧数提升到 81，并按接近原始比例降低空间分辨率：
+
+```text
+--num_frames 81
+--height 288
+--width 496
+```
+
+关键修复仍然保留：
+
+```text
+PC_FORCE_LORA_FP32=1
+PC_LORA_DISABLE_AUTOCAST=1
+```
+
+本轮打开显存节省路径：
+
+```text
+--student_memory_efficient_modulation true
+--gradient_checkpointing true
+--student_checkpoint_use_reentrant false
+--student_memory_efficient_checkpoint_mode full
+```
+
+### 43.2 关键日志
+
+memory-efficient modulation 生效：
+
+```text
+Memory-efficient modulation patched 40 blocks for low_noise_model (ffn_chunk_size=512)
+```
+
+gradient checkpointing 生效：
+
+```text
+Gradient checkpointing wrapped 39 memory-efficient Wan blocks in low_noise_model (use_reentrant=False; full block replay)
+Gradient checkpointing skipped 1 blocks for low_noise_model (indices=20)
+```
+
+LoRA 配置继续正确：
+
+```text
+lora_dtype=float32
+force_lora_fp32=True
+disable_autocast=True
+trainable=2572288/18548215872
+```
+
+序列几何确认：
+
+```text
+[SEQ GEOM] num_frames=81 latent_grid=(21,36,62) patch_size=(1, 2, 2) seq_len=11718
+video=shape(3, 81, 288, 496)
+student_tokens=shape(1, 21, 558, 768)
+```
+
+第 1 step 完整通过：
+
+```text
+[PHASE] label=after_trd_loss ... loss_total=0.0444592 loss_total_finite=True loss_trd=0.0104975 loss_trd_finite=True
+[PHASE] label=after_backward ...
+[PROGRESS] epoch=1/5 global_step=1/8350 micro_step=1 ... loss_total=0.0445 loss_fm=0.0434 loss_trd=0.0105 ... peak_mem=46.12GiB
+```
+
+随后继续稳定推进：
+
+```text
+[PROGRESS] global_step=2 ... peak_mem=45.05GiB
+[PROGRESS] global_step=3 ... peak_mem=46.32GiB
+[PROGRESS] global_step=4 ... peak_mem=46.32GiB
+[PROGRESS] global_step=5 ... peak_mem=46.32GiB
+[PROGRESS] global_step=6 ... peak_mem=46.32GiB
+[PROGRESS] global_step=7 ... peak_mem=45.04GiB
+```
+
+### 43.3 结论
+
+`81 frames / 288 x 496` 当前看起来稳定。显存没有明显上升不是坏信号，主要原因是：
+
+- memory-efficient modulation 已经 patch 了 40 个 block；
+- gradient checkpointing 已经包住 39 个 block；
+- H20 SIGFPE 修复仍然开启；
+- 当前 LoRA 只训练 block 39 的 14 个模块，trainable params 约 2.57M；
+- checkpointing 用更多计算换更低显存，所以 step time 上升到约 21-31 秒是正常的。
+
+因此不能把“显存没有很高”解读成 LoRA 没有梯度。当前日志至少说明：
+
+```text
+trainable_tensors=28
+trainable_params=2572288
+loss_total_finite=True
+after_backward 正常
+global_step 正常增长
+optimizer step 正常推进
+```
+
+### 43.4 仍需增强的 LoRA 梯度可见性
+
+当前 console progress 没有打印 `grad_norm`，所以肉眼不能直接看到 LoRA 梯度范数。实际上训练循环已经计算：
+
+```text
+grad_norm = clip_grad_norm_(_all_trainable_params(), max_grad_norm)
+```
+
+而当前 `_all_trainable_params()` 基本就是 LoRA trainable params，因此该 `grad_norm` 就是 LoRA 梯度是否正常回传的直接信号。
+
+后续代码已补充：在 `[PROGRESS]` 行中打印 `grad_norm=...`。下一次 pull 后的新 run 可直接通过 progress 行确认 LoRA 梯度是否 finite/非零。

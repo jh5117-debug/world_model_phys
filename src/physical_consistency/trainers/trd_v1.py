@@ -1414,9 +1414,10 @@ class TRDTrainingRunner:
         loss_fm = float(metrics["loss_fm"].detach().item())
         loss_trd = float(metrics["loss_trd"].detach().item())
         lr = float(self.scheduler.get_last_lr()[0])
+        grad_norm_display = float("nan") if grad_norm_value is None else grad_norm_value
 
         LOGGER.info(
-            "[PROGRESS] epoch=%s/%s global_step=%s/%s micro_step=%s accum=%s/%s loss_total=%.4f loss_fm=%.4f loss_trd=%.4f lr=%.3e peak_mem=%.2fGiB step_time=%.1fs eta=%s",
+            "[PROGRESS] epoch=%s/%s global_step=%s/%s micro_step=%s accum=%s/%s loss_total=%.4f loss_fm=%.4f loss_trd=%.4f lr=%.3e grad_norm=%.3e peak_mem=%.2fGiB step_time=%.1fs eta=%s",
             self.current_epoch,
             self.args.num_epochs,
             self.global_step,
@@ -1428,6 +1429,7 @@ class TRDTrainingRunner:
             loss_fm,
             loss_trd,
             lr,
+            grad_norm_display,
             peak_allocated_gib,
             optimizer_step_time,
             format_eta(eta_seconds),
