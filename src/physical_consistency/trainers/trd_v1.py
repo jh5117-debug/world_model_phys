@@ -39,7 +39,7 @@ from physical_consistency.common.subprocess_utils import run_command
 from physical_consistency.common.summary_tables import format_videophy2_summary
 from physical_consistency.eval.checkpoint_bundle import materialize_eval_checkpoint_bundle
 from physical_consistency.lineage.contract import LineageRecord, verify_stage1_checkpoint
-from physical_consistency.losses.trd import TokenRelationDistillationLoss
+from physical_consistency.losses.trd import TRDLossOutput, TokenRelationDistillationLoss
 from physical_consistency.teachers.videomaev2 import VideoMAEv2Teacher
 from physical_consistency.teachers.vjepa2 import VJEPA21Teacher
 from physical_consistency.trainers.hooks import BlockFeatureHook
@@ -1218,6 +1218,7 @@ class TRDTrainingRunner:
 
     def training_step(self, batch: dict[str, Any]) -> dict[str, torch.Tensor]:
         """Compute FM + TRD for one batch."""
+        trd_backward_mode = self.args.trd_backward_mode
         video = batch["video"].to(self.accelerator.device)
         poses = batch["poses"]
         actions = batch["actions"]
@@ -1254,15 +1255,17 @@ class TRDTrainingRunner:
             noise = torch.randn_like(video_latent)
             noisy_latent = (1.0 - timestep_sample.sigma) * video_latent + timestep_sample.sigma * noise
             target = noise - video_latent
-            self._trace_training_phase("before_teacher_encode", tensors={"video": video})
-            teacher_features = self.teacher.encode(video.unsqueeze(0))
-            self._trace_training_phase(
-                "after_teacher_encode",
-                tensors={"teacher_tokens": teacher_features.tokens},
-            )
-            if not self._logged_teacher_encode_offload_memory:
-                self._log_gpu_memory("after_teacher_encode")
-                self._logged_teacher_encode_offload_memory = True
+            teacher_features = None
+            if trd_backward_mode != "off":
+                self._trace_training_phase("before_teacher_encode", tensors={"video": video})
+                teacher_features = self.teacher.encode(video.unsqueeze(0))
+                self._trace_training_phase(
+                    "after_teacher_encode",
+                    tensors={"teacher_tokens": teacher_features.tokens},
+                )
+                if not self._logged_teacher_encode_offload_memory:
+                    self._log_gpu_memory("after_teacher_encode")
+                    self._logged_teacher_encode_offload_memory = True
 
         self._trace_training_phase(
             "before_student_forward",
@@ -1299,12 +1302,37 @@ class TRDTrainingRunner:
         loss_fm = F.mse_loss(pred_rest.float(), target_rest.float()) * timestep_sample.weight
         self._trace_training_phase("after_fm_loss", scalars={"loss_fm": loss_fm})
 
-        self._trace_training_phase(
-            "before_trd_loss",
-            tensors={"student_tokens": student_tokens, "teacher_tokens": teacher_features.tokens},
-        )
-        trd_output = self.trd_loss(student_tokens, teacher_features.tokens)
-        loss_total = loss_fm + self.args.lambda_trd * trd_output.total
+        if trd_backward_mode == "off":
+            zero = loss_fm.detach().new_zeros(())
+            spatial_matrix = torch.zeros(
+                self.args.relation_tokens,
+                self.args.relation_tokens,
+                dtype=torch.float32,
+                device="cpu",
+            )
+            temporal_matrix = torch.zeros(max(int(lat_f), 1), max(int(lat_f), 1), dtype=torch.float32, device="cpu")
+            trd_output = TRDLossOutput(
+                total=zero,
+                spatial=zero,
+                temporal=zero,
+                spatial_student=spatial_matrix,
+                spatial_teacher=spatial_matrix,
+                temporal_student=temporal_matrix,
+                temporal_teacher=temporal_matrix,
+            )
+            loss_total = loss_fm
+            teacher_feat_norm = zero
+            self._trace_training_phase("trd_loss_off", scalars={"loss_total": loss_total})
+        else:
+            assert teacher_features is not None
+            trd_student = student_tokens.detach() if trd_backward_mode == "detached" else student_tokens
+            self._trace_training_phase(
+                "before_trd_loss",
+                tensors={"student_tokens": trd_student, "teacher_tokens": teacher_features.tokens},
+            )
+            trd_output = self.trd_loss(trd_student, teacher_features.tokens)
+            loss_total = loss_fm + self.args.lambda_trd * trd_output.total
+            teacher_feat_norm = teacher_features.tokens.norm(dim=-1).mean().detach()
         self._trace_training_phase(
             "after_trd_loss",
             scalars={
@@ -1323,7 +1351,7 @@ class TRDTrainingRunner:
             "loss_trd_temporal": trd_output.temporal.detach(),
             "sample_sigma": torch.tensor(timestep_sample.sigma, device=self.accelerator.device),
             "sample_timestep": timestep_sample.timestep.detach().float().mean(),
-            "teacher_feat_norm": teacher_features.tokens.norm(dim=-1).mean().detach(),
+            "teacher_feat_norm": teacher_feat_norm,
             "student_feat_norm": student_tokens.norm(dim=-1).mean().detach(),
             "pred_target_cosine": F.cosine_similarity(
                 pred_rest.flatten().float().unsqueeze(0),
@@ -2042,6 +2070,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("student_target_block", 20)
     payload.setdefault("relation_tokens", 64)
     payload.setdefault("lambda_trd", 0.1)
+    payload.setdefault("trd_backward_mode", "full")
     payload.setdefault("lambda_spatial", 1.0)
     payload.setdefault("lambda_temporal", 1.0)
     payload.setdefault("run_group", "trd_v1")
@@ -2138,6 +2167,12 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         payload["max_train_micro_steps"] = int(payload["max_train_micro_steps"])
     if payload["max_train_micro_steps"] < 0:
         raise ValueError(f"max_train_micro_steps must be non-negative, got {payload['max_train_micro_steps']}")
+    payload["trd_backward_mode"] = str(payload["trd_backward_mode"]).strip().lower()
+    if payload["trd_backward_mode"] not in {"full", "detached", "off"}:
+        raise ValueError(
+            "trd_backward_mode must be one of full, detached, off; "
+            f"got {payload['trd_backward_mode']}"
+        )
 
     payload["output_dir"] = str(Path(payload["output_root"]) / "checkpoints" / payload["experiment_name"])
     payload.setdefault("teacher_checkpoint_path", "")
@@ -2235,6 +2270,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--student_memory_efficient_modulation", type=str, default="")
     parser.add_argument("--student_ffn_chunk_size", type=int, default=None)
     parser.add_argument("--student_norm_chunk_size", type=int, default=None)
+    parser.add_argument("--trd_backward_mode", type=str, default="")
     parser.add_argument("--wandb_relation_image_every_steps", type=int, default=None)
     parser.add_argument("--validation_every_steps", type=int, default=None)
     parser.add_argument("--validation_every_epochs", type=int, default=None)
