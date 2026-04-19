@@ -59,6 +59,7 @@ wandb_mode: online
 distributed_timeout_hours: 8
 validation_runtime_mode: pause_external
 validation_fail_fast: false
+validation_keep_failed_checkpoint: true
 allow_deepspeed_feature_hook_experimental: true
 sample_steps: 70
 guide_scale: 5.0

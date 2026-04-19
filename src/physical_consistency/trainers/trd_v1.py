@@ -1767,24 +1767,32 @@ class TRDTrainingRunner:
 
         if validation_error_path.exists():
             error_message = validation_error_path.read_text(encoding="utf-8").strip() or "Validation failed"
+            retained_error_path = validation_error_path
             if self.accelerator.is_main_process:
                 log_dict(
                     self.global_step,
                     {
                         "val/failed": 1,
                         "val/fail_fast": 1 if self.args.validation_fail_fast else 0,
+                        "val/failed_checkpoint_retained": (
+                            1 if self.args.validation_keep_failed_checkpoint else 0
+                        ),
                     },
                     accelerator=self.accelerator,
                 )
-                prune_checkpoint_dir(candidate_path)
+                if self.args.validation_keep_failed_checkpoint:
+                    retained_checkpoint = self._retain_failed_validation_checkpoint(candidate_path, tag)
+                    retained_error_path = retained_checkpoint / "validation_error.txt"
+                else:
+                    prune_checkpoint_dir(candidate_path)
             self.accelerator.wait_for_everyone()
             if self.args.validation_fail_fast:
                 raise RuntimeError(error_message)
             if self.accelerator.is_main_process:
                 LOGGER.warning(
-                    "[VALIDATION NONFATAL] tag=%s failed; training will continue. Error saved to %s",
+                    "[VALIDATION NONFATAL] tag=%s failed; training will continue. Error/checkpoint saved under %s",
                     tag,
-                    validation_error_path,
+                    retained_error_path,
                 )
             return
 
@@ -2103,6 +2111,14 @@ class TRDTrainingRunner:
             self.best_metrics = metrics
         else:
             prune_checkpoint_dir(candidate_path)
+
+    def _retain_failed_validation_checkpoint(self, candidate_path: Path, tag: str) -> Path:
+        """Keep failed validation weights and error logs without optimizer resume state."""
+        self._strip_resume_state(candidate_path)
+        failed_path = Path(self.args.output_dir) / f"failed_validation_{tag}"
+        prune_checkpoint_dir(failed_path)
+        candidate_path.rename(failed_path)
+        return failed_path
 
     def _is_better_summary(
         self,
@@ -2464,6 +2480,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("distributed_timeout_hours", 8)
     payload.setdefault("validation_runtime_mode", "pause_external")
     payload.setdefault("validation_fail_fast", False)
+    payload.setdefault("validation_keep_failed_checkpoint", True)
     payload.setdefault("validation_sample_steps", payload.get("sample_steps", 70))
     payload.setdefault("allow_deepspeed_feature_hook_experimental", False)
     payload.setdefault("best_checkpoint_name", "best_videophy2")
@@ -2543,6 +2560,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload["student_param_grad_trace"] = _coerce_bool(payload["student_param_grad_trace"])
     payload["student_param_grad_trace_pattern"] = str(payload["student_param_grad_trace_pattern"])
     payload["validation_fail_fast"] = _coerce_bool(payload["validation_fail_fast"])
+    payload["validation_keep_failed_checkpoint"] = _coerce_bool(payload["validation_keep_failed_checkpoint"])
     if payload["student_ffn_chunk_size"] in ("", None):
         payload["student_ffn_chunk_size"] = 512
     else:
@@ -2702,6 +2720,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation_sample_steps", type=int, default=None)
     parser.add_argument("--validation_runtime_mode", type=str, default="")
     parser.add_argument("--validation_fail_fast", type=str, default="")
+    parser.add_argument("--validation_keep_failed_checkpoint", type=str, default="")
     parser.add_argument("--allow_deepspeed_feature_hook_experimental", type=str, default="")
     return parser.parse_args()
 

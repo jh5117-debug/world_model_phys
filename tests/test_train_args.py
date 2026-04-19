@@ -219,6 +219,7 @@ def test_build_args_supports_dual_training_defaults(tmp_path):
     assert args.validation_every_epochs == 1
     assert args.max_train_micro_steps == 0
     assert args.validation_sample_steps == 70
+    assert args.validation_keep_failed_checkpoint is True
 
 
 def test_build_args_accepts_wandb_entity_override(tmp_path):
@@ -573,6 +574,28 @@ def test_validation_generation_command_uses_validation_sample_steps(tmp_path):
     )
 
     assert command[command.index("--sample_steps") + 1] == "35"
+
+
+def test_failed_validation_checkpoint_is_retained_without_resume_state(tmp_path):
+    runner = object.__new__(TRDTrainingRunner)
+    runner.args = SimpleNamespace(output_dir=str(tmp_path / "checkpoints" / "exp"))
+    candidate = Path(runner.args.output_dir) / "_candidate_epoch_1"
+    (candidate / "low_noise_model").mkdir(parents=True)
+    (candidate / "high_noise_model").mkdir()
+    (candidate / "training_only").mkdir()
+    (candidate / "low_noise_model" / "diffusion_pytorch_model.bin").write_text("low", encoding="utf-8")
+    (candidate / "high_noise_model" / "diffusion_pytorch_model.bin").write_text("high", encoding="utf-8")
+    (candidate / "training_only" / "resume_state.pt").write_bytes(b"resume")
+    (candidate / "validation_error.txt").write_text("boom", encoding="utf-8")
+
+    retained = runner._retain_failed_validation_checkpoint(candidate, "epoch_1")
+
+    assert retained == Path(runner.args.output_dir) / "failed_validation_epoch_1"
+    assert not candidate.exists()
+    assert (retained / "low_noise_model" / "diffusion_pytorch_model.bin").read_text(encoding="utf-8") == "low"
+    assert (retained / "high_noise_model" / "diffusion_pytorch_model.bin").read_text(encoding="utf-8") == "high"
+    assert (retained / "validation_error.txt").read_text(encoding="utf-8") == "boom"
+    assert not (retained / "training_only" / "resume_state.pt").exists()
 
 
 def test_snapshot_validation_export_uses_validation_sample_steps(tmp_path, monkeypatch):
