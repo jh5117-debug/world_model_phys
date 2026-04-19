@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import cv2
 import numpy as np
 import pytest
 
+from physical_consistency.eval.lingbot_generate import _generated_manifest_row
 from physical_consistency.eval.video_utils import (
     VideoValidationError,
     validate_video_readable,
@@ -52,3 +55,55 @@ def test_write_side_by_side_video_outputs_readable_preview(tmp_path):
 
     assert output.exists()
     validate_video_readable(output, min_frames=1)
+
+
+def test_generated_manifest_row_keeps_candidate_when_reference_is_missing(tmp_path):
+    candidate = tmp_path / "candidate.mp4"
+    comparison = tmp_path / "comparison.mp4"
+    _write_tiny_video(candidate, color=(0, 255, 0))
+    cfg = SimpleNamespace(
+        dataset_dir=str(tmp_path / "dataset"),
+        video_filename="video.mp4",
+        frame_num=3,
+        height=12,
+        width=16,
+    )
+
+    row = _generated_manifest_row(
+        cfg=cfg,
+        row={"clip_path": "val/clips/missing_clip", "prompt": "test"},
+        clip_name="missing_clip",
+        candidate_videopath=candidate,
+        comparison_path=comparison,
+    )
+
+    assert row["candidate_videopath"] == str(candidate)
+    assert row["comparison_videopath"] == ""
+    assert not comparison.exists()
+
+
+def test_generated_manifest_row_writes_comparison_from_manifest_reference(tmp_path):
+    reference = tmp_path / "reference.mp4"
+    candidate = tmp_path / "candidate.mp4"
+    comparison = tmp_path / "comparison.mp4"
+    _write_tiny_video(reference, color=(255, 0, 0))
+    _write_tiny_video(candidate, color=(0, 255, 0))
+    cfg = SimpleNamespace(
+        dataset_dir=str(tmp_path / "dataset"),
+        video_filename="video.mp4",
+        frame_num=3,
+        height=12,
+        width=16,
+    )
+
+    row = _generated_manifest_row(
+        cfg=cfg,
+        row={"clip_path": "val/clips/example", "prompt": "test", "reference_videopath": str(reference)},
+        clip_name="example",
+        candidate_videopath=candidate,
+        comparison_path=comparison,
+    )
+
+    assert row["reference_videopath"] == str(reference)
+    assert row["comparison_videopath"] == str(comparison)
+    validate_video_readable(comparison, min_frames=1)

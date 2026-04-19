@@ -25,6 +25,16 @@ from physical_consistency.eval.video_utils import (
     write_side_by_side_video,
 )
 
+REFERENCE_VIDEO_COLUMNS = (
+    "reference_videopath",
+    "reference_video",
+    "gt_videopath",
+    "gt_video",
+    "videopath",
+    "video_path",
+    "video",
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -59,6 +69,93 @@ def build_generation_progress_row(*, model_label: str, processed_count: int, tot
         "Model": model_label,
         "Processed": processed_count,
         "Total": total_count,
+    }
+
+
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in paths:
+        key = str(path)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def _reference_video_candidates(row: dict[str, str], cfg: Any) -> list[Path]:
+    candidates: list[Path] = []
+    dataset_dir = Path(cfg.dataset_dir)
+
+    def add_raw(raw: str) -> None:
+        if not raw:
+            return
+        path = Path(raw)
+        if path.is_absolute():
+            candidates.append(path)
+        else:
+            candidates.append(dataset_dir / path)
+            candidates.append(path)
+
+    for column in REFERENCE_VIDEO_COLUMNS:
+        add_raw(str(row.get(column, "")).strip())
+
+    clip_path = str(row.get("clip_path", "")).strip()
+    if clip_path:
+        clip = Path(clip_path)
+        if clip.suffix.lower() in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
+            candidates.append(dataset_dir / clip)
+        candidates.append(dataset_dir / clip / cfg.video_filename)
+
+    return _unique_paths(candidates)
+
+
+def _resolve_reference_video(row: dict[str, str], cfg: Any) -> Path:
+    candidates = _reference_video_candidates(row, cfg)
+    for candidate in candidates:
+        try:
+            validate_video_readable(candidate, min_frames=1)
+        except VideoValidationError:
+            continue
+        return candidate
+    return candidates[0] if candidates else Path("")
+
+
+def _generated_manifest_row(
+    *,
+    cfg: Any,
+    row: dict[str, str],
+    clip_name: str,
+    candidate_videopath: Path,
+    comparison_path: Path,
+) -> dict[str, str]:
+    reference_path = _resolve_reference_video(row, cfg)
+    comparison_videopath = ""
+    if str(reference_path):
+        try:
+            write_side_by_side_video(
+                reference_videopath=reference_path,
+                candidate_videopath=candidate_videopath,
+                output_path=comparison_path,
+                max_frames=int(cfg.frame_num),
+                height=int(cfg.height),
+                width=int(cfg.width),
+            )
+            comparison_videopath = str(comparison_path)
+        except VideoValidationError as exc:
+            print(
+                f"[WARN] Skipping side-by-side preview for {clip_name}: {exc}",
+                flush=True,
+            )
+
+    return {
+        "clip_name": clip_name,
+        "clip_path": row["clip_path"],
+        "prompt": row.get("prompt", ""),
+        "reference_videopath": str(reference_path),
+        "candidate_videopath": str(candidate_videopath),
+        "comparison_videopath": comparison_videopath,
     }
 
 
@@ -99,30 +196,15 @@ def _load_existing_generated(
                 validate_video_readable(video_path, min_frames=min_frames)
             except VideoValidationError:
                 continue
-            reference_path = Path(cfg.dataset_dir) / row["clip_path"] / cfg.video_filename
             comparison_path = model_root / "comparisons" / video_path.name
-            comparison_videopath = ""
-            try:
-                write_side_by_side_video(
-                    reference_videopath=reference_path,
-                    candidate_videopath=video_path,
-                    output_path=comparison_path,
-                    max_frames=int(cfg.frame_num),
-                    height=int(cfg.height),
-                    width=int(cfg.width),
-                )
-                comparison_videopath = str(comparison_path)
-            except VideoValidationError:
-                comparison_videopath = ""
             rows.append(
-                {
-                    "clip_name": clip_name,
-                    "clip_path": row["clip_path"],
-                    "prompt": row.get("prompt", ""),
-                    "reference_videopath": str(reference_path),
-                    "candidate_videopath": str(video_path),
-                    "comparison_videopath": comparison_videopath,
-                }
+                _generated_manifest_row(
+                    cfg=cfg,
+                    row=row,
+                    clip_name=clip_name,
+                    candidate_videopath=video_path,
+                    comparison_path=comparison_path,
+                )
             )
             processed.add(clip_name)
     return rows, processed
@@ -156,25 +238,15 @@ def _scan_new_outputs(
                 continue
             common_video_path = common_videos_dir / video_path.name
             shutil.copy2(video_path, common_video_path)
-            reference_path = Path(cfg.dataset_dir) / row["clip_path"] / cfg.video_filename
             comparison_path = comparisons_dir / video_path.name
-            write_side_by_side_video(
-                reference_videopath=reference_path,
-                candidate_videopath=common_video_path,
-                output_path=comparison_path,
-                max_frames=int(cfg.frame_num),
-                height=int(cfg.height),
-                width=int(cfg.width),
-            )
             generated_rows.append(
-                {
-                    "clip_name": clip_name,
-                    "clip_path": row["clip_path"],
-                    "prompt": row.get("prompt", ""),
-                    "reference_videopath": str(reference_path),
-                    "candidate_videopath": str(common_video_path),
-                    "comparison_videopath": str(comparison_path),
-                }
+                _generated_manifest_row(
+                    cfg=cfg,
+                    row=row,
+                    clip_name=clip_name,
+                    candidate_videopath=common_video_path,
+                    comparison_path=comparison_path,
+                )
             )
             processed_clips.add(clip_name)
             new_count += 1
