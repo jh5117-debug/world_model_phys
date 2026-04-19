@@ -7,6 +7,7 @@ seed: 42
 model_type: dual
 base_model_dir: links/base_model
 stage1_ckpt_dir: links/stage1_epoch2
+eval_companion_ckpt_dir: ""
 dataset_dir: links/processed_csgo_v3
 lingbot_code_dir: links/lingbot_code
 output_root: .

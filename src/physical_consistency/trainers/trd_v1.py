@@ -34,13 +34,14 @@ from accelerate.utils import (
 )
 
 from physical_consistency.common.defaults import CONFIG_DIR, PROJECT_ROOT
-from physical_consistency.common.io import ensure_dir, read_json, read_yaml, write_json, write_yaml
+from physical_consistency.common.io import ensure_dir, read_csv_rows, read_json, read_yaml, write_json, write_yaml
 from physical_consistency.common.logging_utils import configure_logging
 from physical_consistency.common.path_config import resolve_path_config
 from physical_consistency.common.seed import set_seed
 from physical_consistency.common.subprocess_utils import run_command
 from physical_consistency.common.summary_tables import format_videophy2_summary
 from physical_consistency.eval.checkpoint_bundle import materialize_eval_checkpoint_bundle
+from physical_consistency.eval.video_utils import validate_video_readable
 from physical_consistency.lineage.contract import LineageRecord, verify_stage1_checkpoint
 from physical_consistency.losses.trd import TRDLossOutput, TokenRelationDistillationLoss
 from physical_consistency.teachers.videomaev2 import VideoMAEv2Teacher
@@ -1891,6 +1892,18 @@ class TRDTrainingRunner:
         generated_manifest = generation_root / "lingbotstage1" / "generated_videos.csv"
         if not generated_manifest.exists():
             raise FileNotFoundError(f"Validation generation manifest missing: {generated_manifest}")
+        generated_rows = read_csv_rows(generated_manifest)
+        expected_count = len(read_csv_rows(self.args.manifest_mini_val))
+        if len(generated_rows) != expected_count:
+            raise RuntimeError(
+                f"Validation generation produced {len(generated_rows)}/{expected_count} videos: "
+                f"{generated_manifest}"
+            )
+        for row in generated_rows:
+            validate_video_readable(row.get("candidate_videopath", ""), min_frames=min(8, self.args.num_frames))
+            comparison_path = row.get("comparison_videopath", "")
+            if comparison_path:
+                validate_video_readable(comparison_path, min_frames=1)
 
         videophy_experiment = f"{self.args.experiment_name}_{tag}"
         run_command(
@@ -1909,8 +1922,20 @@ class TRDTrainingRunner:
         if not summary_path.exists():
             raise FileNotFoundError(f"Validation VideoPhy-2 summary missing: {summary_path}")
         summary = read_json(summary_path)
+        self._assert_videophy2_summary_complete(summary, expected_count=expected_count)
         self._emit_videophy2_summary(tag, summary)
         return summary
+
+    def _assert_videophy2_summary_complete(self, summary: dict[str, Any], *, expected_count: int) -> None:
+        incomplete = []
+        for seed_summary in summary.get("seeds", []):
+            count = int(seed_summary.get("count", 0) or 0)
+            if count != expected_count:
+                incomplete.append(f"seed={seed_summary.get('seed', '?')} count={count}/{expected_count}")
+        if not summary.get("seeds"):
+            incomplete.append(f"no seed summaries; expected {expected_count} rows")
+        if incomplete:
+            raise RuntimeError("Validation VideoPhy-2 outputs incomplete: " + "; ".join(incomplete))
 
     def _validation_generation_command(
         self,
@@ -1990,6 +2015,7 @@ class TRDTrainingRunner:
             output_root=self.args.output_root,
             experiment_name=experiment_name,
             stage1_ckpt_dir=self.args.stage1_ckpt_dir,
+            companion_ckpt_dir=getattr(self.args, "eval_companion_ckpt_dir", ""),
             allow_stage1_fallback=self._allow_stage1_fallback_for_eval(),
         )
 
@@ -2269,6 +2295,7 @@ class TRDTrainingRunner:
             "ft_ckpt_dir": str(bundle_dir),
             "output_root": self.args.output_root,
             "stage1_ckpt_dir": self.args.stage1_ckpt_dir,
+            "eval_companion_ckpt_dir": getattr(self.args, "eval_companion_ckpt_dir", ""),
             "allow_stage1_fallback": self._allow_stage1_fallback_for_eval(),
         }
         write_yaml(eval_config_path, eval_config)
@@ -2321,6 +2348,7 @@ class TRDTrainingRunner:
             "ft_ckpt_dir": str(bundle_dir),
             "output_root": self.args.output_root,
             "stage1_ckpt_dir": self.args.stage1_ckpt_dir,
+            "eval_companion_ckpt_dir": getattr(self.args, "eval_companion_ckpt_dir", ""),
             "allow_stage1_fallback": self._allow_stage1_fallback_for_eval(),
         }
         write_yaml(eval_config_path, eval_config)
@@ -2329,6 +2357,7 @@ class TRDTrainingRunner:
             "global_step": self.global_step,
             "checkpoint_path": str(checkpoint_path),
             "eval_bundle_dir": str(bundle_dir),
+            "eval_companion_ckpt_dir": getattr(self.args, "eval_companion_ckpt_dir", ""),
             "manifest_mini_val": self.args.manifest_mini_val,
             "validation_seed_list": self.args.validation_seed_list,
             "eval_config_path": str(eval_config_path),
@@ -2376,6 +2405,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     path_cfg = resolve_path_config(SimpleNamespace(**payload), env_file=cli_args.env_file or None)
     payload.setdefault("base_model_dir", path_cfg.base_model_dir)
     payload.setdefault("stage1_ckpt_dir", path_cfg.stage1_ckpt_dir)
+    payload.setdefault("eval_companion_ckpt_dir", "")
     payload.setdefault("dataset_dir", path_cfg.dataset_dir)
     payload.setdefault("lingbot_code_dir", path_cfg.lingbot_code_dir)
     payload.setdefault("output_root", path_cfg.output_root)
@@ -2557,6 +2587,8 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         )
 
     payload["output_dir"] = str(Path(payload["output_root"]) / "checkpoints" / payload["experiment_name"])
+    if payload["eval_companion_ckpt_dir"]:
+        payload["eval_companion_ckpt_dir"] = str(Path(payload["eval_companion_ckpt_dir"]).expanduser())
     payload.setdefault("teacher_checkpoint_path", "")
     payload["config_path"] = str(Path(cli_args.config).resolve())
     payload["config_hash"] = hashlib.sha256(Path(cli_args.config).read_bytes()).hexdigest()[:16]
@@ -2616,6 +2648,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb_entity", type=str, default="")
     parser.add_argument("--model_type", type=str, default="", choices=["low", "high", "dual"])
     parser.add_argument("--stage1_ckpt_dir", type=str, default="")
+    parser.add_argument("--eval_companion_ckpt_dir", type=str, default="")
     parser.add_argument("--base_model_dir", type=str, default="")
     parser.add_argument("--dataset_dir", type=str, default="")
     parser.add_argument("--lingbot_code_dir", type=str, default="")
@@ -2679,6 +2712,8 @@ def main() -> None:
     args = build_args(cli_args)
     _require_existing_path("base_model_dir", args.base_model_dir)
     _require_existing_path("stage1_ckpt_dir", args.stage1_ckpt_dir)
+    if args.eval_companion_ckpt_dir:
+        _require_existing_path("eval_companion_ckpt_dir", args.eval_companion_ckpt_dir)
     _require_existing_path("dataset_dir", args.dataset_dir)
     _require_existing_path("lingbot_code_dir", args.lingbot_code_dir)
     _require_existing_path("teacher_repo_dir", args.teacher_repo_dir)

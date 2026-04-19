@@ -154,10 +154,25 @@ def run_videophy2_for_seed(
 
 def summarize_videophy2_outputs(sa_csv: str | Path, pc_csv: str | Path) -> dict:
     """Compute SA mean, PC mean, and joint score from output CSVs."""
+    def _score_from_row(row: dict[str, str]) -> float | None:
+        for key in ("choice_score", "score"):
+            value = row.get(key)
+            if value not in {"", None}:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return None
+        return None
+
     def _read_scores(path: str | Path) -> list[float]:
         with Path(path).open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
-            return [float(row["score"]) for row in reader if row.get("score") not in {"", None}]
+            scores: list[float] = []
+            for row in reader:
+                score = _score_from_row(row)
+                if score is not None:
+                    scores.append(score)
+            return scores
 
     sa_scores = _read_scores(sa_csv)
     pc_scores = _read_scores(pc_csv)

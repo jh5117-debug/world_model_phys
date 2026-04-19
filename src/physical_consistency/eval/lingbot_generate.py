@@ -19,6 +19,11 @@ from physical_consistency.eval.lingbot_fullval import (
     _spawn_workers,
     shard_rows,
 )
+from physical_consistency.eval.video_utils import (
+    VideoValidationError,
+    validate_video_readable,
+    write_side_by_side_video,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,10 +68,22 @@ def _load_existing_generated(
     cfg: Any,
     row_by_clip: dict[str, dict[str, str]],
 ) -> tuple[list[dict[str, str]], set[str]]:
+    min_frames = min(8, max(1, int(cfg.frame_num)))
     generated_manifest = model_root / "generated_videos.csv"
     if generated_manifest.exists():
-        rows = read_csv_rows(generated_manifest)
-        processed = {str(row.get("clip_name", "")) for row in rows if row.get("clip_name")}
+        rows = []
+        processed = set()
+        for row in read_csv_rows(generated_manifest):
+            clip_name = str(row.get("clip_name", ""))
+            candidate = row.get("candidate_videopath", "")
+            if not clip_name or not candidate:
+                continue
+            try:
+                validate_video_readable(candidate, min_frames=min_frames)
+            except VideoValidationError:
+                continue
+            rows.append(row)
+            processed.add(clip_name)
         return rows, processed
 
     videos_dir = model_root / "videos"
@@ -78,13 +95,33 @@ def _load_existing_generated(
             row = row_by_clip.get(clip_name)
             if row is None:
                 continue
+            try:
+                validate_video_readable(video_path, min_frames=min_frames)
+            except VideoValidationError:
+                continue
+            reference_path = Path(cfg.dataset_dir) / row["clip_path"] / cfg.video_filename
+            comparison_path = model_root / "comparisons" / video_path.name
+            comparison_videopath = ""
+            try:
+                write_side_by_side_video(
+                    reference_videopath=reference_path,
+                    candidate_videopath=video_path,
+                    output_path=comparison_path,
+                    max_frames=int(cfg.frame_num),
+                    height=int(cfg.height),
+                    width=int(cfg.width),
+                )
+                comparison_videopath = str(comparison_path)
+            except VideoValidationError:
+                comparison_videopath = ""
             rows.append(
                 {
                     "clip_name": clip_name,
                     "clip_path": row["clip_path"],
                     "prompt": row.get("prompt", ""),
-                    "reference_videopath": str(Path(cfg.dataset_dir) / row["clip_path"] / cfg.video_filename),
+                    "reference_videopath": str(reference_path),
                     "candidate_videopath": str(video_path),
+                    "comparison_videopath": comparison_videopath,
                 }
             )
             processed.add(clip_name)
@@ -102,6 +139,8 @@ def _scan_new_outputs(
 ) -> int:
     new_count = 0
     common_videos_dir = ensure_dir(model_root / "videos")
+    comparisons_dir = ensure_dir(model_root / "comparisons")
+    min_frames = min(8, max(1, int(cfg.frame_num)))
     for worker in workers:
         worker_videos_dir = worker.output_dir / "videos"
         for video_path in sorted(worker_videos_dir.glob(f"*{cfg.video_suffix}")):
@@ -111,15 +150,30 @@ def _scan_new_outputs(
             row = row_by_clip.get(clip_name)
             if row is None:
                 continue
+            try:
+                validate_video_readable(video_path, min_frames=min_frames)
+            except VideoValidationError:
+                continue
             common_video_path = common_videos_dir / video_path.name
             shutil.copy2(video_path, common_video_path)
+            reference_path = Path(cfg.dataset_dir) / row["clip_path"] / cfg.video_filename
+            comparison_path = comparisons_dir / video_path.name
+            write_side_by_side_video(
+                reference_videopath=reference_path,
+                candidate_videopath=common_video_path,
+                output_path=comparison_path,
+                max_frames=int(cfg.frame_num),
+                height=int(cfg.height),
+                width=int(cfg.width),
+            )
             generated_rows.append(
                 {
                     "clip_name": clip_name,
                     "clip_path": row["clip_path"],
                     "prompt": row.get("prompt", ""),
-                    "reference_videopath": str(Path(cfg.dataset_dir) / row["clip_path"] / cfg.video_filename),
+                    "reference_videopath": str(reference_path),
                     "candidate_videopath": str(common_video_path),
+                    "comparison_videopath": str(comparison_path),
                 }
             )
             processed_clips.add(clip_name)
@@ -133,7 +187,14 @@ def _write_generated_rollup(model_root: Path, generated_rows: list[dict[str, str
     write_csv_rows(
         model_root / "generated_videos.csv",
         generated_rows,
-        ["clip_name", "clip_path", "prompt", "reference_videopath", "candidate_videopath"],
+        [
+            "clip_name",
+            "clip_path",
+            "prompt",
+            "reference_videopath",
+            "candidate_videopath",
+            "comparison_videopath",
+        ],
     )
 
 
@@ -226,6 +287,13 @@ def run_model_generation(*, cfg: Any, path_cfg: Any, model: Any, manifest_rows: 
     if failed_workers:
         details = ", ".join(f"gpu={gpu} rc={rc}" for gpu, rc in failed_workers)
         raise RuntimeError(f"LingBot workers failed for {model.model_label}: {details}")
+    if len(processed_clips) != len(manifest_rows):
+        missing = sorted(_clip_name(row) for row in manifest_rows if _clip_name(row) not in processed_clips)
+        raise RuntimeError(
+            f"LingBot generation incomplete for {model.model_label}: "
+            f"{len(processed_clips)}/{len(manifest_rows)} valid videos. "
+            f"Missing/invalid clips: {', '.join(missing[:8])}"
+        )
 
     print(
         format_lingbot_generation_summary(

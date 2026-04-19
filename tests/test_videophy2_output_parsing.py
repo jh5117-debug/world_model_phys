@@ -7,6 +7,7 @@ if str(VIDEOPHY_DIR) not in sys.path:
     sys.path.insert(0, str(VIDEOPHY_DIR))
 
 from output_parsing import extract_score_text_candidates, parse_score_from_output
+from physical_consistency.eval.videophy2 import summarize_videophy2_outputs
 
 
 def test_parse_videophy_scores_accepts_clean_single_scores():
@@ -40,3 +41,27 @@ def test_parse_videophy_scores_uses_only_assistant_segment_when_present():
 def test_extract_score_text_candidates_prioritizes_assistant_suffix():
     candidates = extract_score_text_candidates("Human: score from 1 to 5\nAI: four\n")
     assert candidates[0] == "four"
+
+
+def test_summarize_videophy2_outputs_prefers_choice_score(tmp_path):
+    sa_csv = tmp_path / "output_sa.csv"
+    pc_csv = tmp_path / "output_pc.csv"
+    sa_csv.write_text(
+        "videopath,score,choice_score\n"
+        "a.mp4,4,5.0\n"
+        "b.mp4,3,4.0\n",
+        encoding="utf-8",
+    )
+    pc_csv.write_text(
+        "videopath,score,choice_score\n"
+        "a.mp4,3,4.0\n"
+        "b.mp4,3,5.0\n",
+        encoding="utf-8",
+    )
+
+    summary = summarize_videophy2_outputs(sa_csv, pc_csv)
+
+    assert summary["sa_mean"] == 4.5
+    assert summary["pc_mean"] == 4.5
+    assert summary["joint"] == 1.0
+    assert summary["count"] == 2

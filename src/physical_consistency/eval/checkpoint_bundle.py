@@ -39,17 +39,20 @@ def materialize_eval_checkpoint_bundle(
     output_root: str | Path,
     experiment_name: str,
     stage1_ckpt_dir: str | Path = "",
+    companion_ckpt_dir: str | Path = "",
     allow_stage1_fallback: bool = False,
 ) -> Path:
     """Create a full two-branch eval directory and make branch provenance explicit."""
     ft_root = Path(ft_ckpt_dir).resolve()
     stage1_root = Path(stage1_ckpt_dir).resolve() if stage1_ckpt_dir else None
+    companion_root = Path(companion_ckpt_dir).resolve() if companion_ckpt_dir else None
 
     bundle_key = hashlib.sha256(
         "|".join(
             [
                 str(ft_root),
                 str(stage1_root) if stage1_root else "",
+                str(companion_root) if companion_root else "",
                 experiment_name,
                 str(int(allow_stage1_fallback)),
             ]
@@ -68,7 +71,10 @@ def materialize_eval_checkpoint_bundle(
         source_dir = ft_root / branch
         source_kind = "finetuned"
         if not source_dir.exists():
-            if allow_stage1_fallback and stage1_root is not None:
+            if companion_root is not None:
+                source_dir = companion_root / branch
+                source_kind = "companion"
+            elif allow_stage1_fallback and stage1_root is not None:
                 source_dir = stage1_root / branch
                 source_kind = "stage1_fallback"
             else:
@@ -106,6 +112,7 @@ def materialize_eval_checkpoint_bundle(
         "experiment_name": experiment_name,
         "ft_ckpt_dir": str(ft_root),
         "stage1_ckpt_dir": str(stage1_root) if stage1_root else "",
+        "companion_ckpt_dir": str(companion_root) if companion_root else "",
         "allow_stage1_fallback": allow_stage1_fallback,
         "branches": manifest,
     }
