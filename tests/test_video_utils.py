@@ -77,7 +77,7 @@ def test_generated_manifest_row_keeps_candidate_when_reference_is_missing(tmp_pa
         comparison_path=comparison,
     )
 
-    assert row["candidate_videopath"] == str(candidate)
+    assert row["candidate_videopath"] == str(candidate.resolve())
     assert row["comparison_videopath"] == ""
     assert not comparison.exists()
 
@@ -104,6 +104,7 @@ def test_generated_manifest_row_writes_comparison_from_manifest_reference(tmp_pa
         comparison_path=comparison,
     )
 
-    assert row["reference_videopath"] == str(reference)
-    assert row["comparison_videopath"] == str(comparison)
+    assert row["reference_videopath"] == str(reference.resolve())
+    assert row["candidate_videopath"] == str(candidate.resolve())
+    assert row["comparison_videopath"] == str(comparison.resolve())
     validate_video_readable(comparison, min_frames=1)

@@ -84,6 +84,12 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
     return unique
 
 
+def _manifest_path_string(path: Path) -> str:
+    if not str(path):
+        return ""
+    return str(path.resolve())
+
+
 def _reference_video_candidates(row: dict[str, str], cfg: Any) -> list[Path]:
     candidates: list[Path] = []
     dataset_dir = Path(cfg.dataset_dir)
@@ -153,9 +159,9 @@ def _generated_manifest_row(
         "clip_name": clip_name,
         "clip_path": row["clip_path"],
         "prompt": row.get("prompt", ""),
-        "reference_videopath": str(reference_path),
-        "candidate_videopath": str(candidate_videopath),
-        "comparison_videopath": comparison_videopath,
+        "reference_videopath": _manifest_path_string(reference_path),
+        "candidate_videopath": _manifest_path_string(candidate_videopath),
+        "comparison_videopath": _manifest_path_string(Path(comparison_videopath)) if comparison_videopath else "",
     }
 
 
@@ -179,6 +185,13 @@ def _load_existing_generated(
                 validate_video_readable(candidate, min_frames=min_frames)
             except VideoValidationError:
                 continue
+            row["candidate_videopath"] = _manifest_path_string(Path(candidate))
+            comparison = row.get("comparison_videopath", "")
+            if comparison:
+                row["comparison_videopath"] = _manifest_path_string(Path(comparison))
+            reference = row.get("reference_videopath", "")
+            if reference:
+                row["reference_videopath"] = _manifest_path_string(Path(reference))
             rows.append(row)
             processed.add(clip_name)
         return rows, processed
