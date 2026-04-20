@@ -7,7 +7,7 @@ if str(VIDEOPHY_DIR) not in sys.path:
     sys.path.insert(0, str(VIDEOPHY_DIR))
 
 from output_parsing import extract_score_text_candidates, parse_score_from_output
-from physical_consistency.eval.videophy2 import summarize_videophy2_outputs
+from physical_consistency.eval.videophy2 import summarize_videophy2_outputs, write_videophy2_summary
 
 
 def test_parse_videophy_scores_accepts_clean_single_scores():
@@ -65,3 +65,30 @@ def test_summarize_videophy2_outputs_prefers_choice_score(tmp_path):
     assert summary["pc_mean"] == 4.5
     assert summary["joint"] == 1.0
     assert summary["count"] == 2
+
+
+def test_write_videophy2_summary_counts_samples_not_seeds(tmp_path):
+    seed_dir = tmp_path / "seed_0"
+    seed_dir.mkdir()
+    (seed_dir / "output_sa.csv").write_text(
+        "videopath,choice_score\n"
+        "a.mp4,5.0\n"
+        "b.mp4,4.0\n",
+        encoding="utf-8",
+    )
+    (seed_dir / "output_pc.csv").write_text(
+        "videopath,choice_score\n"
+        "a.mp4,4.0\n"
+        "b.mp4,3.0\n",
+        encoding="utf-8",
+    )
+
+    summary_path = write_videophy2_summary(tmp_path)
+    summary = __import__("json").loads(summary_path.read_text(encoding="utf-8"))
+
+    assert summary["seeds"][0]["count"] == 2
+    assert summary["seeds"][0]["means"]["sa_mean"]["count"] == 2
+    assert summary["means"]["sa_mean"]["mean"] == 4.5
+    assert summary["means"]["sa_mean"]["count"] == 2
+    assert summary["means"]["pc_mean"]["mean"] == 3.5
+    assert summary["means"]["joint"]["mean"] == 0.5

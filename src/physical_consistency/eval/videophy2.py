@@ -202,15 +202,26 @@ def write_videophy2_summary(output_dir: str | Path) -> Path:
         if sa_csv.exists() and pc_csv.exists():
             summary = summarize_videophy2_outputs(sa_csv, pc_csv)
             summary["seed"] = int(seed_dir.name.split("_")[-1])
+            summary["means"] = {
+                key: {"mean": summary[key], "count": summary["count"]}
+                for key in ["sa_mean", "pc_mean", "joint"]
+            }
             seed_summaries.append(summary)
 
     aggregate = {"seeds": seed_summaries, "means": {}}
+    sample_count = sum(int(item.get("count", 0) or 0) for item in seed_summaries)
     for key in ["sa_mean", "pc_mean", "joint"]:
-        values = [item[key] for item in seed_summaries]
-        if values:
+        weighted_values = [
+            (float(item[key]), int(item.get("count", 0) or 0))
+            for item in seed_summaries
+            if int(item.get("count", 0) or 0) > 0
+        ]
+        if weighted_values:
+            weighted_sum = sum(value * count for value, count in weighted_values)
+            weighted_count = sum(count for _value, count in weighted_values)
             aggregate["means"][key] = {
-                "mean": sum(values) / len(values),
-                "count": len(values),
+                "mean": weighted_sum / weighted_count,
+                "count": sample_count,
             }
     summary_path = root / "summary.json"
     write_json(summary_path, aggregate)
