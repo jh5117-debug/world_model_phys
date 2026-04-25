@@ -36,6 +36,7 @@ import math
 import os
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 import cv2
@@ -143,8 +144,16 @@ def find_player_streams(input_dirs, skip_episodes=None, val_episodes=None):
                         "data_root": input_dir,
                     })
 
-    print(f"Found {len(streams)} player streams across "
-          f"{len(set(s['episode_id'] for s in streams))} episodes")
+    unique_episode_ids = len({s["episode_id"] for s in streams})
+    unique_source_episodes = len({(s["source_id"], s["episode_id"]) for s in streams})
+    by_source = Counter(s["source_id"] for s in streams)
+    print(
+        f"Found {len(streams)} player streams across "
+        f"{unique_source_episodes} source-episodes "
+        f"({unique_episode_ids} unique episode IDs across sources)"
+    )
+    for source_id, count in sorted(by_source.items()):
+        print(f"  Source {source_id}: {count} streams")
     return streams
 
 
