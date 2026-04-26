@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
-import io
 import json
 import logging
 import math
@@ -28,6 +26,8 @@ class PreprocessArgs:
     input_root: str
     output_dir: str
     clip_frames: int
+    sampling_mode: str
+    window_stride: int
     output_height: int
     output_width: int
     target_fps: int
@@ -41,9 +41,21 @@ def parse_args() -> PreprocessArgs:
     parser = argparse.ArgumentParser(description="Preprocess PhysInOne raw trajectories.")
     parser.add_argument("--input_root", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
-    parser.add_argument("--clip_frames", type=int, default=81)
-    parser.add_argument("--output_height", type=int, default=480)
-    parser.add_argument("--output_width", type=int, default=480)
+    parser.add_argument("--clip_frames", type=int, default=75)
+    parser.add_argument(
+        "--sampling_mode",
+        type=str,
+        choices=("contiguous_windows", "uniform_single"),
+        default="contiguous_windows",
+    )
+    parser.add_argument(
+        "--window_stride",
+        type=int,
+        default=75,
+        help="Stride for contiguous window slicing. Values <= 0 fall back to clip_frames.",
+    )
+    parser.add_argument("--output_height", type=int, default=384)
+    parser.add_argument("--output_width", type=int, default=384)
     parser.add_argument("--target_fps", type=int, default=16)
     parser.add_argument("--default_camera_angle_x", type=float, default=1.166746013987712)
     parser.add_argument("--val_ratio", type=float, default=0.0)
@@ -160,13 +172,63 @@ def _compute_intrinsics(camera_angle_x: float, width: int, height: int) -> np.nd
     return np.asarray([fx, fy, cx, cy], dtype=np.float32)
 
 
-def _sample_members(members: list[str], clip_frames: int) -> tuple[list[str], list[int]]:
+def _uniform_sample_members(members: list[str], clip_frames: int) -> tuple[list[str], list[int]]:
     if not members:
         raise ValueError("No RGB frames found for requested camera")
     if len(members) == 1:
         return [members[0]] * clip_frames, [0] * clip_frames
     raw_indices = np.linspace(0, len(members) - 1, clip_frames).round().astype(int)
     return [members[idx] for idx in raw_indices], raw_indices.tolist()
+
+
+def _pad_window_indices(indices: list[int], clip_frames: int) -> list[int]:
+    if not indices:
+        raise ValueError("Cannot pad empty frame index list")
+    if len(indices) >= clip_frames:
+        return indices[:clip_frames]
+    return indices + [indices[-1]] * (clip_frames - len(indices))
+
+
+def _contiguous_window_starts(frame_count: int, clip_frames: int, window_stride: int) -> list[int]:
+    if frame_count <= 0:
+        raise ValueError("frame_count must be positive")
+    if clip_frames <= 0:
+        raise ValueError("clip_frames must be positive")
+    if window_stride <= 0:
+        window_stride = clip_frames
+    if frame_count <= clip_frames:
+        return [0]
+    starts = list(range(0, frame_count - clip_frames + 1, window_stride))
+    last_start = frame_count - clip_frames
+    if starts[-1] != last_start:
+        starts.append(last_start)
+    return starts
+
+
+def _slice_members_into_windows(
+    members: list[str],
+    *,
+    clip_frames: int,
+    sampling_mode: str,
+    window_stride: int,
+) -> list[tuple[list[str], list[int]]]:
+    if sampling_mode == "uniform_single":
+        sampled_members, sampled_indices = _uniform_sample_members(members, clip_frames)
+        return [(sampled_members, sampled_indices)]
+
+    if sampling_mode != "contiguous_windows":
+        raise ValueError(f"Unsupported sampling_mode: {sampling_mode}")
+
+    if not members:
+        raise ValueError("No RGB frames found for requested camera")
+    starts = _contiguous_window_starts(len(members), clip_frames, window_stride)
+    windows: list[tuple[list[str], list[int]]] = []
+    for start in starts:
+        stop = min(start + clip_frames, len(members))
+        indices = list(range(start, stop))
+        padded_indices = _pad_window_indices(indices, clip_frames)
+        windows.append(([members[idx] for idx in padded_indices], padded_indices))
+    return windows
 
 
 def _sorted_frame_members(zf: zipfile.ZipFile, camera_name: str, kind: str) -> list[str]:
@@ -213,13 +275,14 @@ def _write_clip(
     split: str,
     trajectory_name: str,
     camera_name: str,
+    clip_index: int,
     frames: list[np.ndarray],
     fps: int,
     poses: np.ndarray,
     intrinsics: np.ndarray,
     metadata: dict,
 ) -> dict[str, str]:
-    clip_name = f"{trajectory_name}__{camera_name}_clip0000"
+    clip_name = f"{trajectory_name}__{camera_name}_clip{clip_index:04d}"
     clip_dir = output_dir / split / "clips" / clip_name
     ensure_dir(clip_dir)
     _write_video_mp4(frames, clip_dir / "video.mp4", fps)
@@ -239,6 +302,10 @@ def _write_clip(
         "raw_frame_count": str(metadata["raw_frame_count"]),
         "clip_frames": str(metadata["clip_frames"]),
         "target_fps": str(metadata["target_fps"]),
+        "sampling_mode": str(metadata["sampling_mode"]),
+        "window_index": str(metadata["window_index"]),
+        "window_start_frame": str(metadata["window_start_frame"]),
+        "window_end_frame": str(metadata["window_end_frame"]),
         "control_type": "cam",
     }
 
@@ -259,42 +326,53 @@ def _process_zip(zpath: Path, *, split: str, args: PreprocessArgs, output_dir: P
         rows: list[dict[str, str]] = []
         for camera_name in camera_names:
             rgb_members = _sorted_frame_members(zf, camera_name, "rgb")
-            sampled_members, sampled_indices = _sample_members(rgb_members, args.clip_frames)
-            frames = [
-                _read_rgb_frame(
-                    zf,
-                    member,
-                    width=args.output_width,
-                    height=args.output_height,
-                )
-                for member in sampled_members
-            ]
-            poses = np.repeat(pose_map[camera_name][None, ...], args.clip_frames, axis=0)
-            intrinsics = np.repeat(intrinsics_single[None, ...], args.clip_frames, axis=0)
-            row = _write_clip(
-                output_dir=output_dir,
-                split=split,
-                trajectory_name=trajectory_name,
-                camera_name=camera_name,
-                frames=frames,
-                fps=args.target_fps,
-                poses=poses,
-                intrinsics=intrinsics,
-                metadata={
-                    "prompt": prompt,
-                    "trajectory_name": trajectory_name,
-                    "camera_id": camera_name,
-                    "physics_bucket": _zip_bucket_name(zpath, Path(args.input_root)),
-                    "source_zip": str(zpath),
-                    "source_height": args.output_height,
-                    "source_width": args.output_width,
-                    "raw_frame_count": len(rgb_members),
-                    "clip_frames": args.clip_frames,
-                    "target_fps": args.target_fps,
-                    "sampled_frame_indices": sampled_indices,
-                },
+            member_windows = _slice_members_into_windows(
+                rgb_members,
+                clip_frames=args.clip_frames,
+                sampling_mode=args.sampling_mode,
+                window_stride=args.window_stride,
             )
-            rows.append(row)
+            for clip_index, (sampled_members, sampled_indices) in enumerate(member_windows):
+                frames = [
+                    _read_rgb_frame(
+                        zf,
+                        member,
+                        width=args.output_width,
+                        height=args.output_height,
+                    )
+                    for member in sampled_members
+                ]
+                poses = np.repeat(pose_map[camera_name][None, ...], args.clip_frames, axis=0)
+                intrinsics = np.repeat(intrinsics_single[None, ...], args.clip_frames, axis=0)
+                row = _write_clip(
+                    output_dir=output_dir,
+                    split=split,
+                    trajectory_name=trajectory_name,
+                    camera_name=camera_name,
+                    clip_index=clip_index,
+                    frames=frames,
+                    fps=args.target_fps,
+                    poses=poses,
+                    intrinsics=intrinsics,
+                    metadata={
+                        "prompt": prompt,
+                        "trajectory_name": trajectory_name,
+                        "camera_id": camera_name,
+                        "physics_bucket": _zip_bucket_name(zpath, Path(args.input_root)),
+                        "source_zip": str(zpath),
+                        "source_height": args.output_height,
+                        "source_width": args.output_width,
+                        "raw_frame_count": len(rgb_members),
+                        "clip_frames": args.clip_frames,
+                        "target_fps": args.target_fps,
+                        "sampling_mode": args.sampling_mode,
+                        "window_index": clip_index,
+                        "window_start_frame": sampled_indices[0],
+                        "window_end_frame": sampled_indices[-1],
+                        "sampled_frame_indices": sampled_indices,
+                    },
+                )
+                rows.append(row)
     return rows
 
 
@@ -355,6 +433,10 @@ def main() -> None:
         "raw_frame_count",
         "clip_frames",
         "target_fps",
+        "sampling_mode",
+        "window_index",
+        "window_start_frame",
+        "window_end_frame",
         "control_type",
     ]
     write_csv_rows(output_dir / "metadata_train.csv", train_rows, fieldnames)
@@ -368,6 +450,8 @@ def main() -> None:
         "train_clip_count": len(train_rows),
         "val_clip_count": len(val_rows),
         "clip_frames": args.clip_frames,
+        "sampling_mode": args.sampling_mode,
+        "window_stride": args.window_stride if args.window_stride > 0 else args.clip_frames,
         "output_height": args.output_height,
         "output_width": args.output_width,
         "target_fps": args.target_fps,

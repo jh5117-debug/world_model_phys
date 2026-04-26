@@ -1,0 +1,51 @@
+experiment_name: exp_stage1_physinone_cam_75f_384
+run_group: stage1_physinone_cam
+seed: 42
+
+# Leave empty to inherit from path_config_cluster.env.
+base_model_dir: ""
+dataset_dir: ""
+physinone_raw_dir: ""
+lingbot_code_dir: ""
+output_root: .
+wandb_dir: runs/wandb
+
+learning_rate: 1.0e-5
+weight_decay: 0.01
+num_epochs: 5
+gradient_accumulation_steps: 4
+max_grad_norm: 1.0
+
+num_frames: 75
+height: 384
+width: 384
+dataset_repeat: 1
+num_workers: 4
+save_every_n_epochs: 1
+max_train_micro_steps: 0
+
+student_tuning_mode: lora
+student_lora_rank: 16
+student_lora_alpha: 16
+student_lora_dropout: 0.0
+student_lora_block_start: 0
+student_lora_chunk_size: 0
+student_lora_merge_mode: inplace
+student_memory_efficient_modulation: true
+student_memory_efficient_checkpoint_mode: full
+student_ffn_chunk_size: 4096
+student_norm_chunk_size: 0
+gradient_checkpointing: true
+student_checkpoint_use_reentrant:
+student_ddp_find_unused_parameters: true
+distributed_timeout_hours: 8
+
+videophy2_eval:
+  enabled: true
+  every_n_epochs: 1
+  generation_command: ""
+  score_command: ""
+  summary_json: ""
+  working_dir: .
+  fail_fast: false
+  env: {}
