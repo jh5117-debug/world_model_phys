@@ -26,6 +26,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train pure Stage-1 PhysInOne camera LoRA.")
     parser.add_argument("--config", type=str, default=str(CONFIG_DIR / "train_stage1_physinone_cam.yaml"))
     parser.add_argument("--env_file", type=str, default=str(CONFIG_DIR / "path_config_cluster.env"))
+    parser.add_argument("--branch_mode", type=str, default="sequence", choices=["sequence", "low", "high"])
+    parser.add_argument("--source_checkpoint_dir", type=str, default="")
+    parser.add_argument("--companion_checkpoint_dir", type=str, default="")
     parser.add_argument("--experiment_name", type=str, default="")
     parser.add_argument("--dataset_dir", type=str, default="")
     parser.add_argument("--base_model_dir", type=str, default="")
@@ -49,18 +52,74 @@ def main() -> None:
         cli_args=args,
     )
     configure_logging(Path(cfg.output_root) / "logs" / f"train_{cfg.experiment_name}_stage1.log")
+    source_checkpoint_dir = str(Path(args.source_checkpoint_dir).resolve()) if args.source_checkpoint_dir else cfg.base_model_dir
+    companion_checkpoint_dir = (
+        str(Path(args.companion_checkpoint_dir).resolve()) if args.companion_checkpoint_dir else cfg.base_model_dir
+    )
+
+    if args.branch_mode == "low":
+        low_result = Stage1BranchTrainer(
+            cfg,
+            branch="low",
+            source_checkpoint_dir=source_checkpoint_dir,
+            companion_checkpoint_dir=companion_checkpoint_dir,
+        ).run()
+        if _is_main_process():
+            write_json(
+                Path(cfg.output_dir) / "stage1_low_summary.json",
+                {
+                    "experiment_name": cfg.experiment_name,
+                    "config_path": cfg.config_path,
+                    "config_hash": cfg.config_hash,
+                    "source_checkpoint_dir": source_checkpoint_dir,
+                    "companion_checkpoint_dir": companion_checkpoint_dir,
+                    "low_phase": {
+                        "final_branch_dir": low_result.final_branch_dir,
+                        "final_eval_bundle_dir": low_result.final_eval_bundle_dir,
+                    },
+                },
+            )
+        if dist.is_initialized():
+            dist.barrier()
+        return
+
+    if args.branch_mode == "high":
+        high_result = Stage1BranchTrainer(
+            cfg,
+            branch="high",
+            source_checkpoint_dir=source_checkpoint_dir,
+            companion_checkpoint_dir=companion_checkpoint_dir,
+        ).run()
+        if _is_main_process():
+            write_json(
+                Path(cfg.output_dir) / "stage1_high_summary.json",
+                {
+                    "experiment_name": cfg.experiment_name,
+                    "config_path": cfg.config_path,
+                    "config_hash": cfg.config_hash,
+                    "source_checkpoint_dir": source_checkpoint_dir,
+                    "companion_checkpoint_dir": companion_checkpoint_dir,
+                    "high_phase": {
+                        "final_branch_dir": high_result.final_branch_dir,
+                        "final_eval_bundle_dir": high_result.final_eval_bundle_dir,
+                    },
+                },
+            )
+        if dist.is_initialized():
+            dist.barrier()
+        return
 
     low_result = Stage1BranchTrainer(
         cfg,
         branch="low",
-        source_checkpoint_dir=cfg.base_model_dir,
-        companion_checkpoint_dir=cfg.base_model_dir,
+        source_checkpoint_dir=source_checkpoint_dir,
+        companion_checkpoint_dir=companion_checkpoint_dir,
     ).run()
 
     high_result = Stage1BranchTrainer(
         cfg,
         branch="high",
-        source_checkpoint_dir=cfg.base_model_dir,
+        source_checkpoint_dir=source_checkpoint_dir,
         companion_checkpoint_dir=low_result.final_branch_dir,
     ).run()
 
@@ -93,6 +152,8 @@ def main() -> None:
                 "config_path": cfg.config_path,
                 "config_hash": cfg.config_hash,
                 "base_model_dir": cfg.base_model_dir,
+                "source_checkpoint_dir": source_checkpoint_dir,
+                "companion_checkpoint_dir": companion_checkpoint_dir,
                 "dataset_dir": cfg.dataset_dir,
                 "low_phase": {
                     "final_branch_dir": low_result.final_branch_dir,
