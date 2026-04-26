@@ -1,0 +1,71 @@
+experiment_name: exp_stage3_phycsgo_trd
+project_name: physical_consistency
+wandb_entity: ""
+run_group: stage3_phycsgo_trd
+seed: 42
+model_type: dual
+
+base_model_dir: ""
+# IMPORTANT: set this legacy-named field to the final Stage-2 dual bundle before launching Stage-3.
+stage1_ckpt_dir: ""
+eval_companion_ckpt_dir: ""
+dataset_dir: ""
+lingbot_code_dir: ""
+output_root: .
+wandb_dir: runs/wandb
+
+control_type: act
+teacher_backend: vjepa2
+teacher_repo_dir: third_party/vjepa2_official
+teacher_checkpoint_dir: ../weight/vjepa2_1
+teacher_checkpoint_path: ""
+teacher_pretrained_frames: 64
+teacher_input_frames: 64
+teacher_drop_first_frame: false
+teacher_image_size: 384
+teacher_dtype: bfloat16
+teacher_offload_after_encode: false
+teacher_feature_dim: 768
+teacher_model_variant: vjepa2_1_vit_base_384
+
+student_tuning_mode: lora
+student_lora_rank: 16
+student_lora_alpha: 16
+student_lora_dropout: 0.0
+student_memory_efficient_modulation: true
+student_ffn_chunk_size: 4096
+student_target_block: 20
+relation_tokens: 64
+
+lambda_trd: 0.1
+lambda_spatial: 1.0
+lambda_temporal: 1.0
+trd_backward_mode: full
+
+learning_rate: 1.0e-5
+weight_decay: 0.01
+num_epochs: 5
+gradient_accumulation_steps: 4
+save_every_n_epochs: 1
+max_grad_norm: 1.0
+gradient_checkpointing: true
+
+num_frames: 81
+height: 480
+width: 832
+dataset_repeat: 1
+validation_every_steps: 0
+validation_every_epochs: 1
+mini_val_max_samples: 8
+full_val_max_samples: 50
+validation_seed_list:
+  - 42
+wandb_mode: online
+distributed_timeout_hours: 8
+validation_runtime_mode: snapshot_only
+allow_deepspeed_feature_hook_experimental: true
+sample_steps: 70
+validation_sample_steps: 35
+guide_scale: 5.0
+num_gpus: 8
+ulysses_size: 8

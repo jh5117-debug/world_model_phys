@@ -437,17 +437,27 @@ class LingBotStage1Helper:
             if module is not None and hasattr(module, "to"):
                 module.to("cpu")
 
-    def load_model(self, device: torch.device, model_type: str, checkpoint_dir: str | Path | None = None):
+    def load_model(
+        self,
+        device: torch.device,
+        model_type: str,
+        checkpoint_dir: str | Path | None = None,
+        *,
+        control_type: str = "act",
+    ):
         """Load one target Stage-1 branch plus shared VAE/T5 runtime."""
         self.ensure_runtime_components(device)
         subfolder = get_model_subfolder(model_type)
         checkpoint_root = str(checkpoint_dir or self.args.stage1_ckpt_dir)
+        control_type = str(control_type).strip().lower()
+        if control_type not in {"act", "cam"}:
+            raise ValueError(f"Unsupported control_type: {control_type}")
         LOGGER.info("Loading %s from %s", subfolder, checkpoint_root)
         model = self.WanModel.from_pretrained(
             checkpoint_root,
             subfolder=subfolder,
             torch_dtype=torch.bfloat16,
-            control_type="act",
+            control_type=control_type,
         )
         if getattr(self.args, "student_memory_efficient_modulation", True):
             apply_memory_efficient_wan_block_patch(
@@ -523,24 +533,33 @@ class LingBotStage1Helper:
     def prepare_control_signal(
         self,
         poses: torch.Tensor,
-        actions: torch.Tensor,
+        actions: torch.Tensor | None,
         intrinsics: torch.Tensor,
         height: int,
         width: int,
         lat_f: int,
         lat_h: int,
         lat_w: int,
+        *,
+        control_type: str = "act",
+        source_height: int | None = None,
+        source_width: int | None = None,
     ) -> dict[str, tuple[torch.Tensor, ...]]:
         interpolate_camera_poses = self.cam_utils["interpolate_camera_poses"]
         compute_relative_poses = self.cam_utils["compute_relative_poses"]
         get_plucker_embeddings = self.cam_utils["get_plucker_embeddings"]
         get_Ks_transformed = self.cam_utils["get_Ks_transformed"]
 
+        control_type = str(control_type).strip().lower()
+        if control_type not in {"act", "cam"}:
+            raise ValueError(f"Unsupported control_type: {control_type}")
         num_frames = poses.shape[0]
+        source_height = int(source_height or height)
+        source_width = int(source_width or width)
         ks = get_Ks_transformed(
             intrinsics,
-            height_org=480,
-            width_org=832,
+            height_org=source_height,
+            width_org=source_width,
             height_resize=height,
             width_resize=width,
             height_final=height,
@@ -551,19 +570,20 @@ class LingBotStage1Helper:
             src_indices=np.linspace(0, num_frames - 1, num_frames),
             src_rot_mat=poses[:, :3, :3].cpu().numpy(),
             src_trans_vec=poses[:, :3, 3].cpu().numpy(),
-            tgt_indices=np.linspace(0, num_frames - 1, int((num_frames - 1) // 4) + 1),
+            tgt_indices=np.linspace(0, num_frames - 1, lat_f),
         )
         c2ws_infer = compute_relative_poses(c2ws_infer, framewise=True)
         ks_repeated = ks_single.repeat(len(c2ws_infer), 1).to(self.device)
         c2ws_infer = c2ws_infer.to(self.device)
 
-        wasd = actions[::4].to(self.device)
-        if len(wasd) > len(c2ws_infer):
-            wasd = wasd[: len(c2ws_infer)]
-        elif len(wasd) < len(c2ws_infer):
-            wasd = torch.cat([wasd, wasd[-1:].repeat(len(c2ws_infer) - len(wasd), 1)], dim=0)
-
-        plucker = get_plucker_embeddings(c2ws_infer, ks_repeated, height, width, only_rays_d=True)
+        only_rays_d = control_type == "act"
+        plucker = get_plucker_embeddings(
+            c2ws_infer,
+            ks_repeated,
+            height,
+            width,
+            only_rays_d=only_rays_d,
+        )
         plucker = rearrange(
             plucker,
             "f (h c1) (w c2) c -> (f h w) (c c1 c2)",
@@ -571,6 +591,13 @@ class LingBotStage1Helper:
             c2=int(width // lat_w),
         )[None]
         plucker = rearrange(plucker, "b (f h w) c -> b c f h w", f=lat_f, h=lat_h, w=lat_w).to(torch.bfloat16)
+        if control_type == "cam":
+            return {"c2ws_plucker_emb": (plucker,)}
+
+        if actions is None:
+            raise ValueError("actions must be provided when control_type='act'")
+        action_indices = np.linspace(0, len(actions) - 1, len(c2ws_infer)).round().astype(int)
+        wasd = actions[action_indices].to(self.device)
 
         wasd_tensor = wasd[:, None, None, :].repeat(1, height, width, 1)
         wasd_tensor = rearrange(

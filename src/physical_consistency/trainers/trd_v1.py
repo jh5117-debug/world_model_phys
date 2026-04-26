@@ -1016,10 +1016,13 @@ class TRDTrainingRunner:
                     self.best_metrics = None
         self.accelerator.wait_for_everyone()
 
-        self.teacher_checkpoint_path = _resolve_teacher_checkpoint(
-            self.args.teacher_checkpoint_dir,
-            self.args.teacher_checkpoint_path,
-        )
+        if self.args.trd_backward_mode != "off":
+            self.teacher_checkpoint_path = _resolve_teacher_checkpoint(
+                self.args.teacher_checkpoint_dir,
+                self.args.teacher_checkpoint_path,
+            )
+        else:
+            self.teacher_checkpoint_path = ""
         self._build_train_and_val_loaders()
         self._log_train_plan()
         self._initialize_training_runtime(checkpoint_dir=self.args.stage1_ckpt_dir, resume_state=None)
@@ -1195,9 +1198,19 @@ class TRDTrainingRunner:
             torch.cuda.reset_peak_memory_stats(self.accelerator.device)
 
         if self.args.model_type == "dual":
-            low_model = self.helper.load_model(self.accelerator.device, "low", checkpoint_dir=checkpoint_dir)
+            low_model = self.helper.load_model(
+                self.accelerator.device,
+                "low",
+                checkpoint_dir=checkpoint_dir,
+                control_type=self.args.control_type,
+            )
             self._log_gpu_memory("after_low_model_load")
-            high_model = self.helper.load_model(self.accelerator.device, "high", checkpoint_dir=checkpoint_dir)
+            high_model = self.helper.load_model(
+                self.accelerator.device,
+                "high",
+                checkpoint_dir=checkpoint_dir,
+                control_type=self.args.control_type,
+            )
             self._log_gpu_memory("after_high_model_load")
 
             student_dim = int(low_model.dim)
@@ -1248,7 +1261,12 @@ class TRDTrainingRunner:
             self._log_gpu_memory("after_dual_bundle_construct")
         else:
             branch = self.args.model_type
-            branch_model = self.helper.load_model(self.accelerator.device, branch, checkpoint_dir=checkpoint_dir)
+            branch_model = self.helper.load_model(
+                self.accelerator.device,
+                branch,
+                checkpoint_dir=checkpoint_dir,
+                control_type=self.args.control_type,
+            )
             self._log_gpu_memory(f"after_{branch}_model_load")
 
             projector = StudentProjector(int(branch_model.dim), self.args.teacher_feature_dim)
@@ -1328,17 +1346,20 @@ class TRDTrainingRunner:
                 move_optimizer_state(wrapped_optimizer, self.accelerator.device)
             self.scheduler.load_state_dict(resume_state["scheduler"])
 
-        self.teacher = _build_teacher_encoder(
-            args=self.args,
-            checkpoint_path=self.teacher_checkpoint_path,
-            device=self.accelerator.device,
-        )
-        if self.teacher.feature_dim != self.args.teacher_feature_dim:
-            raise ValueError(
-                "teacher_feature_dim mismatch: "
-                f"config={self.args.teacher_feature_dim}, teacher={self.teacher.feature_dim}"
+        if self.args.trd_backward_mode != "off":
+            self.teacher = _build_teacher_encoder(
+                args=self.args,
+                checkpoint_path=self.teacher_checkpoint_path,
+                device=self.accelerator.device,
             )
-        self._log_gpu_memory("after_teacher_load")
+            if self.teacher.feature_dim != self.args.teacher_feature_dim:
+                raise ValueError(
+                    "teacher_feature_dim mismatch: "
+                    f"config={self.args.teacher_feature_dim}, teacher={self.teacher.feature_dim}"
+                )
+            self._log_gpu_memory("after_teacher_load")
+        else:
+            self.teacher = None
 
     def _log_gpu_memory(self, label: str, *, emit_console: bool = True) -> None:
         if not torch.cuda.is_available() or not self.accelerator.is_main_process:
@@ -1545,10 +1566,12 @@ class TRDTrainingRunner:
             }
         video = batch["video"].to(self.accelerator.device)
         poses = batch["poses"]
-        actions = batch["actions"]
+        actions = batch.get("actions")
         intrinsics = batch["intrinsics"]
         prompt = batch["prompt"]
         height, width = video.shape[2], video.shape[3]
+        source_height = int(batch.get("source_height", height))
+        source_width = int(batch.get("source_width", width))
 
         with torch.no_grad():
             video_latent = self.helper.encode_video(video)
@@ -1574,6 +1597,9 @@ class TRDTrainingRunner:
                 lat_f,
                 lat_h,
                 lat_w,
+                control_type=self.args.control_type,
+                source_height=source_height,
+                source_width=source_width,
             )
             timestep_sample = self.helper.sample_timestep(self.args.model_type)
             noise = torch.randn_like(video_latent)
@@ -2482,6 +2508,7 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("validation_fail_fast", False)
     payload.setdefault("validation_keep_failed_checkpoint", True)
     payload.setdefault("validation_sample_steps", payload.get("sample_steps", 70))
+    payload.setdefault("control_type", "act")
     payload.setdefault("allow_deepspeed_feature_hook_experimental", False)
     payload.setdefault("best_checkpoint_name", "best_videophy2")
     payload["allow_deepspeed_feature_hook_experimental"] = _coerce_bool(
@@ -2597,12 +2624,19 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         payload["max_train_micro_steps"] = int(payload["max_train_micro_steps"])
     if payload["max_train_micro_steps"] < 0:
         raise ValueError(f"max_train_micro_steps must be non-negative, got {payload['max_train_micro_steps']}")
-    payload["trd_backward_mode"] = str(payload["trd_backward_mode"]).strip().lower()
+    raw_trd_backward_mode = payload["trd_backward_mode"]
+    if isinstance(raw_trd_backward_mode, bool):
+        payload["trd_backward_mode"] = "full" if raw_trd_backward_mode else "off"
+    else:
+        payload["trd_backward_mode"] = str(raw_trd_backward_mode).strip().lower()
     if payload["trd_backward_mode"] not in {"full", "detached", "off"}:
         raise ValueError(
             "trd_backward_mode must be one of full, detached, off; "
             f"got {payload['trd_backward_mode']}"
         )
+    payload["control_type"] = str(payload["control_type"]).strip().lower()
+    if payload["control_type"] not in {"act", "cam"}:
+        raise ValueError(f"control_type must be one of act, cam; got {payload['control_type']}")
 
     payload["output_dir"] = str(Path(payload["output_root"]) / "checkpoints" / payload["experiment_name"])
     if payload["eval_companion_ckpt_dir"]:
@@ -2722,6 +2756,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation_fail_fast", type=str, default="")
     parser.add_argument("--validation_keep_failed_checkpoint", type=str, default="")
     parser.add_argument("--allow_deepspeed_feature_hook_experimental", type=str, default="")
+    parser.add_argument("--control_type", type=str, default="")
     return parser.parse_args()
 
 
@@ -2735,11 +2770,12 @@ def main() -> None:
         _require_existing_path("eval_companion_ckpt_dir", args.eval_companion_ckpt_dir)
     _require_existing_path("dataset_dir", args.dataset_dir)
     _require_existing_path("lingbot_code_dir", args.lingbot_code_dir)
-    _require_existing_path("teacher_repo_dir", args.teacher_repo_dir)
-    if args.teacher_checkpoint_path:
-        _require_existing_path("teacher_checkpoint_path", args.teacher_checkpoint_path)
-    else:
-        _require_existing_path("teacher_checkpoint_dir", args.teacher_checkpoint_dir)
+    if args.trd_backward_mode != "off":
+        _require_existing_path("teacher_repo_dir", args.teacher_repo_dir)
+        if args.teacher_checkpoint_path:
+            _require_existing_path("teacher_checkpoint_path", args.teacher_checkpoint_path)
+        else:
+            _require_existing_path("teacher_checkpoint_dir", args.teacher_checkpoint_dir)
     configure_logging(Path(args.output_root) / "logs" / f"train_{args.experiment_name}_{args.model_type}.log")
     _configure_cuda_probe_flags()
     set_seed(args.seed)

@@ -11,6 +11,18 @@ from physical_consistency.common.io import ensure_dir, write_json
 MODEL_BRANCHES = ("low_noise_model", "high_noise_model")
 
 
+def _branch_has_supported_weights(branch_dir: Path) -> bool:
+    """Accept either legacy .bin checkpoints or modern safetensors shards."""
+    return any(
+        candidate.exists()
+        for candidate in (
+            branch_dir / "diffusion_pytorch_model.bin",
+            branch_dir / "diffusion_pytorch_model.safetensors",
+            branch_dir / "diffusion_pytorch_model.safetensors.index.json",
+        )
+    )
+
+
 def validate_dual_model_checkpoint(path: str | Path) -> tuple[bool, list[str]]:
     """Validate that both dual-model branches are present and loadable."""
     root = Path(path)
@@ -25,11 +37,13 @@ def validate_dual_model_checkpoint(path: str | Path) -> tuple[bool, list[str]]:
             errors.append(f"Missing directory: {branch_dir}")
             continue
         config_path = branch_dir / "config.json"
-        weight_bin = branch_dir / "diffusion_pytorch_model.bin"
         if not config_path.exists():
             errors.append(f"Missing config: {config_path}")
-        if not weight_bin.exists():
-            errors.append(f"Missing weights: {weight_bin}")
+        if not _branch_has_supported_weights(branch_dir):
+            errors.append(
+                "Missing supported weights under "
+                f"{branch_dir} (expected .bin or safetensors checkpoint)"
+            )
     return len(errors) == 0, errors
 
 
@@ -85,8 +99,7 @@ def materialize_eval_checkpoint_bundle(
                 )
 
         branch_config = source_dir / "config.json"
-        branch_weight = source_dir / "diffusion_pytorch_model.bin"
-        if not branch_config.exists() or not branch_weight.exists():
+        if not branch_config.exists() or not _branch_has_supported_weights(source_dir):
             raise FileNotFoundError(
                 f"Branch {branch} under {source_dir} is incomplete for evaluation."
             )

@@ -15,6 +15,9 @@ from .defaults import (
     DEFAULT_FINETUNE_CODE_DIR,
     DEFAULT_LINGBOT_CODE_DIR,
     DEFAULT_OUTPUT_ROOT,
+    DEFAULT_PHYCSGO_WEIGHTED_DIR,
+    DEFAULT_PHYSINONE_CAM_DIR,
+    DEFAULT_PHYSINONE_RAW_DIR,
     DEFAULT_RAW_DATA_DIR,
     DEFAULT_STAGE1_CKPT_DIR,
     DEFAULT_STAGE1_FINAL_DIR,
@@ -36,6 +39,9 @@ class PathConfig:
     stage1_final_dir: str = DEFAULT_STAGE1_FINAL_DIR
     dataset_dir: str = DEFAULT_DATASET_DIR
     raw_data_dir: str = DEFAULT_RAW_DATA_DIR
+    physinone_raw_dir: str = DEFAULT_PHYSINONE_RAW_DIR
+    physinone_cam_dir: str = DEFAULT_PHYSINONE_CAM_DIR
+    phycsgo_weighted_dir: str = DEFAULT_PHYCSGO_WEIGHTED_DIR
     lingbot_code_dir: str = DEFAULT_LINGBOT_CODE_DIR
     finetune_code_dir: str = DEFAULT_FINETUNE_CODE_DIR
     output_root: str = DEFAULT_OUTPUT_ROOT
@@ -84,6 +90,11 @@ def resolve_path_config(
         "stage1_final_dir": _pick("STAGE1_FINAL_DIR", file_env, args, DEFAULT_STAGE1_FINAL_DIR),
         "dataset_dir": _pick("DATASET_DIR", file_env, args, DEFAULT_DATASET_DIR),
         "raw_data_dir": _pick("RAW_DATA_DIR", file_env, args, DEFAULT_RAW_DATA_DIR),
+        "physinone_raw_dir": _pick("PHYSINONE_RAW_DIR", file_env, args, DEFAULT_PHYSINONE_RAW_DIR),
+        "physinone_cam_dir": _pick("PHYSINONE_CAM_DIR", file_env, args, DEFAULT_PHYSINONE_CAM_DIR),
+        "phycsgo_weighted_dir": _pick(
+            "PHYCSGO_WEIGHTED_DIR", file_env, args, DEFAULT_PHYCSGO_WEIGHTED_DIR
+        ),
         "lingbot_code_dir": _pick(
             "LINGBOT_CODE_DIR", file_env, args, DEFAULT_LINGBOT_CODE_DIR
         ),
