@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import logging
 import math
+import os
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -283,11 +284,14 @@ class Stage1BranchTrainer:
             target = noise - video_latent
 
         device_type = self.accelerator.device.type
-        autocast_ctx = (
-            torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16)
-            if device_type == "cuda"
-            else torch.autocast(device_type=device_type, enabled=False)
-        )
+        if os.environ.get("PC_STAGE1_FORCE_FP32", "").strip().lower() in {"1", "true", "yes", "on"}:
+            autocast_ctx = torch.autocast(device_type=device_type, enabled=False)
+        else:
+            autocast_ctx = (
+                torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16)
+                if device_type == "cuda"
+                else torch.autocast(device_type=device_type, enabled=False)
+            )
         with autocast_ctx:
             pred = self.model(
                 [noisy_latent],

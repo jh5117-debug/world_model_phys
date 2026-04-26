@@ -462,12 +462,16 @@ class LingBotStage1Helper:
         if control_type not in {"act", "cam"}:
             raise ValueError(f"Unsupported control_type: {control_type}")
         LOGGER.info("Loading %s from %s", subfolder, checkpoint_root)
+        model_dtype = torch.float32 if _env_flag("PC_STAGE1_FORCE_FP32") else torch.bfloat16
         model = self.WanModel.from_pretrained(
             checkpoint_root,
             subfolder=subfolder,
-            torch_dtype=torch.bfloat16,
+            torch_dtype=model_dtype,
             control_type=control_type,
         )
+        if _env_flag("PC_STAGE1_FORCE_FP32") and hasattr(model, "float"):
+            model.float()
+            LOGGER.info("Forced Stage1 student model to fp32 for numerical stability (PC_STAGE1_FORCE_FP32=1)")
         if getattr(self.args, "student_memory_efficient_modulation", True):
             apply_memory_efficient_wan_block_patch(
                 model,
@@ -596,6 +600,7 @@ class LingBotStage1Helper:
         c2ws_infer = compute_relative_poses(c2ws_infer, framewise=True)
         ks_repeated = ks_single.repeat(len(c2ws_infer), 1).to(self.device)
         c2ws_infer = c2ws_infer.to(self.device)
+        cond_dtype = torch.float32 if _env_flag("PC_STAGE1_FORCE_FP32") else torch.bfloat16
 
         only_rays_d = control_type == "act"
         plucker = get_plucker_embeddings(
@@ -611,7 +616,7 @@ class LingBotStage1Helper:
             c1=int(height // lat_h),
             c2=int(width // lat_w),
         )[None]
-        plucker = rearrange(plucker, "b (f h w) c -> b c f h w", f=lat_f, h=lat_h, w=lat_w).to(torch.bfloat16)
+        plucker = rearrange(plucker, "b (f h w) c -> b c f h w", f=lat_f, h=lat_h, w=lat_w).to(cond_dtype)
         if control_type == "cam":
             return {"c2ws_plucker_emb": (plucker,)}
 
@@ -633,7 +638,7 @@ class LingBotStage1Helper:
             f=lat_f,
             h=lat_h,
             w=lat_w,
-        ).to(torch.bfloat16)
+        ).to(cond_dtype)
 
         return {"c2ws_plucker_emb": (torch.cat([plucker, wasd_tensor], dim=1),)}
 
