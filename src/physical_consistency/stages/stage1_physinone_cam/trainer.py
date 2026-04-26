@@ -309,7 +309,7 @@ class Stage1BranchTrainer:
         if self.cfg.student_checkpoint_use_reentrant is not None:
             return bool(self.cfg.student_checkpoint_use_reentrant)
         if (
-            self.accelerator.distributed_type == DistributedType.MULTI_GPU
+            self.accelerator.distributed_type in {DistributedType.MULTI_GPU, DistributedType.DEEPSPEED}
             and self.cfg.student_tuning_mode == "lora"
         ):
             return False

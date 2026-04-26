@@ -424,6 +424,15 @@ class LingBotStage1Helper:
                 vae_pth=os.path.join(self.args.base_model_dir, "Wan2.1_VAE.pth"),
                 device=self.device,
             )
+            if _env_flag("PC_VAE_FORCE_FP32"):
+                if hasattr(self.vae, "dtype"):
+                    self.vae.dtype = torch.float32
+                module = getattr(self.vae, "model", None)
+                if module is not None and hasattr(module, "float"):
+                    module.float()
+                elif hasattr(self.vae, "float"):
+                    self.vae.float()
+                LOGGER.info("Forced VAE runtime to fp32 for numerical stability (PC_VAE_FORCE_FP32=1)")
         if getattr(self, "t5", None) is None:
             # Keep T5 on CPU by default and only move it to GPU on cache misses.
             self.t5 = self.T5EncoderModel(
@@ -503,6 +512,11 @@ class LingBotStage1Helper:
 
     @torch.no_grad()
     def encode_video(self, video_tensor: torch.Tensor) -> torch.Tensor:
+        if _env_flag("PC_VAE_FORCE_FP32"):
+            video_tensor = video_tensor.float()
+            device_type = self.device.type
+            with torch.amp.autocast(device_type=device_type, enabled=False):
+                return self.vae.encode([video_tensor.to(self.device)])[0]
         return self.vae.encode([video_tensor.to(self.device)])[0]
 
     @torch.no_grad()
@@ -522,7 +536,14 @@ class LingBotStage1Helper:
         height, width = video_tensor.shape[2], video_tensor.shape[3]
         first_frame = video_tensor[:, 0:1]
         zeros = torch.zeros(3, frame_total - 1, height, width, device=video_tensor.device)
-        y_latent = self.vae.encode([torch.concat([first_frame, zeros], dim=1).to(self.device)])[0]
+        y_input = torch.concat([first_frame, zeros], dim=1)
+        if _env_flag("PC_VAE_FORCE_FP32"):
+            y_input = y_input.float()
+            device_type = self.device.type
+            with torch.amp.autocast(device_type=device_type, enabled=False):
+                y_latent = self.vae.encode([y_input.to(self.device)])[0]
+        else:
+            y_latent = self.vae.encode([y_input.to(self.device)])[0]
 
         # Wan consumes a 4-channel temporal mask aligned to the latent timeline, not the raw frame count.
         mask = torch.zeros(4, y_latent.shape[1], lat_h, lat_w, device=self.device, dtype=y_latent.dtype)
