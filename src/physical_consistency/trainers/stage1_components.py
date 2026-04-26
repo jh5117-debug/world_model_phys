@@ -525,13 +525,20 @@ class LingBotStage1Helper:
 
     @torch.no_grad()
     def encode_text(self, prompt: str) -> list[torch.Tensor]:
+        force_fp32 = _env_flag("PC_STAGE1_FORCE_FP32")
         if prompt in self._t5_cache:
-            return [tensor.to(self.device) for tensor in self._t5_cache[prompt]]
+            cached = [tensor.to(self.device) for tensor in self._t5_cache[prompt]]
+            if force_fp32:
+                cached = [tensor.float() for tensor in cached]
+            return cached
         self.t5.model.to(self.device)
         context = self.t5([prompt], self.device)
         self.t5.model.cpu()
         self._t5_cache[prompt] = [tensor.cpu() for tensor in context]
-        return [tensor.to(self.device) for tensor in context]
+        outputs = [tensor.to(self.device) for tensor in context]
+        if force_fp32:
+            outputs = [tensor.float() for tensor in outputs]
+        return outputs
 
     @torch.no_grad()
     def prepare_y(self, video_tensor: torch.Tensor, latent: torch.Tensor) -> torch.Tensor:
