@@ -7,6 +7,11 @@ import os
 from pathlib import Path
 
 import torch.distributed as dist
+try:
+    from torch.distributed.elastic.multiprocessing.errors import record
+except Exception:  # pragma: no cover - torch elastic is available in training envs.
+    def record(fn):
+        return fn
 
 from physical_consistency.common.defaults import CONFIG_DIR
 from physical_consistency.common.io import write_json
@@ -44,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+@record
 def main() -> None:
     args = parse_args()
     cfg = Stage1PhysInOneConfig.from_yaml(

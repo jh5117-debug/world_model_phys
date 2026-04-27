@@ -61,6 +61,13 @@ if [[ -f "${ENV_FILE}" ]]; then
   set +a
 fi
 
+if [[ -x "${PROJECT_ROOT}/scripts/setup_symlinks.sh" ]]; then
+  "${PROJECT_ROOT}/scripts/setup_symlinks.sh" >/dev/null 2>&1 || true
+fi
+if [[ -e "${PROJECT_ROOT}/links/lingbot_code" ]]; then
+  export LINGBOT_CODE_DIR="${PROJECT_ROOT}/links/lingbot_code"
+fi
+
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-${GPU_LIST}}"
 IFS=',' read -r -a GPU_ARRAY <<< "${CUDA_VISIBLE_DEVICES}"
 if [[ "${#GPU_ARRAY[@]}" -eq 0 || -z "${GPU_ARRAY[0]}" ]]; then

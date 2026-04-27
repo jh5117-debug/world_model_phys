@@ -1,4 +1,7 @@
 import os
+from pathlib import Path
+
+import pytest
 import torch
 import torch.nn as nn
 from types import SimpleNamespace
@@ -7,6 +10,7 @@ from physical_consistency.trainers.stage1_components import (
     LoRALinear,
     LingBotStage1Helper,
     _patch_flash_attention_sdpa_fallback,
+    _resolve_lingbot_import_root,
     apply_gradient_checkpointing,
     apply_lora_to_wan_model,
     apply_memory_efficient_wan_block_patch,
@@ -619,3 +623,44 @@ def test_prepare_y_aligns_mask_with_latent_time_axis_for_non_1_plus_4k_frames():
     assert y.shape == (20, 18, 2, 3)
     assert torch.all(y[:4, 0] == 1)
     assert torch.count_nonzero(y[:4, 1:]) == 0
+
+
+def _make_fake_lingbot_checkout(root: Path) -> None:
+    (root / "wan" / "modules").mkdir(parents=True, exist_ok=True)
+    (root / "wan" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "wan" / "modules" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "wan" / "modules" / "model.py").write_text("class WanModel: ...\n", encoding="utf-8")
+
+
+def test_resolve_lingbot_import_root_accepts_explicit_repo_root(tmp_path, monkeypatch):
+    monkeypatch.delenv("LINGBOT_CODE_DIR", raising=False)
+    repo_root = tmp_path / "workspace" / "code" / "lingbot-world"
+    _make_fake_lingbot_checkout(repo_root)
+
+    resolved, attempted = _resolve_lingbot_import_root(str(repo_root), project_root=tmp_path / "project")
+
+    assert resolved == repo_root.resolve()
+    assert str(repo_root) in attempted
+
+
+def test_resolve_lingbot_import_root_recovers_from_nvme_path_drift(tmp_path, monkeypatch):
+    monkeypatch.delenv("LINGBOT_CODE_DIR", raising=False)
+    project_root = tmp_path / "home" / "nvme04" / "workspace" / "world_model_phys" / "PHYS" / "world_model_phys"
+    configured = project_root.parents[1] / "code" / "lingbot-world"
+    actual = tmp_path / "home" / "nvme03" / "workspace" / "world_model_phys" / "code" / "lingbot-world"
+    _make_fake_lingbot_checkout(actual)
+
+    resolved, attempted = _resolve_lingbot_import_root(str(configured), project_root=project_root)
+
+    assert resolved == actual.resolve()
+    assert any("nvme03" in candidate for candidate in attempted)
+
+
+def test_resolve_lingbot_import_root_reports_checked_candidates(tmp_path, monkeypatch):
+    monkeypatch.delenv("LINGBOT_CODE_DIR", raising=False)
+    with pytest.raises(FileNotFoundError) as excinfo:
+        _resolve_lingbot_import_root(str(tmp_path / "missing" / "lingbot-world"), project_root=tmp_path / "project")
+
+    message = str(excinfo.value)
+    assert "wan/modules/model.py" in message
+    assert "Checked candidate import roots" in message

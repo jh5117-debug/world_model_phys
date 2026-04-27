@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import importlib
 import logging
 import math
 import os
@@ -41,6 +42,86 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         LOGGER.warning("Invalid integer for %s=%r; using %s", name, raw, default)
         return int(default)
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path.expanduser())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path.expanduser())
+    return deduped
+
+
+def _existing_wan_import_root(path: Path) -> bool:
+    return (path / "wan" / "modules" / "model.py").is_file()
+
+
+def _candidate_lingbot_import_roots(
+    configured_dir: str | os.PathLike[str] | None,
+    *,
+    project_root: Path | None = None,
+) -> list[Path]:
+    repo_root = Path(project_root or _repo_root()).resolve()
+    candidates: list[Path] = []
+
+    def add_variants(raw: str | os.PathLike[str] | None) -> None:
+        if raw in {"", None}:
+            return
+        base = Path(raw).expanduser()
+        candidates.extend(
+            [
+                base,
+                base / "lingbot-world",
+                base / "code" / "lingbot-world",
+            ]
+        )
+
+    add_variants(configured_dir)
+    add_variants(os.environ.get("LINGBOT_CODE_DIR", ""))
+    add_variants(repo_root / "links" / "lingbot_code")
+    add_variants(repo_root.parents[1] / "code" / "lingbot-world" if len(repo_root.parents) > 1 else None)
+
+    swap_candidates: list[Path] = []
+    for candidate in candidates:
+        candidate_str = str(candidate)
+        for src, dst in (("nvme03", "nvme04"), ("nvme04", "nvme03")):
+            needle = f"/{src}/"
+            if needle not in candidate_str:
+                continue
+            swapped = candidate_str.replace(needle, f"/{dst}/", 1)
+            add_variants(swapped)
+            swap_candidates.append(Path(swapped).expanduser())
+
+    candidates.extend(swap_candidates)
+    return _dedupe_paths(candidates)
+
+
+def _resolve_lingbot_import_root(
+    configured_dir: str | os.PathLike[str] | None,
+    *,
+    project_root: Path | None = None,
+) -> tuple[Path, list[str]]:
+    attempted: list[str] = []
+    for candidate in _candidate_lingbot_import_roots(configured_dir, project_root=project_root):
+        attempted.append(str(candidate))
+        if _existing_wan_import_root(candidate):
+            return candidate.resolve(), attempted
+
+    attempted_list = "\n  - ".join(attempted) if attempted else "<none>"
+    raise FileNotFoundError(
+        "Unable to locate a LingBot checkout that exposes wan/modules/model.py.\n"
+        f"Configured lingbot_code_dir={configured_dir!r}\n"
+        f"Checked candidate import roots:\n  - {attempted_list}\n"
+        "Set LINGBOT_CODE_DIR to the LingBot repo root (the directory that contains wan/)."
+    )
 
 
 def _normalize_stage1_precision_profile(value: str | None) -> str:
@@ -549,8 +630,19 @@ class LingBotStage1Helper:
 
     def bootstrap_imports(self) -> None:
         """Import LingBot modules lazily from the shared code checkout."""
-        if self.args.lingbot_code_dir not in sys.path:
-            sys.path.insert(0, self.args.lingbot_code_dir)
+        configured_dir = getattr(self.args, "lingbot_code_dir", "")
+        lingbot_root, attempted = _resolve_lingbot_import_root(configured_dir)
+        self.args.lingbot_code_dir = str(lingbot_root)
+        if str(lingbot_root) not in sys.path:
+            sys.path.insert(0, str(lingbot_root))
+        importlib.invalidate_caches()
+        if _should_log_rank_zero():
+            LOGGER.info(
+                "Resolved LingBot import root to %s (configured=%r, attempted=%s)",
+                lingbot_root,
+                configured_dir,
+                attempted,
+            )
         import wan.modules.model as wan_model_module
         from wan.modules.model import WanModel
         from wan.modules.t5 import T5EncoderModel
