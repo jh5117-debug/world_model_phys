@@ -464,8 +464,8 @@ def test_configure_stage1_precision_env_sets_mixed_safe_defaults(monkeypatch):
     assert os.environ["PC_FORCE_LORA_FP32"] == "1"
     assert os.environ["PC_LORA_DISABLE_AUTOCAST"] == "1"
     assert os.environ["PC_FORCE_SDPA_FALLBACK"] == "1"
-    assert os.environ["PC_FORCE_SDPA_MATH"] == "1"
-    assert os.environ["PC_FORCE_ATTN_FP32"] == "1"
+    assert "PC_FORCE_SDPA_MATH" not in os.environ
+    assert "PC_FORCE_ATTN_FP32" not in os.environ
     assert resolve_stage1_low_precision_dtype() == torch.bfloat16
 
 
@@ -480,7 +480,7 @@ def test_configure_stage1_precision_env_supports_fp16(monkeypatch):
     assert resolve_stage1_low_precision_dtype() == torch.float16
 
 
-def test_patch_flash_attention_sdpa_fallback_uses_fp32_in_mixed_safe(monkeypatch):
+def test_patch_flash_attention_sdpa_fallback_uses_low_precision_in_mixed_safe(monkeypatch):
     for name in (
         "PC_STAGE1_FORCE_FP32",
         "PC_STAGE1_PRECISION_PROFILE",
@@ -511,7 +511,7 @@ def test_patch_flash_attention_sdpa_fallback_uses_fp32_in_mixed_safe(monkeypatch
     out = wan_attention_module.flash_attention(q=q, k=q, v=q, dtype=torch.bfloat16)
 
     assert torch.equal(out, torch.zeros_like(q))
-    assert calls == [torch.float32]
+    assert calls == [torch.bfloat16]
     assert wan_model_module.flash_attention is wan_attention_module.flash_attention
 
 

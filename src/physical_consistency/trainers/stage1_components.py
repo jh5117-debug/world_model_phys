@@ -177,7 +177,7 @@ def _stage1_mixed_safe() -> bool:
 
 
 def _attention_compute_dtype(default_dtype: torch.dtype) -> torch.dtype:
-    if _env_flag("PC_FORCE_ATTN_FP32") or _stage1_mixed_safe() or _stage1_force_fp32():
+    if _env_flag("PC_FORCE_ATTN_FP32") or _stage1_force_fp32():
         return torch.float32
     return default_dtype
 
@@ -221,8 +221,6 @@ def configure_stage1_precision_env(
                 "PC_FORCE_LORA_FP32": "1",
                 "PC_LORA_DISABLE_AUTOCAST": "1",
                 "PC_FORCE_SDPA_FALLBACK": "1",
-                "PC_FORCE_SDPA_MATH": "1",
-                "PC_FORCE_ATTN_FP32": "1",
             }
         )
 
@@ -248,7 +246,7 @@ def configure_stage1_precision_env(
 @contextlib.contextmanager
 def _sdpa_kernel_context():
     """Optionally force PyTorch SDPA fallback to its math backend."""
-    if not (_env_flag("PC_FORCE_SDPA_MATH") or _stage1_mixed_safe()):
+    if not _env_flag("PC_FORCE_SDPA_MATH"):
         yield
         return
 
@@ -256,7 +254,7 @@ def _sdpa_kernel_context():
     if not _SDPA_MATH_LOGGED and _should_log_rank_zero():
         LOGGER.info(
             "Using PyTorch SDPA math backend for Stage1 attention "
-            "(PC_FORCE_SDPA_MATH=1 or mixed_safe precision profile)"
+            "(PC_FORCE_SDPA_MATH=1)"
         )
         _SDPA_MATH_LOGGED = True
 
