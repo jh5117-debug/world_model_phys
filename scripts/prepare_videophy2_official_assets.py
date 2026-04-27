@@ -22,6 +22,7 @@ from physical_consistency.common.defaults import PROJECT_ROOT
 from physical_consistency.common.path_config import resolve_path_config
 from physical_consistency.eval.videophy2_official_assets import (
     read_csv_header,
+    write_official_video_subset_manifest,
     write_official_prompt_manifests,
 )
 
@@ -96,6 +97,52 @@ def main() -> None:
         default="",
         help="Where to write the preparation summary JSON.",
     )
+    parser.add_argument(
+        "--download_test_videos",
+        action="store_true",
+        help="Download a local official test-video subset for AutoEval smoke testing.",
+    )
+    parser.add_argument(
+        "--video_root",
+        type=str,
+        default=str(PROJECT_ROOT / "data" / "videophy2_official" / "videos" / "test_subset"),
+        help="Destination directory for downloaded official test videos.",
+    )
+    parser.add_argument(
+        "--video_manifest_path",
+        type=str,
+        default="",
+        help="Where to write the official test-video subset manifest.",
+    )
+    parser.add_argument(
+        "--video_prompt_mode",
+        type=str,
+        default="original",
+        choices=["original", "upsampled"],
+        help="Which prompt field to expose as `prompt` in the official video manifest.",
+    )
+    parser.add_argument(
+        "--video_hard_only",
+        action="store_true",
+        help="Restrict the downloaded official test-video subset to `is_hard=1` rows.",
+    )
+    parser.add_argument(
+        "--video_limit",
+        type=int,
+        default=0,
+        help="Optional cap on the number of official test videos to materialize.",
+    )
+    parser.add_argument(
+        "--video_models",
+        type=str,
+        default="",
+        help="Optional comma-separated list of official model_name values to keep.",
+    )
+    parser.add_argument(
+        "--overwrite_videos",
+        action="store_true",
+        help="Re-download official test videos even if local files already exist.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
@@ -105,6 +152,19 @@ def main() -> None:
     manifest_dir = Path(args.manifest_dir)
     checkpoint_dir = Path(args.checkpoint_dir or path_cfg.videophy2_ckpt_dir)
     summary_path = Path(args.summary_path) if args.summary_path else raw_dir.parent / "summary.json"
+    video_root = Path(args.video_root)
+    video_manifest_path = (
+        Path(args.video_manifest_path)
+        if args.video_manifest_path
+        else manifest_dir
+        / (
+            "videophy2_test_official_"
+            f"{args.video_prompt_mode}"
+            f"{'_hard' if args.video_hard_only else ''}"
+            "_videos.csv"
+        )
+    )
+    selected_models = [item.strip() for item in args.video_models.split(",") if item.strip()]
 
     raw_dir.mkdir(parents=True, exist_ok=True)
     manifest_dir.mkdir(parents=True, exist_ok=True)
@@ -159,6 +219,27 @@ def main() -> None:
         official_upsampled_test_csv=upsampled_test_csv,
     )
 
+    video_subset = None
+    if args.download_test_videos or args.video_manifest_path or args.video_limit > 0 or selected_models or args.video_hard_only:
+        LOGGER.info(
+            "Preparing official test-video subset manifest: prompt_mode=%s hard_only=%s limit=%s models=%s",
+            args.video_prompt_mode,
+            args.video_hard_only,
+            args.video_limit,
+            ",".join(selected_models) if selected_models else "<all>",
+        )
+        video_subset = write_official_video_subset_manifest(
+            official_test_csv=test_csv,
+            manifest_path=video_manifest_path,
+            video_root=video_root,
+            prompt_mode=args.video_prompt_mode,
+            hard_only=args.video_hard_only,
+            model_names=selected_models,
+            limit=args.video_limit,
+            download_videos=args.download_test_videos,
+            overwrite_videos=args.overwrite_videos,
+        )
+
     checkpoint_present = checkpoint_dir.exists() and any(checkpoint_dir.iterdir())
     if args.download_checkpoint:
         LOGGER.info("Downloading official VideoPhy-2 AutoEval checkpoint to %s", checkpoint_dir)
@@ -190,6 +271,19 @@ def main() -> None:
             "upsampled_count": manifests.upsampled_count,
             "upsampled_hard_count": manifests.upsampled_hard_count,
         },
+        "official_video_subset": (
+            {
+                "manifest_path": str(video_subset.manifest_path),
+                "video_root": str(video_subset.video_root),
+                "count": video_subset.count,
+                "prompt_mode": video_subset.prompt_mode,
+                "hard_only": video_subset.hard_only,
+                "model_names": video_subset.model_names,
+                "downloaded_videos": args.download_test_videos,
+            }
+            if video_subset
+            else {}
+        ),
     }
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -202,6 +296,13 @@ def main() -> None:
         manifests.upsampled_count,
         manifests.upsampled_hard_count,
     )
+    if video_subset:
+        LOGGER.info(
+            "Official test-video subset: count=%d manifest=%s video_root=%s",
+            video_subset.count,
+            video_subset.manifest_path,
+            video_subset.video_root,
+        )
     if checkpoint_present:
         LOGGER.info("VideoPhy-2 AutoEval checkpoint is present at %s", checkpoint_dir)
     else:
