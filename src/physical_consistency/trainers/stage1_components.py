@@ -71,13 +71,14 @@ def _candidate_lingbot_import_roots(
     project_root: Path | None = None,
 ) -> list[Path]:
     repo_root = Path(project_root or _repo_root()).resolve()
-    candidates: list[Path] = []
+    explicit_candidates: list[Path] = []
+    fallback_candidates: list[Path] = []
 
-    def add_variants(raw: str | os.PathLike[str] | None) -> None:
+    def add_variants(bucket: list[Path], raw: str | os.PathLike[str] | None) -> None:
         if raw in {"", None}:
             return
         base = Path(raw).expanduser()
-        candidates.extend(
+        bucket.extend(
             [
                 base,
                 base / "lingbot-world",
@@ -85,24 +86,33 @@ def _candidate_lingbot_import_roots(
             ]
         )
 
-    add_variants(configured_dir)
-    add_variants(os.environ.get("LINGBOT_CODE_DIR", ""))
-    add_variants(repo_root / "links" / "lingbot_code")
-    add_variants(repo_root.parents[1] / "code" / "lingbot-world" if len(repo_root.parents) > 1 else None)
+    add_variants(explicit_candidates, configured_dir)
+    env_lingbot_code_dir = os.environ.get("LINGBOT_CODE_DIR", "")
+    if env_lingbot_code_dir and env_lingbot_code_dir != str(configured_dir or ""):
+        add_variants(explicit_candidates, env_lingbot_code_dir)
+
+    if explicit_candidates:
+        return _dedupe_paths(explicit_candidates)
+
+    add_variants(fallback_candidates, repo_root / "links" / "lingbot_code")
+    add_variants(
+        fallback_candidates,
+        repo_root.parents[1] / "code" / "lingbot-world" if len(repo_root.parents) > 1 else None,
+    )
 
     swap_candidates: list[Path] = []
-    for candidate in candidates:
+    for candidate in fallback_candidates:
         candidate_str = str(candidate)
         for src, dst in (("nvme03", "nvme04"), ("nvme04", "nvme03")):
             needle = f"/{src}/"
             if needle not in candidate_str:
                 continue
             swapped = candidate_str.replace(needle, f"/{dst}/", 1)
-            add_variants(swapped)
+            add_variants(swap_candidates, swapped)
             swap_candidates.append(Path(swapped).expanduser())
 
-    candidates.extend(swap_candidates)
-    return _dedupe_paths(candidates)
+    fallback_candidates.extend(swap_candidates)
+    return _dedupe_paths(fallback_candidates)
 
 
 def _resolve_lingbot_import_root(

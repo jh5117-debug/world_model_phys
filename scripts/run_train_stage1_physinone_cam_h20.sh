@@ -84,7 +84,7 @@ fi
 if [[ -x "${PROJECT_ROOT}/scripts/setup_symlinks.sh" ]]; then
   "${PROJECT_ROOT}/scripts/setup_symlinks.sh" >/dev/null 2>&1 || true
 fi
-if [[ -e "${PROJECT_ROOT}/links/lingbot_code" ]]; then
+if [[ -z "${LINGBOT_CODE_DIR:-}" && -e "${PROJECT_ROOT}/links/lingbot_code" ]]; then
   export LINGBOT_CODE_DIR="${PROJECT_ROOT}/links/lingbot_code"
 fi
 
