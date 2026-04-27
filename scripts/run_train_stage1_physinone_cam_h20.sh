@@ -6,7 +6,7 @@ export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
-export MASTER_PORT="${MASTER_PORT:-29511}"
+export MASTER_PORT="${MASTER_PORT:-}"
 export TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
 unset NCCL_ASYNC_ERROR_HANDLING || true
 
@@ -98,6 +98,45 @@ if [[ -z "${NUM_GPUS}" ]]; then
   NUM_GPUS="${#GPU_ARRAY[@]}"
 fi
 
+port_is_listening() {
+  local port="$1"
+  python3 - "$port" <<'PY'
+import socket
+import sys
+
+port = int(sys.argv[1])
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.settimeout(0.2)
+try:
+    sock.connect(("127.0.0.1", port))
+except OSError:
+    sys.exit(1)
+finally:
+    sock.close()
+sys.exit(0)
+PY
+}
+
+pick_free_port() {
+  python3 - <<'PY'
+import socket
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+}
+
+if [[ -n "${MASTER_PORT}" ]]; then
+  if port_is_listening "${MASTER_PORT}"; then
+    echo "[WARN] MASTER_PORT=${MASTER_PORT} is already in use; selecting a free local port instead." >&2
+    MASTER_PORT="$(pick_free_port)"
+  fi
+else
+  MASTER_PORT="$(pick_free_port)"
+fi
+export MASTER_PORT
+
 force_clear_target_gpus() {
   if [[ "${FORCE_CLEAR_GPUS_BEFORE_LAUNCH}" != "1" ]]; then
     return
@@ -176,6 +215,8 @@ TRAIN_CMD=(
   accelerate launch
   --config_file "${ACCELERATE_CONFIG}"
   --num_processes "${NUM_GPUS}"
+  --main_process_ip "${MASTER_ADDR}"
+  --main_process_port "${MASTER_PORT}"
   -m physical_consistency.cli.train_stage1_physinone_cam
   --config "${CONFIG_PATH}"
   --env_file "${ENV_FILE}"
