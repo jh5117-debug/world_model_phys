@@ -5,10 +5,15 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
+export MASTER_PORT="${MASTER_PORT:-29511}"
+export TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
+unset NCCL_ASYNC_ERROR_HANDLING || true
 
 ENV_FILE="${ENV_FILE:-${PROJECT_ROOT}/configs/path_config_cluster.env}"
 CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/configs/train_stage1_physinone_cam_75f_384_bf16_trainonly.yaml}"
-ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-${PROJECT_ROOT}/configs/accelerate_stage1_h20_bf16_mixed_safe.yaml}"
+STAGE1_LAUNCHER="${STAGE1_LAUNCHER:-deepspeed}"
+ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-}"
 GPU_LIST="${GPU_LIST:-0,1,2,3,4,5,6,7}"
 NUM_GPUS="${NUM_GPUS:-}"
 BRANCH_MODE="${BRANCH_MODE:-sequence}"
@@ -59,6 +64,21 @@ if [[ -f "${ENV_FILE}" ]]; then
   # shellcheck disable=SC1090
   source "${ENV_FILE}"
   set +a
+fi
+
+if [[ -z "${ACCELERATE_CONFIG}" ]]; then
+  case "${STAGE1_LAUNCHER}" in
+    deepspeed)
+      ACCELERATE_CONFIG="${PROJECT_ROOT}/configs/accelerate_stage1_h20_bf16_mixed_safe.yaml"
+      ;;
+    ddp|multi_gpu)
+      ACCELERATE_CONFIG="${PROJECT_ROOT}/configs/accelerate_stage1_h20_ddp_bf16_mixed_safe.yaml"
+      ;;
+    *)
+      echo "[ERROR] Unsupported STAGE1_LAUNCHER=${STAGE1_LAUNCHER}; expected deepspeed or ddp" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 if [[ -x "${PROJECT_ROOT}/scripts/setup_symlinks.sh" ]]; then
@@ -134,8 +154,11 @@ export PC_LORA_DISABLE_AUTOCAST="${PC_LORA_DISABLE_AUTOCAST:-1}"
 echo "[INFO] CONFIG_PATH=${CONFIG_PATH}"
 echo "[INFO] ACCELERATE_CONFIG=${ACCELERATE_CONFIG}"
 echo "[INFO] ENV_FILE=${ENV_FILE}"
+echo "[INFO] STAGE1_LAUNCHER=${STAGE1_LAUNCHER}"
 echo "[INFO] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "[INFO] NUM_GPUS=${NUM_GPUS}"
+echo "[INFO] MASTER_ADDR=${MASTER_ADDR}"
+echo "[INFO] MASTER_PORT=${MASTER_PORT}"
 echo "[INFO] BRANCH_MODE=${BRANCH_MODE}"
 echo "[INFO] PC_STAGE1_PRECISION_PROFILE=${PC_STAGE1_PRECISION_PROFILE}"
 echo "[INFO] PC_STAGE1_LOWP_DTYPE=${PC_STAGE1_LOWP_DTYPE}"

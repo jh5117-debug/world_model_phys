@@ -1,15 +1,14 @@
 compute_environment: LOCAL_MACHINE
 debug: false
-deepspeed_config:
-  deepspeed_config_file: configs/deepspeed_stage1_zero3_h20_fp32_stable.json
-  zero3_init_flag: false
-distributed_type: DEEPSPEED
+distributed_type: MULTI_GPU
 downcast_bf16: 'no'
 enable_cpu_affinity: false
+gpu_ids: all
 machine_rank: 0
 main_process_ip: 127.0.0.1
 main_process_port: 29511
 main_training_function: main
+mixed_precision: 'no'
 num_machines: 1
 num_processes: 8
 rdzv_backend: static
