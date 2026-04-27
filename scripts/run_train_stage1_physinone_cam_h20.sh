@@ -84,8 +84,15 @@ fi
 if [[ -x "${PROJECT_ROOT}/scripts/setup_symlinks.sh" ]]; then
   "${PROJECT_ROOT}/scripts/setup_symlinks.sh" >/dev/null 2>&1 || true
 fi
-if [[ -z "${LINGBOT_CODE_DIR:-}" && -e "${PROJECT_ROOT}/links/lingbot_code" ]]; then
+if [[ -n "${LINGBOT_CODE_DIR:-}" && ! -f "${LINGBOT_CODE_DIR}/wan/modules/model.py" ]]; then
+  echo "[WARN] LINGBOT_CODE_DIR does not expose wan/modules/model.py: ${LINGBOT_CODE_DIR}" >&2
+fi
+if [[ ( -z "${LINGBOT_CODE_DIR:-}" || ! -f "${LINGBOT_CODE_DIR}/wan/modules/model.py" ) && -e "${PROJECT_ROOT}/links/lingbot_code/wan/modules/model.py" ]]; then
   export LINGBOT_CODE_DIR="${PROJECT_ROOT}/links/lingbot_code"
+  echo "[INFO] Falling back to linked LingBot checkout: ${LINGBOT_CODE_DIR}"
+elif [[ ( -z "${LINGBOT_CODE_DIR:-}" || ! -f "${LINGBOT_CODE_DIR}/wan/modules/model.py" ) && -e "${PROJECT_ROOT}/third_party/lingbot_restore/code/lingbot-world/wan/modules/model.py" ]]; then
+  export LINGBOT_CODE_DIR="${PROJECT_ROOT}/third_party/lingbot_restore/code/lingbot-world"
+  echo "[INFO] Falling back to restored LingBot snapshot: ${LINGBOT_CODE_DIR}"
 fi
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-${GPU_LIST}}"

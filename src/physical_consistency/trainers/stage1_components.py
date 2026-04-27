@@ -91,10 +91,8 @@ def _candidate_lingbot_import_roots(
     if env_lingbot_code_dir and env_lingbot_code_dir != str(configured_dir or ""):
         add_variants(explicit_candidates, env_lingbot_code_dir)
 
-    if explicit_candidates:
-        return _dedupe_paths(explicit_candidates)
-
     add_variants(fallback_candidates, repo_root / "links" / "lingbot_code")
+    add_variants(fallback_candidates, repo_root / "third_party" / "lingbot_restore" / "code" / "lingbot-world")
     add_variants(
         fallback_candidates,
         repo_root.parents[1] / "code" / "lingbot-world" if len(repo_root.parents) > 1 else None,
@@ -112,6 +110,8 @@ def _candidate_lingbot_import_roots(
             swap_candidates.append(Path(swapped).expanduser())
 
     fallback_candidates.extend(swap_candidates)
+    if explicit_candidates:
+        return _dedupe_paths(explicit_candidates + fallback_candidates)
     return _dedupe_paths(fallback_candidates)
 
 
