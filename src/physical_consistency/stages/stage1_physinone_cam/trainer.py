@@ -74,6 +74,13 @@ class Stage1BranchTrainer:
             cfg.student_precision_profile,
             cfg.student_low_precision_dtype,
         )
+        LOGGER.info(
+            "[Stage1][%s] Initializing accelerator (launcher_env rank=%s local_rank=%s world_size=%s)",
+            branch,
+            os.environ.get("RANK", ""),
+            os.environ.get("LOCAL_RANK", ""),
+            os.environ.get("WORLD_SIZE", ""),
+        )
 
         ddp_kwargs = DistributedDataParallelKwargs(
             find_unused_parameters=bool(cfg.student_ddp_find_unused_parameters)
@@ -96,6 +103,14 @@ class Stage1BranchTrainer:
             kwargs_handlers=[ddp_kwargs, init_kwargs],
             log_with=None,
             project_config=project_config,
+        )
+        LOGGER.info(
+            "[Stage1][%s] Accelerator ready (distributed_type=%s num_processes=%s device=%s is_main=%s)",
+            branch,
+            self.accelerator.distributed_type,
+            self.accelerator.num_processes,
+            self.accelerator.device,
+            self.accelerator.is_main_process,
         )
         self.helper = LingBotStage1Helper(cfg)
         self.model = None
