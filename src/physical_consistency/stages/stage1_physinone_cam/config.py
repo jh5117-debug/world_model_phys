@@ -96,6 +96,8 @@ class Stage1PhysInOneConfig:
     student_memory_efficient_checkpoint_mode: str = "full"
     student_ffn_chunk_size: int = 4096
     student_norm_chunk_size: int = 0
+    student_precision_profile: str = "mixed_safe"
+    student_low_precision_dtype: str = "bf16"
     gradient_checkpointing: bool = True
     student_checkpoint_use_reentrant: bool | None = None
     student_ddp_find_unused_parameters: bool = True
@@ -150,6 +152,28 @@ class Stage1PhysInOneConfig:
         if student_tuning_mode not in {"full", "lora"}:
             raise ValueError(f"Unsupported student_tuning_mode: {student_tuning_mode}")
 
+        student_precision_profile = str(
+            payload.get("student_precision_profile", "mixed_safe") or "mixed_safe"
+        ).strip().lower()
+        if student_precision_profile in {"", "auto", "native", "native_lowp", "lowp"}:
+            student_precision_profile = "native_lowp" if student_precision_profile in {"native", "native_lowp", "lowp"} else "mixed_safe"
+        elif student_precision_profile in {"mixed_safe", "safe", "safe_mixed"}:
+            student_precision_profile = "mixed_safe"
+        elif student_precision_profile in {"fp32", "float32", "full_fp32"}:
+            student_precision_profile = "fp32"
+        else:
+            raise ValueError(f"Unsupported student_precision_profile: {student_precision_profile}")
+
+        student_low_precision_dtype = str(
+            payload.get("student_low_precision_dtype", "bf16") or "bf16"
+        ).strip().lower()
+        if student_low_precision_dtype in {"bfloat16"}:
+            student_low_precision_dtype = "bf16"
+        elif student_low_precision_dtype in {"float16", "half"}:
+            student_low_precision_dtype = "fp16"
+        elif student_low_precision_dtype not in {"bf16", "fp16"}:
+            raise ValueError(f"Unsupported student_low_precision_dtype: {student_low_precision_dtype}")
+
         student_checkpoint_use_reentrant = payload.get("student_checkpoint_use_reentrant", None)
         if student_checkpoint_use_reentrant not in {"", None}:
             student_checkpoint_use_reentrant = _coerce_bool(student_checkpoint_use_reentrant, False)
@@ -202,6 +226,8 @@ class Stage1PhysInOneConfig:
             ).strip().lower(),
             student_ffn_chunk_size=int(payload.get("student_ffn_chunk_size", 4096) or 4096),
             student_norm_chunk_size=int(payload.get("student_norm_chunk_size", 0) or 0),
+            student_precision_profile=student_precision_profile,
+            student_low_precision_dtype=student_low_precision_dtype,
             gradient_checkpointing=_coerce_bool(payload.get("gradient_checkpointing"), True),
             student_checkpoint_use_reentrant=student_checkpoint_use_reentrant,
             student_ddp_find_unused_parameters=_coerce_bool(

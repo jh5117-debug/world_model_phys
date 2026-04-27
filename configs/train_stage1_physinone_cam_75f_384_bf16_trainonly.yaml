@@ -1,4 +1,4 @@
-experiment_name: exp_stage1_physinone_cam
+experiment_name: exp_stage1_physinone_cam_75f_384_bf16_trainonly
 run_group: stage1_physinone_cam
 seed: 42
 
@@ -16,9 +16,9 @@ num_epochs: 5
 gradient_accumulation_steps: 4
 max_grad_norm: 1.0
 
-num_frames: 81
-height: 480
-width: 480
+num_frames: 75
+height: 384
+width: 384
 dataset_repeat: 1
 num_workers: 4
 save_every_n_epochs: 1
@@ -33,7 +33,7 @@ student_lora_chunk_size: 0
 student_lora_merge_mode: inplace
 student_memory_efficient_modulation: true
 student_memory_efficient_checkpoint_mode: full
-student_ffn_chunk_size: 4096
+student_ffn_chunk_size: 2048
 student_norm_chunk_size: 0
 student_precision_profile: mixed_safe
 student_low_precision_dtype: bf16
@@ -43,17 +43,10 @@ student_ddp_find_unused_parameters: true
 distributed_timeout_hours: 8
 
 videophy2_eval:
-  enabled: true
+  enabled: false
   every_n_epochs: 1
-  # IMPORTANT:
-  # Do not point these at the old custom CSGO AutoEval path.
-  # Stage-1 is expected to run the official VideoPhy-2 protocol here.
-  # Fill these with the official generation + scoring commands for the
-  # released VideoPhy-2 evaluation datasets/protocol.
-  # Use ${checkpoint_dir}, ${bundle_dir}, ${output_dir}, ${experiment_name}, ${epoch}, ${branch}.
   generation_command: ""
   score_command: ""
-  # Point this at the official summary.json produced by your score command.
   summary_json: ""
   working_dir: .
   fail_fast: false

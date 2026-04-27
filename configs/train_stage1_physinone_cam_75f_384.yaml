@@ -35,6 +35,8 @@ student_memory_efficient_modulation: true
 student_memory_efficient_checkpoint_mode: full
 student_ffn_chunk_size: 2048
 student_norm_chunk_size: 0
+student_precision_profile: mixed_safe
+student_low_precision_dtype: bf16
 gradient_checkpointing: true
 student_checkpoint_use_reentrant:
 student_ddp_find_unused_parameters: true

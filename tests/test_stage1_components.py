@@ -1,15 +1,20 @@
+import os
 import torch
 import torch.nn as nn
+from types import SimpleNamespace
 
 from physical_consistency.trainers.stage1_components import (
     LoRALinear,
     LingBotStage1Helper,
+    _patch_flash_attention_sdpa_fallback,
     apply_gradient_checkpointing,
     apply_lora_to_wan_model,
     apply_memory_efficient_wan_block_patch,
+    configure_stage1_precision_env,
     export_pretrained_state_dict,
     extract_lora_state_dict,
     load_lora_state_dict,
+    resolve_stage1_low_precision_dtype,
 )
 
 
@@ -430,6 +435,80 @@ def test_gradient_checkpointing_can_skip_feature_hook_block(monkeypatch):
     _ = model.blocks[1](x, e, **common_kwargs)
 
     assert checkpoint_calls == [{"use_reentrant": False, "determinism_check": "none"}]
+
+
+def test_configure_stage1_precision_env_sets_mixed_safe_defaults(monkeypatch):
+    for name in (
+        "PC_STAGE1_FORCE_FP32",
+        "PC_STAGE1_PRECISION_PROFILE",
+        "PC_STAGE1_LOWP_DTYPE",
+        "PC_VAE_FORCE_FP32",
+        "PC_FORCE_LORA_FP32",
+        "PC_LORA_DISABLE_AUTOCAST",
+        "PC_FORCE_SDPA_FALLBACK",
+        "PC_FORCE_SDPA_MATH",
+        "PC_FORCE_ATTN_FP32",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    policy = configure_stage1_precision_env("mixed_safe", "bf16")
+
+    assert policy["profile"] == "mixed_safe"
+    assert os.environ["PC_STAGE1_PRECISION_PROFILE"] == "mixed_safe"
+    assert os.environ["PC_STAGE1_LOWP_DTYPE"] == "bf16"
+    assert os.environ["PC_VAE_FORCE_FP32"] == "1"
+    assert os.environ["PC_FORCE_LORA_FP32"] == "1"
+    assert os.environ["PC_LORA_DISABLE_AUTOCAST"] == "1"
+    assert os.environ["PC_FORCE_SDPA_FALLBACK"] == "1"
+    assert os.environ["PC_FORCE_SDPA_MATH"] == "1"
+    assert os.environ["PC_FORCE_ATTN_FP32"] == "1"
+    assert resolve_stage1_low_precision_dtype() == torch.bfloat16
+
+
+def test_configure_stage1_precision_env_supports_fp16(monkeypatch):
+    for name in ("PC_STAGE1_FORCE_FP32", "PC_STAGE1_PRECISION_PROFILE", "PC_STAGE1_LOWP_DTYPE"):
+        monkeypatch.delenv(name, raising=False)
+
+    policy = configure_stage1_precision_env("native_lowp", "fp16")
+
+    assert policy["profile"] == "native_lowp"
+    assert os.environ["PC_STAGE1_LOWP_DTYPE"] == "fp16"
+    assert resolve_stage1_low_precision_dtype() == torch.float16
+
+
+def test_patch_flash_attention_sdpa_fallback_uses_fp32_in_mixed_safe(monkeypatch):
+    for name in (
+        "PC_STAGE1_FORCE_FP32",
+        "PC_STAGE1_PRECISION_PROFILE",
+        "PC_FORCE_SDPA_FALLBACK",
+        "PC_FORCE_SDPA_MATH",
+        "PC_FORCE_ATTN_FP32",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    configure_stage1_precision_env("mixed_safe", "bf16")
+
+    calls = []
+
+    def _fake_sdpa_fallback(**kwargs):
+        calls.append(kwargs["dtype"])
+        return torch.zeros_like(kwargs["q"])
+
+    wan_attention_module = SimpleNamespace(
+        _sdpa_fallback=_fake_sdpa_fallback,
+        flash_attention=lambda *args, **kwargs: None,
+    )
+    wan_model_module = SimpleNamespace(
+        flash_attention=lambda *args, **kwargs: None,
+    )
+
+    _patch_flash_attention_sdpa_fallback(wan_attention_module, wan_model_module)
+
+    q = torch.zeros(1, 2, 1, 4, dtype=torch.bfloat16)
+    out = wan_attention_module.flash_attention(q=q, k=q, v=q, dtype=torch.bfloat16)
+
+    assert torch.equal(out, torch.zeros_like(q))
+    assert calls == [torch.float32]
+    assert wan_model_module.flash_attention is wan_attention_module.flash_attention
 
 
 def test_apply_lora_to_wan_model_replaces_block_linears_and_freezes_base_params():

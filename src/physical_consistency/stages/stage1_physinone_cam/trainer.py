@@ -31,7 +31,9 @@ from physical_consistency.trainers.stage1_components import (
     LingBotStage1Helper,
     apply_gradient_checkpointing,
     compute_scheduler_total_steps,
+    configure_stage1_precision_env,
     export_pretrained_state_dict,
+    resolve_stage1_low_precision_dtype,
 )
 
 from .config import Stage1PhysInOneConfig
@@ -68,6 +70,10 @@ class Stage1BranchTrainer:
         self.branch = branch
         self.source_checkpoint_dir = str(Path(source_checkpoint_dir).resolve())
         self.companion_checkpoint_dir = str(Path(companion_checkpoint_dir).resolve())
+        self.precision_policy = configure_stage1_precision_env(
+            cfg.student_precision_profile,
+            cfg.student_low_precision_dtype,
+        )
 
         ddp_kwargs = DistributedDataParallelKwargs(
             find_unused_parameters=bool(cfg.student_ddp_find_unused_parameters)
@@ -288,7 +294,7 @@ class Stage1BranchTrainer:
             autocast_ctx = torch.autocast(device_type=device_type, enabled=False)
         else:
             autocast_ctx = (
-                torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16)
+                torch.amp.autocast(device_type=device_type, dtype=resolve_stage1_low_precision_dtype())
                 if device_type == "cuda"
                 else torch.autocast(device_type=device_type, enabled=False)
             )

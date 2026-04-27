@@ -43,16 +43,129 @@ def _env_int(name: str, default: int) -> int:
         return int(default)
 
 
+def _normalize_stage1_precision_profile(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"", "auto", "native_lowp", "native", "lowp"}:
+        return "native_lowp"
+    if normalized in {"mixed_safe", "safe_mixed", "safe"}:
+        return "mixed_safe"
+    if normalized in {"fp32", "float32", "full_fp32"}:
+        return "fp32"
+    LOGGER.warning("Unknown Stage1 precision profile %r; falling back to native_lowp", value)
+    return "native_lowp"
+
+
+def _normalize_stage1_lowp_dtype_name(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"", "bf16", "bfloat16"}:
+        return "bf16"
+    if normalized in {"fp16", "float16", "half"}:
+        return "fp16"
+    LOGGER.warning("Unknown Stage1 low-precision dtype %r; falling back to bf16", value)
+    return "bf16"
+
+
+def resolve_stage1_precision_profile() -> str:
+    if _env_flag("PC_STAGE1_FORCE_FP32"):
+        return "fp32"
+    return _normalize_stage1_precision_profile(os.environ.get("PC_STAGE1_PRECISION_PROFILE"))
+
+
+def resolve_stage1_low_precision_dtype() -> torch.dtype:
+    normalized = _normalize_stage1_lowp_dtype_name(os.environ.get("PC_STAGE1_LOWP_DTYPE"))
+    return torch.float16 if normalized == "fp16" else torch.bfloat16
+
+
+def _stage1_force_fp32() -> bool:
+    return resolve_stage1_precision_profile() == "fp32"
+
+
+def _stage1_mixed_safe() -> bool:
+    return resolve_stage1_precision_profile() == "mixed_safe"
+
+
+def _attention_compute_dtype(default_dtype: torch.dtype) -> torch.dtype:
+    if _env_flag("PC_FORCE_ATTN_FP32") or _stage1_mixed_safe() or _stage1_force_fp32():
+        return torch.float32
+    return default_dtype
+
+
+def configure_stage1_precision_env(
+    profile: str | None = None,
+    lowp_dtype: str | None = None,
+) -> dict[str, str]:
+    """Materialize a stable Stage-1 precision policy via environment defaults."""
+
+    requested_profile = _normalize_stage1_precision_profile(
+        profile if profile not in {"", None} else os.environ.get("PC_STAGE1_PRECISION_PROFILE")
+    )
+    requested_lowp_dtype = _normalize_stage1_lowp_dtype_name(
+        lowp_dtype if lowp_dtype not in {"", None} else os.environ.get("PC_STAGE1_LOWP_DTYPE")
+    )
+
+    if _env_flag("PC_STAGE1_FORCE_FP32"):
+        requested_profile = "fp32"
+
+    os.environ["PC_STAGE1_PRECISION_PROFILE"] = requested_profile
+    os.environ["PC_STAGE1_LOWP_DTYPE"] = requested_lowp_dtype
+
+    defaults: dict[str, str] = {}
+    if requested_profile == "fp32":
+        defaults.update(
+            {
+                "PC_STAGE1_FORCE_FP32": "1",
+                "PC_VAE_FORCE_FP32": "1",
+                "PC_FORCE_LORA_FP32": "1",
+                "PC_LORA_DISABLE_AUTOCAST": "1",
+                "PC_FORCE_SDPA_FALLBACK": "1",
+                "PC_FORCE_SDPA_MATH": "1",
+                "PC_FORCE_ATTN_FP32": "1",
+            }
+        )
+    elif requested_profile == "mixed_safe":
+        defaults.update(
+            {
+                "PC_VAE_FORCE_FP32": "1",
+                "PC_FORCE_LORA_FP32": "1",
+                "PC_LORA_DISABLE_AUTOCAST": "1",
+                "PC_FORCE_SDPA_FALLBACK": "1",
+                "PC_FORCE_SDPA_MATH": "1",
+                "PC_FORCE_ATTN_FP32": "1",
+            }
+        )
+
+    for name, value in defaults.items():
+        os.environ.setdefault(name, value)
+
+    effective = {
+        "profile": resolve_stage1_precision_profile(),
+        "lowp_dtype": _normalize_stage1_lowp_dtype_name(os.environ.get("PC_STAGE1_LOWP_DTYPE")),
+        "force_fp32": str(_stage1_force_fp32()),
+        "force_sdpa_fallback": str(_env_flag("PC_FORCE_SDPA_FALLBACK")),
+        "force_sdpa_math": str(_env_flag("PC_FORCE_SDPA_MATH")),
+        "force_attn_fp32": str(_env_flag("PC_FORCE_ATTN_FP32")),
+        "force_lora_fp32": str(_env_flag("PC_FORCE_LORA_FP32")),
+        "disable_lora_autocast": str(_env_flag("PC_LORA_DISABLE_AUTOCAST")),
+        "force_vae_fp32": str(_env_flag("PC_VAE_FORCE_FP32")),
+    }
+    if _should_log_rank_zero():
+        LOGGER.info("Effective Stage1 precision policy: %s", effective)
+    return effective
+
+
 @contextlib.contextmanager
 def _sdpa_kernel_context():
     """Optionally force PyTorch SDPA fallback to its math backend."""
-    if not _env_flag("PC_FORCE_SDPA_MATH"):
+    if not (_env_flag("PC_FORCE_SDPA_MATH") or _stage1_mixed_safe()):
         yield
         return
 
     global _SDPA_MATH_LOGGED
     if not _SDPA_MATH_LOGGED and _should_log_rank_zero():
-        LOGGER.info("PC_FORCE_SDPA_MATH=1: forcing PyTorch SDPA math backend")
+        LOGGER.info(
+            "Using PyTorch SDPA math backend for Stage1 attention "
+            "(PC_FORCE_SDPA_MATH=1 or mixed_safe precision profile)"
+        )
         _SDPA_MATH_LOGGED = True
 
     try:
@@ -216,7 +329,7 @@ def _patch_flash_attention_sdpa_fallback(wan_attention_module, wan_model_module=
     Wan's model module imports flash_attention by value, so patching only
     wan.modules.attention is not enough after wan.modules.model has loaded.
     """
-    if not _env_flag("PC_FORCE_SDPA_FALLBACK"):
+    if not (_env_flag("PC_FORCE_SDPA_FALLBACK") or _stage1_mixed_safe()):
         return
 
     sdpa_fn = getattr(wan_attention_module, "_sdpa_fallback", None)
@@ -238,12 +351,13 @@ def _patch_flash_attention_sdpa_fallback(wan_attention_module, wan_model_module=
             causal=False, window_size=(-1, -1),
             deterministic=False, dtype=torch.bfloat16, version=None,
         ):
+            compute_dtype = _attention_compute_dtype(dtype)
             with _sdpa_kernel_context():
                 return sdpa_fn(
                     q=q, k=k, v=v,
                     q_lens=q_lens, k_lens=k_lens,
                     dropout_p=dropout_p, softmax_scale=softmax_scale,
-                    q_scale=q_scale, causal=causal, dtype=dtype,
+                    q_scale=q_scale, causal=causal, dtype=compute_dtype,
                 )
 
         wan_attention_module._pc_original_flash_attention = original_flash_attention
@@ -261,9 +375,55 @@ def _patch_flash_attention_sdpa_fallback(wan_attention_module, wan_model_module=
 
     if _should_log_rank_zero():
         LOGGER.info(
-            "PC_FORCE_SDPA_FALLBACK=1: patched %s flash_attention -> SDPA fallback "
-            "(flash-attn backward will NOT be used)",
+            "Patched %s flash_attention -> SDPA fallback "
+            "(flash-attn backward will NOT be used; compute_dtype=%s)",
             "+".join(patched_targets),
+            _attention_compute_dtype(resolve_stage1_low_precision_dtype()),
+        )
+
+
+def _patch_sdpa_fallback_precision(wan_attention_module) -> None:
+    """Make the SDPA fallback run in fp32 when the Stage-1 stability profile asks for it."""
+
+    original_sdpa_fallback = getattr(wan_attention_module, "_sdpa_fallback", None)
+    if original_sdpa_fallback is None:
+        return
+    if getattr(wan_attention_module, "_pc_sdpa_precision_patched", False):
+        return
+
+    def _sdpa_fallback_with_precision(
+        q,
+        k,
+        v,
+        q_lens=None,
+        k_lens=None,
+        dropout_p=0.,
+        softmax_scale=None,
+        q_scale=None,
+        causal=False,
+        dtype=torch.bfloat16,
+    ):
+        return original_sdpa_fallback(
+            q=q,
+            k=k,
+            v=v,
+            q_lens=q_lens,
+            k_lens=k_lens,
+            dropout_p=dropout_p,
+            softmax_scale=softmax_scale,
+            q_scale=q_scale,
+            causal=causal,
+            dtype=_attention_compute_dtype(dtype),
+        )
+
+    wan_attention_module._pc_original_sdpa_fallback = original_sdpa_fallback
+    wan_attention_module._sdpa_fallback = _sdpa_fallback_with_precision
+    wan_attention_module._pc_sdpa_precision_patched = True
+    if _should_log_rank_zero():
+        LOGGER.info(
+            "Patched wan.modules.attention._sdpa_fallback for Stage1 precision policy "
+            "(compute_dtype=%s)",
+            _attention_compute_dtype(resolve_stage1_low_precision_dtype()),
         )
 
 
@@ -404,6 +564,7 @@ class LingBotStage1Helper:
 
         _patch_wan_rope_apply_to_preserve_dtype(wan_model_module)
         import wan.modules.attention as wan_attention_module
+        _patch_sdpa_fallback_precision(wan_attention_module)
         _patch_flash_attention_sdpa_fallback(wan_attention_module, wan_model_module)
         self.WanModel = WanModel
         self.T5EncoderModel = T5EncoderModel
@@ -462,14 +623,14 @@ class LingBotStage1Helper:
         if control_type not in {"act", "cam"}:
             raise ValueError(f"Unsupported control_type: {control_type}")
         LOGGER.info("Loading %s from %s", subfolder, checkpoint_root)
-        model_dtype = torch.float32 if _env_flag("PC_STAGE1_FORCE_FP32") else torch.bfloat16
+        model_dtype = torch.float32 if _stage1_force_fp32() else resolve_stage1_low_precision_dtype()
         model = self.WanModel.from_pretrained(
             checkpoint_root,
             subfolder=subfolder,
             torch_dtype=model_dtype,
             control_type=control_type,
         )
-        if _env_flag("PC_STAGE1_FORCE_FP32") and hasattr(model, "float"):
+        if _stage1_force_fp32() and hasattr(model, "float"):
             model.float()
             LOGGER.info("Forced Stage1 student model to fp32 for numerical stability (PC_STAGE1_FORCE_FP32=1)")
         if getattr(self.args, "student_memory_efficient_modulation", True):
@@ -525,7 +686,7 @@ class LingBotStage1Helper:
 
     @torch.no_grad()
     def encode_text(self, prompt: str) -> list[torch.Tensor]:
-        force_fp32 = _env_flag("PC_STAGE1_FORCE_FP32")
+        force_fp32 = _stage1_force_fp32()
         if prompt in self._t5_cache:
             cached = [tensor.to(self.device) for tensor in self._t5_cache[prompt]]
             if force_fp32:
@@ -607,7 +768,11 @@ class LingBotStage1Helper:
         c2ws_infer = compute_relative_poses(c2ws_infer, framewise=True)
         ks_repeated = ks_single.repeat(len(c2ws_infer), 1).to(self.device)
         c2ws_infer = c2ws_infer.to(self.device)
-        cond_dtype = torch.float32 if _env_flag("PC_STAGE1_FORCE_FP32") else torch.bfloat16
+        cond_dtype = (
+            torch.float32
+            if (_stage1_force_fp32() or _stage1_mixed_safe())
+            else resolve_stage1_low_precision_dtype()
+        )
 
         only_rays_d = control_type == "act"
         plucker = get_plucker_embeddings(
@@ -865,6 +1030,9 @@ def apply_memory_efficient_wan_block_patch(
             return tensor.squeeze(2)
         return tensor
 
+    def _use_fp32_sensitive_path(reference: torch.Tensor) -> bool:
+        return reference.device.type == "cuda" and (_stage1_mixed_safe() or _stage1_force_fp32())
+
     def _modulate(normed: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor, target_dtype: torch.dtype) -> torch.Tensor:
         normed = normed.to(target_dtype)
         shift = _squeeze_gate(shift).to(device=normed.device, dtype=target_dtype)
@@ -877,8 +1045,13 @@ def apply_memory_efficient_wan_block_patch(
         return tensor[:, start:stop]
 
     def _apply_gated_residual(base: torch.Tensor, value: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
-        gate = _squeeze_gate(gate).to(device=value.device, dtype=value.dtype)
-        return torch.addcmul(base, value, gate)
+        output_dtype = base.dtype
+        compute_dtype = torch.float32 if _use_fp32_sensitive_path(base) else value.dtype
+        base_work = base.to(compute_dtype)
+        value_work = value.to(compute_dtype)
+        gate_work = _squeeze_gate(gate).to(device=value.device, dtype=compute_dtype)
+        output = torch.addcmul(base_work, value_work, gate_work)
+        return output if output.dtype == output_dtype else output.to(output_dtype)
 
     def _run_checkpointed_inner(
         block: torch.nn.Module,
@@ -961,7 +1134,7 @@ def apply_memory_efficient_wan_block_patch(
         scale: torch.Tensor,
         gate: torch.Tensor,
         target_dtype: torch.dtype,
-    ) -> torch.Tensor:
+        ) -> torch.Tensor:
         if ffn_chunk_size is None or residual.shape[1] <= ffn_chunk_size:
             def _ffn_body(
                 residual_arg: torch.Tensor,
@@ -969,7 +1142,8 @@ def apply_memory_efficient_wan_block_patch(
                 scale_arg: torch.Tensor,
                 gate_arg: torch.Tensor,
             ):
-                ffn_input = _modulate(norm(residual_arg), shift_arg, scale_arg, target_dtype)
+                ffn_input_dtype = torch.float32 if _use_fp32_sensitive_path(residual_arg) else target_dtype
+                ffn_input = _modulate(norm(residual_arg), shift_arg, scale_arg, ffn_input_dtype)
                 y = _run_module_layers(ffn, ffn_input)
                 return _apply_gated_residual(residual_arg, y, gate_arg)
 
@@ -989,7 +1163,8 @@ def apply_memory_efficient_wan_block_patch(
                 scale_arg: torch.Tensor,
                 gate_arg: torch.Tensor,
             ):
-                ffn_input_chunk = _modulate(norm(residual_arg), shift_arg, scale_arg, target_dtype)
+                ffn_input_dtype = torch.float32 if _use_fp32_sensitive_path(residual_arg) else target_dtype
+                ffn_input_chunk = _modulate(norm(residual_arg), shift_arg, scale_arg, ffn_input_dtype)
                 y_chunk = _run_module_layers(ffn, ffn_input_chunk)
                 return _apply_gated_residual(residual_arg, y_chunk, gate_arg)
 
@@ -1133,9 +1308,15 @@ def apply_memory_efficient_wan_block_patch(
                 self.modulation.unsqueeze(0).to(device=e.device, dtype=torch.float32)
                 + e.to(dtype=torch.float32)
             ).chunk(6, dim=2)
+            fp32_sensitive = _use_fp32_sensitive_path(x)
 
             _wan_trace("before_self_attn_norm", block=self, tensors={"x": x}, sync=True)
-            self_attn_input = _modulate(self.norm1(x), e[0], e[1], target_dtype)
+            self_attn_input = _modulate(
+                self.norm1(x),
+                e[0],
+                e[1],
+                torch.float32 if fp32_sensitive else target_dtype,
+            )
             _wan_trace(
                 "before_self_attn",
                 block=self,
