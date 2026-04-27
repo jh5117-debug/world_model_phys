@@ -124,6 +124,23 @@ class Stage1BranchTrainer:
         ensure_dir(self.output_dir)
 
     def run(self) -> BranchTrainResult:
+        LOGGER.info(
+            "[Stage1][%s] Starting branch run (source_ckpt=%s companion_ckpt=%s output_dir=%s)",
+            self.branch,
+            self.source_checkpoint_dir,
+            self.companion_checkpoint_dir,
+            self.output_dir,
+        )
+        LOGGER.info(
+            "[Stage1][%s] Building dataset from %s (frames=%s size=%sx%s repeat=%s workers=%s)",
+            self.branch,
+            self.cfg.dataset_dir,
+            self.cfg.num_frames,
+            self.cfg.height,
+            self.cfg.width,
+            self.cfg.dataset_repeat,
+            self.cfg.num_workers,
+        )
         dataset = PhysInOneCamDataset(
             self.cfg.dataset_dir,
             split="train",
@@ -132,6 +149,8 @@ class Stage1BranchTrainer:
             width=self.cfg.width,
             repeat=self.cfg.dataset_repeat,
         )
+        LOGGER.info("[Stage1][%s] Dataset ready with %s samples", self.branch, len(dataset))
+        LOGGER.info("[Stage1][%s] Constructing raw dataloader", self.branch)
         raw_loader = DataLoader(
             dataset,
             batch_size=1,
@@ -142,13 +161,20 @@ class Stage1BranchTrainer:
         )
         train_dataset_len = len(dataset)
 
+        LOGGER.info("[Stage1][%s] Loading student model", self.branch)
         self.model = self.helper.load_model(
             self.accelerator.device,
             self.branch,
             checkpoint_dir=self.source_checkpoint_dir,
             control_type="cam",
         )
+        LOGGER.info("[Stage1][%s] Student model loaded", self.branch)
         if self.cfg.gradient_checkpointing:
+            LOGGER.info(
+                "[Stage1][%s] Applying gradient checkpointing (mode=%s)",
+                self.branch,
+                self.cfg.student_memory_efficient_checkpoint_mode,
+            )
             use_reentrant = self._student_checkpoint_use_reentrant()
             apply_gradient_checkpointing(
                 self.model,
@@ -157,7 +183,9 @@ class Stage1BranchTrainer:
                 skip_block_indices=set(),
                 memory_efficient_mode=self.cfg.student_memory_efficient_checkpoint_mode,
             )
+            LOGGER.info("[Stage1][%s] Gradient checkpointing ready", self.branch)
 
+        LOGGER.info("[Stage1][%s] Building optimizer and scheduler", self.branch)
         optimizer = torch.optim.AdamW(
             [parameter for parameter in self.model.parameters() if parameter.requires_grad],
             lr=self.cfg.learning_rate,
@@ -179,13 +207,16 @@ class Stage1BranchTrainer:
             self.cfg.gradient_accumulation_steps,
             self.cfg.num_epochs,
         )
+        LOGGER.info("[Stage1][%s] Preparing model/optimizer/dataloader with accelerator", self.branch)
         self.model, self.optimizer, self.train_loader, self.scheduler = self.accelerator.prepare(
             self.model,
             optimizer,
             raw_loader,
             scheduler,
         )
+        LOGGER.info("[Stage1][%s] Accelerator.prepare complete", self.branch)
         self.accelerator.wait_for_everyone()
+        LOGGER.info("[Stage1][%s] Post-prepare barrier complete", self.branch)
 
         last_eval_bundle = ""
         for epoch in range(self.cfg.num_epochs):
