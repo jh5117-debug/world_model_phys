@@ -29,6 +29,7 @@ MAX_ROWS_PER_GPU="${MAX_ROWS_PER_GPU:-0}"
 MAX_SAMPLES="${MAX_SAMPLES:-0}"
 MAX_SEQUENCE_LENGTH="${MAX_SEQUENCE_LENGTH:-0}"
 SKIP_EXISTING="${SKIP_EXISTING:-1}"
+ENABLE_MODEL_CPU_OFFLOAD="${ENABLE_MODEL_CPU_OFFLOAD:-0}"
 FLUX_FIRST_FRAME_PYTHON="${FLUX_FIRST_FRAME_PYTHON:-python}"
 
 if [[ ! -f "${MANIFEST}" ]]; then
@@ -141,6 +142,9 @@ for shard_idx in "${!GPUS[@]}"; do
   fi
   if [[ "${SKIP_EXISTING}" == "1" ]]; then
     cmd+=(--skip_existing)
+  fi
+  if [[ "${ENABLE_MODEL_CPU_OFFLOAD}" == "1" ]]; then
+    cmd+=(--enable_model_cpu_offload)
   fi
   echo "[RUN][GPU ${gpu}] shard=${shard_idx} rows=$(($(wc -l < "${shard_manifest}") - 1))"
   CUDA_VISIBLE_DEVICES="${gpu}" "${cmd[@]}" &
