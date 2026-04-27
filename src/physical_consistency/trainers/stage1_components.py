@@ -10,6 +10,7 @@ import math
 import os
 import shutil
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import MethodType
@@ -630,19 +631,21 @@ class LingBotStage1Helper:
 
     def bootstrap_imports(self) -> None:
         """Import LingBot modules lazily from the shared code checkout."""
+        start_time = time.perf_counter()
         configured_dir = getattr(self.args, "lingbot_code_dir", "")
+        LOGGER.info("Stage1 helper: resolving LingBot import root (configured=%r)", configured_dir)
         lingbot_root, attempted = _resolve_lingbot_import_root(configured_dir)
         self.args.lingbot_code_dir = str(lingbot_root)
         if str(lingbot_root) not in sys.path:
             sys.path.insert(0, str(lingbot_root))
         importlib.invalidate_caches()
-        if _should_log_rank_zero():
-            LOGGER.info(
-                "Resolved LingBot import root to %s (configured=%r, attempted=%s)",
-                lingbot_root,
-                configured_dir,
-                attempted,
-            )
+        LOGGER.info(
+            "Resolved LingBot import root to %s (configured=%r, attempted=%s)",
+            lingbot_root,
+            configured_dir,
+            attempted,
+        )
+        LOGGER.info("Stage1 helper: importing Wan runtime modules from %s", lingbot_root)
         import wan.modules.model as wan_model_module
         from wan.modules.model import WanModel
         from wan.modules.t5 import T5EncoderModel
@@ -667,16 +670,27 @@ class LingBotStage1Helper:
             "get_plucker_embeddings": get_plucker_embeddings,
             "get_Ks_transformed": get_Ks_transformed,
         }
+        LOGGER.info(
+            "Stage1 helper: Wan runtime imports ready in %.2fs",
+            time.perf_counter() - start_time,
+        )
 
     def ensure_runtime_components(self, device: torch.device) -> None:
         """Load the shared VAE/T5 runtime once."""
+        LOGGER.info("Stage1 helper: ensuring runtime components on %s", device)
         self.bootstrap_imports()
         self.device = device
         if getattr(self, "vae", None) is None:
+            start_time = time.perf_counter()
+            LOGGER.info(
+                "Stage1 helper: initializing VAE from %s",
+                os.path.join(self.args.base_model_dir, "Wan2.1_VAE.pth"),
+            )
             self.vae = self.Wan2_1_VAE(
                 vae_pth=os.path.join(self.args.base_model_dir, "Wan2.1_VAE.pth"),
                 device=self.device,
             )
+            LOGGER.info("Stage1 helper: VAE ready in %.2fs", time.perf_counter() - start_time)
             if _env_flag("PC_VAE_FORCE_FP32"):
                 if hasattr(self.vae, "dtype"):
                     self.vae.dtype = torch.float32
@@ -688,6 +702,11 @@ class LingBotStage1Helper:
                 LOGGER.info("Forced VAE runtime to fp32 for numerical stability (PC_VAE_FORCE_FP32=1)")
         if getattr(self, "t5", None) is None:
             # Keep T5 on CPU by default and only move it to GPU on cache misses.
+            start_time = time.perf_counter()
+            LOGGER.info(
+                "Stage1 helper: initializing T5 from %s",
+                os.path.join(self.args.base_model_dir, "models_t5_umt5-xxl-enc-bf16.pth"),
+            )
             self.t5 = self.T5EncoderModel(
                 text_len=512,
                 dtype=torch.bfloat16,
@@ -698,6 +717,7 @@ class LingBotStage1Helper:
             module = getattr(self.t5, "model", None)
             if module is not None and hasattr(module, "to"):
                 module.to("cpu")
+            LOGGER.info("Stage1 helper: T5 ready in %.2fs", time.perf_counter() - start_time)
 
     def load_model(
         self,
@@ -708,6 +728,13 @@ class LingBotStage1Helper:
         control_type: str = "act",
     ):
         """Load one target Stage-1 branch plus shared VAE/T5 runtime."""
+        LOGGER.info(
+            "Stage1 helper: load_model start (model_type=%s checkpoint_dir=%s control_type=%s device=%s)",
+            model_type,
+            checkpoint_dir or self.args.stage1_ckpt_dir,
+            control_type,
+            device,
+        )
         self.ensure_runtime_components(device)
         subfolder = get_model_subfolder(model_type)
         checkpoint_root = str(checkpoint_dir or self.args.stage1_ckpt_dir)
@@ -716,23 +743,38 @@ class LingBotStage1Helper:
             raise ValueError(f"Unsupported control_type: {control_type}")
         LOGGER.info("Loading %s from %s", subfolder, checkpoint_root)
         model_dtype = torch.float32 if _stage1_force_fp32() else resolve_stage1_low_precision_dtype()
+        start_time = time.perf_counter()
         model = self.WanModel.from_pretrained(
             checkpoint_root,
             subfolder=subfolder,
             torch_dtype=model_dtype,
             control_type=control_type,
         )
+        LOGGER.info(
+            "Stage1 helper: WanModel.from_pretrained finished in %.2fs (subfolder=%s dtype=%s)",
+            time.perf_counter() - start_time,
+            subfolder,
+            model_dtype,
+        )
         if _stage1_force_fp32() and hasattr(model, "float"):
             model.float()
             LOGGER.info("Forced Stage1 student model to fp32 for numerical stability (PC_STAGE1_FORCE_FP32=1)")
         if getattr(self.args, "student_memory_efficient_modulation", True):
+            start_time = time.perf_counter()
+            LOGGER.info("Stage1 helper: applying memory-efficient modulation patch to %s", subfolder)
             apply_memory_efficient_wan_block_patch(
                 model,
                 subfolder,
                 ffn_chunk_size=getattr(self.args, "student_ffn_chunk_size", None),
                 norm_chunk_size=getattr(self.args, "student_norm_chunk_size", None),
             )
+            LOGGER.info(
+                "Stage1 helper: memory-efficient modulation patch ready in %.2fs",
+                time.perf_counter() - start_time,
+            )
         if getattr(self.args, "student_tuning_mode", "full") == "lora":
+            start_time = time.perf_counter()
+            LOGGER.info("Stage1 helper: applying LoRA adapters to %s", subfolder)
             apply_lora_to_wan_model(
                 model,
                 model_name=subfolder,
@@ -743,7 +785,9 @@ class LingBotStage1Helper:
                 lora_chunk_size=getattr(self.args, "student_lora_chunk_size", None),
                 merge_mode=getattr(self.args, "student_lora_merge_mode", "inplace"),
             )
+            LOGGER.info("Stage1 helper: LoRA adapters ready in %.2fs", time.perf_counter() - start_time)
         model.train()
+        LOGGER.info("Stage1 helper: load_model complete for %s", subfolder)
         return model
 
     def release_runtime_components(self) -> None:
