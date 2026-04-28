@@ -7,7 +7,7 @@ import logging
 import math
 import os
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +43,14 @@ from .eval import run_stage1_videophy2_eval
 LOGGER = logging.getLogger(__name__)
 
 
+def _now_local() -> datetime:
+    return datetime.now().astimezone()
+
+
+def _isoformat_local(value: datetime) -> str:
+    return value.isoformat(timespec="seconds")
+
+
 @dataclass(slots=True)
 class BranchTrainResult:
     """Outputs from one branch-specific Stage-1 run."""
@@ -51,6 +59,11 @@ class BranchTrainResult:
     final_branch_dir: str
     final_eval_bundle_dir: str
     output_dir: str
+    started_at: str
+    finished_at: str
+    duration_seconds: float
+    global_step: int
+    micro_step: int
 
 
 class Stage1BranchTrainer:
@@ -124,9 +137,11 @@ class Stage1BranchTrainer:
         ensure_dir(self.output_dir)
 
     def run(self) -> BranchTrainResult:
+        started_at = _now_local()
         LOGGER.info(
-            "[Stage1][%s] Starting branch run (source_ckpt=%s companion_ckpt=%s output_dir=%s)",
+            "[Stage1][%s] Starting branch run at %s (source_ckpt=%s companion_ckpt=%s output_dir=%s)",
             self.branch,
+            _isoformat_local(started_at),
             self.source_checkpoint_dir,
             self.companion_checkpoint_dir,
             self.output_dir,
@@ -278,6 +293,8 @@ class Stage1BranchTrainer:
                 epoch=self.cfg.num_epochs,
                 branch=f"{self.branch}_final",
             )
+        finished_at = _now_local()
+        duration_seconds = (finished_at - started_at).total_seconds()
         if self.accelerator.is_main_process:
             write_json(
                 self.output_dir / "branch_summary.json",
@@ -288,11 +305,24 @@ class Stage1BranchTrainer:
                     "final_branch_dir": str(final_branch_dir),
                     "final_eval_bundle_dir": str(final_bundle),
                     "last_eval_bundle_dir": last_eval_bundle,
+                    "started_at": _isoformat_local(started_at),
+                    "finished_at": _isoformat_local(finished_at),
+                    "duration_seconds": duration_seconds,
                     "global_step": self.global_step,
                     "micro_step": self.micro_step,
                     "config_path": self.cfg.config_path,
                     "config_hash": self.cfg.config_hash,
                 },
+            )
+            LOGGER.info(
+                "[Stage1][%s] Branch finished at %s (duration_seconds=%.1f global_step=%s micro_step=%s final_branch_dir=%s final_eval_bundle_dir=%s)",
+                self.branch,
+                _isoformat_local(finished_at),
+                duration_seconds,
+                self.global_step,
+                self.micro_step,
+                final_branch_dir,
+                final_bundle,
             )
         self._release_runtime()
         return BranchTrainResult(
@@ -300,6 +330,11 @@ class Stage1BranchTrainer:
             final_branch_dir=str(final_branch_dir),
             final_eval_bundle_dir=str(final_bundle),
             output_dir=str(self.output_dir),
+            started_at=_isoformat_local(started_at),
+            finished_at=_isoformat_local(finished_at),
+            duration_seconds=duration_seconds,
+            global_step=self.global_step,
+            micro_step=self.micro_step,
         )
 
     def training_step(self, batch: dict[str, Any]) -> tuple[torch.Tensor, dict[str, float]]:
