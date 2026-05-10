@@ -1,12 +1,14 @@
 import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 import torch.nn as nn
 from types import SimpleNamespace
 
 from physical_consistency.trainers.stage1_components import (
+    CSGODataset,
     LoRALinear,
     LingBotStage1Helper,
     _patch_flash_attention_sdpa_fallback,
@@ -565,6 +567,33 @@ def test_lora_linear_chunked_forward_matches_unchunked_and_backprops():
     assert x_safe.grad is not None
     assert safe_chunked.lora_A.weight.grad is not None
     assert safe_chunked.lora_B.weight.grad is not None
+
+
+def test_lora_numeric_audit_rejects_nonfinite_forward(monkeypatch):
+    monkeypatch.setenv("PC_LORA_NUMERIC_AUDIT", "1")
+    monkeypatch.setenv("PC_NUMERIC_AUDIT_LIMIT", "8")
+
+    wrapped = LoRALinear(torch.nn.Linear(4, 4, bias=False), rank=2, alpha=2, dropout=0.0)
+    x = torch.zeros(1, 2, 4)
+    x[0, 0, 0] = float("nan")
+
+    with pytest.raises(FloatingPointError, match="lora_input"):
+        wrapped(x)
+
+
+def test_csgo_dataset_keep_aspect_resize_letterboxes():
+    ds = object.__new__(CSGODataset)
+    ds.height = 8
+    ds.width = 8
+    ds.keep_aspect = True
+
+    frame = np.ones((4, 8, 3), dtype=np.uint8) * 127
+    resized = CSGODataset._resize_frame(ds, frame)
+
+    assert resized.shape == (8, 8, 3)
+    assert np.all(resized[:2] == 0)
+    assert np.all(resized[2:6] == 127)
+    assert np.all(resized[6:] == 0)
 
 
 def test_apply_lora_to_wan_model_accepts_out_of_place_merge_mode():

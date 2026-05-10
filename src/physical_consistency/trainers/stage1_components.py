@@ -23,6 +23,7 @@ from torch.utils.data import DataLoader, Dataset
 
 LOGGER = logging.getLogger(__name__)
 _SDPA_MATH_LOGGED = False
+_NUMERIC_AUDIT_COUNTERS: dict[str, int] = {}
 
 
 def _should_log_rank_zero() -> bool:
@@ -43,6 +44,60 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         LOGGER.warning("Invalid integer for %s=%r; using %s", name, raw, default)
         return int(default)
+
+
+def _numeric_audit_enabled(name: str) -> bool:
+    return _env_flag("PC_NUMERIC_AUDIT") or _env_flag(name)
+
+
+def _audit_tensor_numerics(
+    label: str,
+    tensor: torch.Tensor,
+    *,
+    key: str,
+    enabled: bool,
+    limit_env: str = "PC_NUMERIC_AUDIT_LIMIT",
+) -> None:
+    if not enabled or not torch.is_tensor(tensor) or not tensor.is_floating_point():
+        return
+    limit = _env_int(limit_env, 16)
+    count = _NUMERIC_AUDIT_COUNTERS.get(key, 0)
+    if count >= limit:
+        return
+    _NUMERIC_AUDIT_COUNTERS[key] = count + 1
+
+    with torch.no_grad():
+        detached = tensor.detach()
+        finite = bool(torch.isfinite(detached).all().item())
+        if detached.numel() == 0:
+            max_abs = 0.0
+            mean_abs = 0.0
+        else:
+            detached_float = detached.float()
+            abs_values = detached_float.abs()
+            max_abs = float(
+                torch.nan_to_num(abs_values, nan=float("inf"), posinf=float("inf"), neginf=float("inf")).max().item()
+            )
+            mean_abs = float(torch.nan_to_num(abs_values, nan=0.0, posinf=0.0, neginf=0.0).mean().item())
+
+    if _should_log_rank_zero():
+        LOGGER.info(
+            "PC_NUMERIC_AUDIT label=%s shape=%s dtype=%s device=%s requires_grad=%s finite=%s "
+            "max_abs=%.6g mean_abs=%.6g",
+            label,
+            tuple(tensor.shape),
+            tensor.dtype,
+            tensor.device,
+            tensor.requires_grad,
+            finite,
+            max_abs,
+            mean_abs,
+        )
+    if not finite:
+        raise FloatingPointError(
+            f"Non-finite tensor detected during numeric audit: {label} "
+            f"shape={tuple(tensor.shape)} dtype={tensor.dtype} device={tensor.device}"
+        )
 
 
 def _repo_root() -> Path:
@@ -542,13 +597,22 @@ class CSGODataset(Dataset):
         self.width = width
         self.num_frames = num_frames
         self.repeat = repeat
+        self.keep_aspect = _env_flag("PC_CSGO_KEEP_ASPECT")
 
         csv_path = os.path.join(dataset_dir, f"metadata_{split}.csv")
         with open(csv_path, "r", encoding="utf-8") as handle:
             self.samples = list(csv.DictReader(handle))
         if not self.samples:
             raise ValueError(f"No samples found in {csv_path}")
-        LOGGER.info("Loaded %s %s samples (repeat=%s)", len(self.samples), split, repeat)
+        LOGGER.info(
+            "Loaded %s %s samples (repeat=%s, size=%sx%s, keep_aspect=%s)",
+            len(self.samples),
+            split,
+            repeat,
+            self.height,
+            self.width,
+            self.keep_aspect,
+        )
 
     def __len__(self) -> int:
         return len(self.samples) * self.repeat
@@ -562,12 +626,17 @@ class CSGODataset(Dataset):
 
         cap = cv2.VideoCapture(video_path)
         frames = []
+        source_height = None
+        source_width = None
         while len(frames) < self.num_frames:
             ret, frame = cap.read()
             if not ret:
                 break
+            if source_height is None or source_width is None:
+                source_height = int(frame.shape[0])
+                source_width = int(frame.shape[1])
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_LANCZOS4)
+            frame = self._resize_frame(frame)
             frame = torch.from_numpy(frame).permute(2, 0, 1).float() / 127.5 - 1.0
             frames.append(frame)
         cap.release()
@@ -586,7 +655,30 @@ class CSGODataset(Dataset):
             "poses": torch.from_numpy(self._pad_or_truncate(poses)).float(),
             "actions": torch.from_numpy(self._pad_or_truncate(actions)).float(),
             "intrinsics": torch.from_numpy(self._pad_or_truncate(intrinsics)).float(),
+            "source_height": int(source_height or self.height),
+            "source_width": int(source_width or self.width),
         }
+
+    def _resize_frame(self, frame: np.ndarray) -> np.ndarray:
+        import cv2
+
+        if not self.keep_aspect:
+            return cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_LANCZOS4)
+
+        src_h, src_w = frame.shape[:2]
+        if src_h <= 0 or src_w <= 0:
+            raise ValueError(f"Invalid video frame shape: {frame.shape}")
+        scale = min(float(self.width) / float(src_w), float(self.height) / float(src_h))
+        new_w = min(self.width, max(1, int(round(src_w * scale))))
+        new_h = min(self.height, max(1, int(round(src_h * scale))))
+        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LANCZOS4
+        resized = cv2.resize(frame, (new_w, new_h), interpolation=interpolation)
+
+        canvas = np.zeros((self.height, self.width, frame.shape[2]), dtype=frame.dtype)
+        top = max((self.height - new_h) // 2, 0)
+        left = max((self.width - new_w) // 2, 0)
+        canvas[top : top + new_h, left : left + new_w] = resized
+        return canvas
 
     def _pad_or_truncate(self, array: np.ndarray) -> np.ndarray:
         if len(array) >= self.num_frames:
@@ -821,12 +913,27 @@ class LingBotStage1Helper:
 
     @torch.no_grad()
     def encode_video(self, video_tensor: torch.Tensor) -> torch.Tensor:
+        vae_numeric_audit = _numeric_audit_enabled("PC_VAE_NUMERIC_AUDIT")
+        _audit_tensor_numerics(
+            "vae_encode_input",
+            video_tensor,
+            key="vae",
+            enabled=vae_numeric_audit,
+        )
         if _env_flag("PC_VAE_FORCE_FP32"):
             video_tensor = video_tensor.float()
             device_type = self.device.type
             with torch.amp.autocast(device_type=device_type, enabled=False):
-                return self.vae.encode([video_tensor.to(self.device)])[0]
-        return self.vae.encode([video_tensor.to(self.device)])[0]
+                latent = self.vae.encode([video_tensor.to(self.device)])[0]
+        else:
+            latent = self.vae.encode([video_tensor.to(self.device)])[0]
+        _audit_tensor_numerics(
+            "vae_encode_latent",
+            latent,
+            key="vae",
+            enabled=vae_numeric_audit,
+        )
+        return latent
 
     @torch.no_grad()
     def encode_text(self, prompt: str) -> list[torch.Tensor]:
@@ -847,12 +954,19 @@ class LingBotStage1Helper:
 
     @torch.no_grad()
     def prepare_y(self, video_tensor: torch.Tensor, latent: torch.Tensor) -> torch.Tensor:
+        vae_numeric_audit = _numeric_audit_enabled("PC_VAE_NUMERIC_AUDIT")
         lat_h, lat_w = latent.shape[2], latent.shape[3]
         frame_total = video_tensor.shape[1]
         height, width = video_tensor.shape[2], video_tensor.shape[3]
         first_frame = video_tensor[:, 0:1]
         zeros = torch.zeros(3, frame_total - 1, height, width, device=video_tensor.device)
         y_input = torch.concat([first_frame, zeros], dim=1)
+        _audit_tensor_numerics(
+            "vae_prepare_y_input",
+            y_input,
+            key="vae",
+            enabled=vae_numeric_audit,
+        )
         if _env_flag("PC_VAE_FORCE_FP32"):
             y_input = y_input.float()
             device_type = self.device.type
@@ -860,6 +974,12 @@ class LingBotStage1Helper:
                 y_latent = self.vae.encode([y_input.to(self.device)])[0]
         else:
             y_latent = self.vae.encode([y_input.to(self.device)])[0]
+        _audit_tensor_numerics(
+            "vae_prepare_y_latent",
+            y_latent,
+            key="vae",
+            enabled=vae_numeric_audit,
+        )
 
         # Wan consumes a 4-channel temporal mask aligned to the latent timeline, not the raw frame count.
         mask = torch.zeros(4, y_latent.shape[1], lat_h, lat_w, device=self.device, dtype=y_latent.dtype)
@@ -1581,6 +1701,7 @@ class LoRALinear(torch.nn.Module):
         self.clone_hidden = _env_flag("PC_LORA_HIDDEN_CONTIGUOUS_CLONE")
         self.trace_input_meta = _env_flag("PC_LORA_TRACE_INPUT_META")
         self.disable_autocast = _env_flag("PC_LORA_DISABLE_AUTOCAST")
+        self.numeric_audit = _numeric_audit_enabled("PC_LORA_NUMERIC_AUDIT")
         self._pc_lora_local_losses: list[torch.Tensor] = []
         self._pc_lora_name = "<unregistered>"
         self._pc_lora_trace_logged = False
@@ -1602,8 +1723,20 @@ class LoRALinear(torch.nn.Module):
         )
         torch.nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
         torch.nn.init.zeros_(self.lora_B.weight)
+        if self.numeric_audit:
+            self.lora_A.weight.register_hook(lambda grad: self._audit_lora_grad("lora_A.weight", grad))
+            self.lora_B.weight.register_hook(lambda grad: self._audit_lora_grad("lora_B.weight", grad))
         for parameter in self.base.parameters():
             parameter.requires_grad = False
+
+    def _audit_lora_grad(self, suffix: str, grad: torch.Tensor) -> torch.Tensor:
+        _audit_tensor_numerics(
+            f"lora_grad name={self._pc_lora_name}.{suffix}",
+            grad,
+            key="lora_grad",
+            enabled=True,
+        )
+        return grad
 
     def _lora_forward(self, x: torch.Tensor, *, out_dtype: torch.dtype) -> torch.Tensor:
         lora_dtype = self.lora_A.weight.dtype
@@ -1611,6 +1744,12 @@ class LoRALinear(torch.nn.Module):
         if self.detach_input:
             x = x.detach()
         lora_input = self.dropout(x.to(dtype=lora_dtype))
+        _audit_tensor_numerics(
+            f"lora_input name={self._pc_lora_name}",
+            lora_input,
+            key="lora_forward",
+            enabled=self.numeric_audit,
+        )
         if self.clone_input:
             lora_input = lora_input.contiguous().clone()
         autocast_context = (
@@ -1620,9 +1759,21 @@ class LoRALinear(torch.nn.Module):
         )
         with autocast_context:
             lora_hidden = self.lora_A(lora_input)
+            _audit_tensor_numerics(
+                f"lora_hidden name={self._pc_lora_name}",
+                lora_hidden,
+                key="lora_forward",
+                enabled=self.numeric_audit,
+            )
             if self.clone_hidden:
                 lora_hidden = lora_hidden.contiguous().clone()
             lora_out = self.lora_B(lora_hidden)
+            _audit_tensor_numerics(
+                f"lora_out name={self._pc_lora_name}",
+                lora_out,
+                key="lora_forward",
+                enabled=self.numeric_audit,
+            )
         if self.trace_input_meta and not self._pc_lora_trace_logged and _should_log_rank_zero():
             LOGGER.info(
                 "PC_LORA_TRACE_INPUT_META name=%s raw_shape=%s raw_dtype=%s raw_stride=%s raw_contig=%s raw_requires_grad=%s input_shape=%s input_dtype=%s input_stride=%s input_contig=%s hidden_shape=%s hidden_dtype=%s hidden_stride=%s hidden_contig=%s out_shape=%s out_dtype=%s out_stride=%s out_contig=%s clone_input=%s clone_hidden=%s disable_autocast=%s",
@@ -1759,6 +1910,7 @@ def apply_lora_to_wan_model(
     clone_hidden = False
     trace_input_meta = False
     disable_autocast = False
+    numeric_audit = False
     for _, module in _iter_lora_modules(model):
         module.lora_A.weight.requires_grad = True
         module.lora_B.weight.requires_grad = True
@@ -1771,6 +1923,7 @@ def apply_lora_to_wan_model(
         clone_hidden = clone_hidden or module.clone_hidden
         trace_input_meta = trace_input_meta or module.trace_input_meta
         disable_autocast = disable_autocast or module.disable_autocast
+        numeric_audit = numeric_audit or module.numeric_audit
     for parameter in model.parameters():
         total_params += parameter.numel()
         if parameter.requires_grad:
@@ -1794,10 +1947,11 @@ def apply_lora_to_wan_model(
         "clone_hidden": clone_hidden,
         "trace_input_meta": trace_input_meta,
         "disable_autocast": disable_autocast,
+        "numeric_audit": numeric_audit,
     }
     if _should_log_rank_zero():
         LOGGER.info(
-            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, block_start=%s, lora_chunk_size=%s, merge_mode=%s, lora_dtype=%s, force_lora_fp32=%s, detach_base_out=%s, detach_input=%s, local_loss_probe=%s, clone_input=%s, clone_hidden=%s, trace_input_meta=%s, disable_autocast=%s, trainable=%s/%s)",
+            "Applied standard LoRA to %s linear layers for %s (rank=%s, alpha=%s, dropout=%.3f, block_start=%s, lora_chunk_size=%s, merge_mode=%s, lora_dtype=%s, force_lora_fp32=%s, detach_base_out=%s, detach_input=%s, local_loss_probe=%s, clone_input=%s, clone_hidden=%s, trace_input_meta=%s, disable_autocast=%s, numeric_audit=%s, trainable=%s/%s)",
             replaced,
             model_name,
             rank,
@@ -1815,6 +1969,7 @@ def apply_lora_to_wan_model(
             clone_hidden,
             trace_input_meta,
             disable_autocast,
+            numeric_audit,
             trainable_params,
             total_params,
         )
