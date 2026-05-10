@@ -1588,6 +1588,23 @@ class TRDTrainingRunner:
             seq_len=int(seq_len),
         )
         with torch.no_grad():
+            self._trace_training_phase(
+                "before_control_signal",
+                tensors={
+                    "poses": poses,
+                    "actions": actions,
+                    "intrinsics": intrinsics,
+                },
+                scalars={
+                    "height": height,
+                    "width": width,
+                    "source_height": source_height,
+                    "source_width": source_width,
+                    "lat_f": lat_f,
+                    "lat_h": lat_h,
+                    "lat_w": lat_w,
+                },
+            )
             dit_cond = self.helper.prepare_control_signal(
                 poses,
                 actions,
@@ -1600,6 +1617,15 @@ class TRDTrainingRunner:
                 control_type=self.args.control_type,
                 source_height=source_height,
                 source_width=source_width,
+            )
+            control_tensor = None
+            if isinstance(dit_cond, dict):
+                control_value = dit_cond.get("c2ws_plucker_emb")
+                if isinstance(control_value, (tuple, list)) and control_value:
+                    control_tensor = control_value[0]
+            self._trace_training_phase(
+                "after_control_signal",
+                tensors={"control": control_tensor},
             )
             timestep_sample = self.helper.sample_timestep(self.args.model_type)
             noise = torch.randn_like(video_latent)

@@ -1007,12 +1007,39 @@ class LingBotStage1Helper:
         get_plucker_embeddings = self.cam_utils["get_plucker_embeddings"]
         get_Ks_transformed = self.cam_utils["get_Ks_transformed"]
 
+        control_numeric_audit = _numeric_audit_enabled("PC_CONTROL_NUMERIC_AUDIT")
+        control_trace = control_numeric_audit or _env_flag("PC_CONTROL_TRACE")
+
+        def _trace_control(label: str, **values) -> None:
+            if not control_trace:
+                return
+            rank = os.environ.get("RANK", "?")
+            details = " ".join(f"{key}={value}" for key, value in values.items())
+            LOGGER.info("[CONTROL TRACE] rank=%s label=%s %s", rank, label, details)
+
         control_type = str(control_type).strip().lower()
         if control_type not in {"act", "cam"}:
             raise ValueError(f"Unsupported control_type: {control_type}")
         num_frames = poses.shape[0]
         source_height = int(source_height or height)
         source_width = int(source_width or width)
+        _trace_control(
+            "start",
+            control_type=control_type,
+            num_frames=num_frames,
+            height=height,
+            width=width,
+            source_height=source_height,
+            source_width=source_width,
+            lat_f=lat_f,
+            lat_h=lat_h,
+            lat_w=lat_w,
+        )
+        _audit_tensor_numerics("control_poses", poses, key="control", enabled=control_numeric_audit)
+        _audit_tensor_numerics("control_intrinsics", intrinsics, key="control", enabled=control_numeric_audit)
+        if actions is not None:
+            _audit_tensor_numerics("control_actions", actions, key="control", enabled=control_numeric_audit)
+
         ks = get_Ks_transformed(
             intrinsics,
             height_org=source_height,
@@ -1022,6 +1049,8 @@ class LingBotStage1Helper:
             height_final=height,
             width_final=width,
         )
+        _trace_control("after_get_Ks_transformed", ks_shape=tuple(ks.shape), ks_dtype=ks.dtype, ks_device=ks.device)
+        _audit_tensor_numerics("control_ks", ks, key="control", enabled=control_numeric_audit)
         ks_single = ks[0]
         c2ws_infer = interpolate_camera_poses(
             src_indices=np.linspace(0, num_frames - 1, num_frames),
@@ -1029,7 +1058,15 @@ class LingBotStage1Helper:
             src_trans_vec=poses[:, :3, 3].cpu().numpy(),
             tgt_indices=np.linspace(0, num_frames - 1, lat_f),
         )
+        _trace_control("after_interpolate_camera_poses", c2ws_shape=tuple(c2ws_infer.shape))
         c2ws_infer = compute_relative_poses(c2ws_infer, framewise=True)
+        _trace_control(
+            "after_compute_relative_poses",
+            c2ws_shape=tuple(c2ws_infer.shape),
+            c2ws_dtype=c2ws_infer.dtype,
+            c2ws_device=c2ws_infer.device,
+        )
+        _audit_tensor_numerics("control_c2ws_relative", c2ws_infer, key="control", enabled=control_numeric_audit)
         ks_repeated = ks_single.repeat(len(c2ws_infer), 1).to(self.device)
         c2ws_infer = c2ws_infer.to(self.device)
         cond_dtype = (
@@ -1046,6 +1083,13 @@ class LingBotStage1Helper:
             width,
             only_rays_d=only_rays_d,
         )
+        _trace_control(
+            "after_get_plucker_embeddings",
+            plucker_shape=tuple(plucker.shape),
+            plucker_dtype=plucker.dtype,
+            plucker_device=plucker.device,
+        )
+        _audit_tensor_numerics("control_plucker_raw", plucker, key="control", enabled=control_numeric_audit)
         plucker = rearrange(
             plucker,
             "f (h c1) (w c2) c -> (f h w) (c c1 c2)",
@@ -1053,6 +1097,13 @@ class LingBotStage1Helper:
             c2=int(width // lat_w),
         )[None]
         plucker = rearrange(plucker, "b (f h w) c -> b c f h w", f=lat_f, h=lat_h, w=lat_w).to(cond_dtype)
+        _trace_control(
+            "after_plucker_rearrange",
+            plucker_shape=tuple(plucker.shape),
+            plucker_dtype=plucker.dtype,
+            plucker_device=plucker.device,
+        )
+        _audit_tensor_numerics("control_plucker", plucker, key="control", enabled=control_numeric_audit)
         if control_type == "cam":
             return {"c2ws_plucker_emb": (plucker,)}
 
@@ -1060,6 +1111,8 @@ class LingBotStage1Helper:
             raise ValueError("actions must be provided when control_type='act'")
         action_indices = np.linspace(0, len(actions) - 1, len(c2ws_infer)).round().astype(int)
         wasd = actions[action_indices].to(self.device)
+        _trace_control("after_action_select", wasd_shape=tuple(wasd.shape), wasd_dtype=wasd.dtype, wasd_device=wasd.device)
+        _audit_tensor_numerics("control_wasd", wasd, key="control", enabled=control_numeric_audit)
 
         wasd_tensor = wasd[:, None, None, :].repeat(1, height, width, 1)
         wasd_tensor = rearrange(
@@ -1075,8 +1128,23 @@ class LingBotStage1Helper:
             h=lat_h,
             w=lat_w,
         ).to(cond_dtype)
+        _trace_control(
+            "after_wasd_rearrange",
+            wasd_shape=tuple(wasd_tensor.shape),
+            wasd_dtype=wasd_tensor.dtype,
+            wasd_device=wasd_tensor.device,
+        )
+        _audit_tensor_numerics("control_wasd_tensor", wasd_tensor, key="control", enabled=control_numeric_audit)
 
-        return {"c2ws_plucker_emb": (torch.cat([plucker, wasd_tensor], dim=1),)}
+        control = torch.cat([plucker, wasd_tensor], dim=1)
+        _trace_control(
+            "done",
+            control_shape=tuple(control.shape),
+            control_dtype=control.dtype,
+            control_device=control.device,
+        )
+        _audit_tensor_numerics("control_concat", control, key="control", enabled=control_numeric_audit)
+        return {"c2ws_plucker_emb": (control,)}
 
     def sample_timestep(self, model_type: str) -> TimestepSample:
         """Sample a valid noise step for the selected model."""
