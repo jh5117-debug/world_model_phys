@@ -215,7 +215,7 @@ class Stage1PhysInOneConfig:
             width=_override_int("width", int(payload.get("width", 480) or 480)),
             dataset_repeat=int(payload.get("dataset_repeat", 1) or 1),
             num_workers=int(payload.get("num_workers", 4) or 4),
-            save_every_n_epochs=int(payload.get("save_every_n_epochs", 1) or 1),
+            save_every_n_epochs=_override_int("save_every_n_epochs", 1),
             max_train_micro_steps=int(payload.get("max_train_micro_steps", 0) or 0),
             student_tuning_mode=student_tuning_mode,
             student_lora_rank=int(payload.get("student_lora_rank", 16) or 16),
