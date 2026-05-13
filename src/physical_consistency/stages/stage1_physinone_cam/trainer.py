@@ -1,4 +1,4 @@
-"""Pure Stage-1 PhysInOne camera-only trainer."""
+"""Stage-1 PhysInOne trainer."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from physical_consistency.common.io import ensure_dir, write_json
 from physical_consistency.common.subprocess_utils import run_command
 from physical_consistency.eval.checkpoint_bundle import materialize_eval_checkpoint_bundle
 from physical_consistency.trainers.stage1_components import (
+    CSGODataset,
     LingBotStage1Helper,
     apply_gradient_checkpointing,
     compute_scheduler_total_steps,
@@ -67,7 +68,7 @@ class BranchTrainResult:
 
 
 class Stage1BranchTrainer:
-    """Train one LingBot MoE branch with pure camera conditioning and FM loss."""
+    """Train one LingBot MoE branch with PhysInOne conditioning and FM loss."""
 
     def __init__(
         self,
@@ -147,23 +148,34 @@ class Stage1BranchTrainer:
             self.output_dir,
         )
         LOGGER.info(
-            "[Stage1][%s] Building dataset from %s (frames=%s size=%sx%s repeat=%s workers=%s)",
+            "[Stage1][%s] Building dataset from %s (control_type=%s frames=%s size=%sx%s repeat=%s workers=%s)",
             self.branch,
             self.cfg.dataset_dir,
+            self.cfg.control_type,
             self.cfg.num_frames,
             self.cfg.height,
             self.cfg.width,
             self.cfg.dataset_repeat,
             self.cfg.num_workers,
         )
-        dataset = PhysInOneCamDataset(
-            self.cfg.dataset_dir,
-            split="train",
-            num_frames=self.cfg.num_frames,
-            height=self.cfg.height,
-            width=self.cfg.width,
-            repeat=self.cfg.dataset_repeat,
-        )
+        if self.cfg.control_type == "act":
+            dataset = CSGODataset(
+                self.cfg.dataset_dir,
+                split="train",
+                num_frames=self.cfg.num_frames,
+                height=self.cfg.height,
+                width=self.cfg.width,
+                repeat=self.cfg.dataset_repeat,
+            )
+        else:
+            dataset = PhysInOneCamDataset(
+                self.cfg.dataset_dir,
+                split="train",
+                num_frames=self.cfg.num_frames,
+                height=self.cfg.height,
+                width=self.cfg.width,
+                repeat=self.cfg.dataset_repeat,
+            )
         LOGGER.info("[Stage1][%s] Dataset ready with %s samples", self.branch, len(dataset))
         LOGGER.info("[Stage1][%s] Constructing raw dataloader", self.branch)
         raw_loader = DataLoader(
@@ -181,7 +193,7 @@ class Stage1BranchTrainer:
             self.accelerator.device,
             self.branch,
             checkpoint_dir=self.source_checkpoint_dir,
-            control_type="cam",
+            control_type=self.cfg.control_type,
         )
         LOGGER.info("[Stage1][%s] Student model loaded", self.branch)
         if self.cfg.gradient_checkpointing:
@@ -302,6 +314,7 @@ class Stage1BranchTrainer:
                     "branch": self.branch,
                     "source_checkpoint_dir": self.source_checkpoint_dir,
                     "companion_checkpoint_dir": self.companion_checkpoint_dir,
+                    "control_type": self.cfg.control_type,
                     "final_branch_dir": str(final_branch_dir),
                     "final_eval_bundle_dir": str(final_bundle),
                     "last_eval_bundle_dir": last_eval_bundle,
@@ -340,6 +353,7 @@ class Stage1BranchTrainer:
     def training_step(self, batch: dict[str, Any]) -> tuple[torch.Tensor, dict[str, float]]:
         video = batch["video"].to(self.accelerator.device)
         poses = batch["poses"]
+        actions = batch.get("actions")
         intrinsics = batch["intrinsics"]
         prompt = batch["prompt"]
         height, width = int(video.shape[2]), int(video.shape[3])
@@ -354,14 +368,14 @@ class Stage1BranchTrainer:
             seq_len = lat_f * lat_h * lat_w // (self.helper.patch_size[1] * self.helper.patch_size[2])
             dit_cond = self.helper.prepare_control_signal(
                 poses,
-                None,
+                actions,
                 intrinsics,
                 height,
                 width,
                 lat_f,
                 lat_h,
                 lat_w,
-                control_type="cam",
+                control_type=self.cfg.control_type,
                 source_height=source_height,
                 source_width=source_width,
             )

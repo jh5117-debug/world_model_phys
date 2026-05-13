@@ -1,4 +1,4 @@
-"""Sequential low/high runner for pure Stage-1 PhysInOne camera training."""
+"""Sequential low/high runner for Stage-1 PhysInOne fine-tuning."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def _is_main_process() -> bool:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train pure Stage-1 PhysInOne camera LoRA.")
+    parser = argparse.ArgumentParser(description="Train Stage-1 PhysInOne LoRA.")
     parser.add_argument("--config", type=str, default=str(CONFIG_DIR / "train_stage1_physinone_cam.yaml"))
     parser.add_argument("--env_file", type=str, default=str(CONFIG_DIR / "path_config_cluster.env"))
     parser.add_argument("--branch_mode", type=str, default="sequence", choices=["sequence", "low", "high"])
@@ -50,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset_dir", type=str, default="")
     parser.add_argument("--base_model_dir", type=str, default="")
     parser.add_argument("--lingbot_code_dir", type=str, default="")
+    parser.add_argument("--control_type", type=str, default="", choices=["", "cam", "act"])
     parser.add_argument("--output_root", type=str, default="")
     parser.add_argument("--wandb_dir", type=str, default="")
     parser.add_argument("--seed", type=int, default=None)
@@ -101,6 +102,7 @@ def main() -> None:
                     "config_hash": cfg.config_hash,
                     "source_checkpoint_dir": source_checkpoint_dir,
                     "companion_checkpoint_dir": companion_checkpoint_dir,
+                    "control_type": cfg.control_type,
                     "started_at": _isoformat_local(started_at),
                     "finished_at": _isoformat_local(finished_at),
                     "duration_seconds": duration_seconds,
@@ -143,6 +145,7 @@ def main() -> None:
                     "config_hash": cfg.config_hash,
                     "source_checkpoint_dir": source_checkpoint_dir,
                     "companion_checkpoint_dir": companion_checkpoint_dir,
+                    "control_type": cfg.control_type,
                     "started_at": _isoformat_local(started_at),
                     "finished_at": _isoformat_local(finished_at),
                     "duration_seconds": duration_seconds,
@@ -215,6 +218,7 @@ def main() -> None:
                 "source_checkpoint_dir": source_checkpoint_dir,
                 "companion_checkpoint_dir": companion_checkpoint_dir,
                 "dataset_dir": cfg.dataset_dir,
+                "control_type": cfg.control_type,
                 "started_at": _isoformat_local(started_at),
                 "finished_at": _isoformat_local(finished_at),
                 "duration_seconds": duration_seconds,

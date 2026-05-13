@@ -7,6 +7,7 @@ base_model_dir: ""
 dataset_dir: ""
 physinone_raw_dir: ""
 lingbot_code_dir: ""
+control_type: cam
 output_root: .
 wandb_dir: runs/wandb
 

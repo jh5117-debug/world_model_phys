@@ -1,4 +1,4 @@
-"""Configuration loading for pure Stage-1 PhysInOne camera training."""
+"""Configuration loading for Stage-1 PhysInOne fine-tuning."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ class VideoPhy2EvalConfig:
 
 @dataclass(slots=True)
 class Stage1PhysInOneConfig:
-    """Resolved config for Stage-1 PhysInOne camera-only fine-tuning."""
+    """Resolved config for Stage-1 PhysInOne fine-tuning."""
 
     experiment_name: str
     run_group: str
@@ -67,6 +67,7 @@ class Stage1PhysInOneConfig:
     dataset_dir: str
     physinone_raw_dir: str
     lingbot_code_dir: str
+    control_type: str
     output_root: str
     output_dir: str
     wandb_dir: str
@@ -152,6 +153,11 @@ class Stage1PhysInOneConfig:
         if student_tuning_mode not in {"full", "lora"}:
             raise ValueError(f"Unsupported student_tuning_mode: {student_tuning_mode}")
 
+        control_type = str(getattr(cli_args, "control_type", "") or payload.get("control_type", "cam") or "cam")
+        control_type = control_type.strip().lower()
+        if control_type not in {"cam", "act"}:
+            raise ValueError(f"Unsupported control_type: {control_type}")
+
         student_precision_profile = str(
             payload.get("student_precision_profile", "mixed_safe") or "mixed_safe"
         ).strip().lower()
@@ -189,6 +195,7 @@ class Stage1PhysInOneConfig:
             dataset_dir=dataset_dir,
             physinone_raw_dir=physinone_raw_dir,
             lingbot_code_dir=lingbot_code_dir,
+            control_type=control_type,
             output_root=output_root,
             output_dir=output_dir,
             wandb_dir=wandb_dir,
