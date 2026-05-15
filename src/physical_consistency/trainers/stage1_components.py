@@ -711,6 +711,7 @@ class LingBotStage1Helper:
         self.patch_size = (1, 2, 2)
         self.shift = 10.0
         self._t5_cache: dict[str, list[torch.Tensor]] = {}
+        self.keep_t5_on_gpu = _env_flag("PC_STAGE1_KEEP_T5_ON_GPU")
         self._build_schedule()
 
     def _build_schedule(self) -> None:
@@ -816,7 +817,11 @@ class LingBotStage1Helper:
             )
             module = getattr(self.t5, "model", None)
             if module is not None and hasattr(module, "to"):
-                module.to("cpu")
+                if self.keep_t5_on_gpu:
+                    module.to(self.device)
+                    LOGGER.info("Keeping T5 model on %s (PC_STAGE1_KEEP_T5_ON_GPU=1)", self.device)
+                else:
+                    module.to("cpu")
             LOGGER.info("Stage1 helper: T5 ready in %.2fs", time.perf_counter() - start_time)
 
     def load_model(
@@ -945,7 +950,8 @@ class LingBotStage1Helper:
             return cached
         self.t5.model.to(self.device)
         context = self.t5([prompt], self.device)
-        self.t5.model.cpu()
+        if not self.keep_t5_on_gpu:
+            self.t5.model.cpu()
         self._t5_cache[prompt] = [tensor.cpu() for tensor in context]
         outputs = [tensor.to(self.device) for tensor in context]
         if force_fp32:
