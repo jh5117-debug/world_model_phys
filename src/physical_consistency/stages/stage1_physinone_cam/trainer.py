@@ -338,13 +338,23 @@ class Stage1BranchTrainer:
                 break
 
         final_branch_dir = self._save_branch_checkpoint(tag="final")
-        final_bundle = materialize_eval_checkpoint_bundle(
-            ft_ckpt_dir=final_branch_dir,
-            output_root=self.output_dir / "eval_bundles",
-            experiment_name=f"{self.cfg.experiment_name}_{self.branch}_final",
-            companion_ckpt_dir=self.companion_checkpoint_dir,
-        )
-        if self.cfg.videophy2_eval.enabled:
+        if self.accelerator.is_main_process:
+            final_bundle = materialize_eval_checkpoint_bundle(
+                ft_ckpt_dir=final_branch_dir,
+                output_root=self.output_dir / "eval_bundles",
+                experiment_name=f"{self.cfg.experiment_name}_{self.branch}_final",
+                companion_ckpt_dir=self.companion_checkpoint_dir,
+            )
+        else:
+            final_bundle = (
+                self.output_dir
+                / "eval_bundles"
+                / "cache"
+                / "eval_ckpt_bundles"
+                / f"{self.cfg.experiment_name}_{self.branch}_final_non_main_placeholder"
+            )
+        self.accelerator.wait_for_everyone()
+        if self.cfg.videophy2_eval.enabled and self.accelerator.is_main_process:
             run_stage1_videophy2_eval(
                 self.cfg.videophy2_eval,
                 bundle_dir=final_bundle,
@@ -353,6 +363,7 @@ class Stage1BranchTrainer:
                 epoch=self.cfg.num_epochs,
                 branch=f"{self.branch}_final",
             )
+        self.accelerator.wait_for_everyone()
         finished_at = _now_local()
         duration_seconds = (finished_at - started_at).total_seconds()
         if self.accelerator.is_main_process:
