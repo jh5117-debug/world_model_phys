@@ -6,6 +6,7 @@ import gc
 import logging
 import math
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -50,6 +51,24 @@ def _now_local() -> datetime:
 
 def _isoformat_local(value: datetime) -> str:
     return value.isoformat(timespec="seconds")
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name, "")
+    if raw == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "")
+    if raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        LOGGER.warning("Ignoring invalid integer env %s=%r", name, raw)
+        return default
 
 
 @dataclass(slots=True)
@@ -136,6 +155,16 @@ class Stage1BranchTrainer:
         self.total_optimizer_steps = 0
         self.output_dir = Path(cfg.output_dir) / f"{branch}_phase"
         ensure_dir(self.output_dir)
+        self.timing_enabled = _env_flag("PC_STAGE1_TIMING", False)
+        self.timing_cuda_sync = _env_flag("PC_STAGE1_TIMING_CUDA_SYNC", False)
+        self.timing_log_every = max(_env_int("PC_STAGE1_TIMING_EVERY", 1), 1)
+        if self.timing_enabled and self.accelerator.is_main_process:
+            LOGGER.info(
+                "[Stage1][%s][timing] enabled cuda_sync=%s log_every_micro_steps=%s",
+                self.branch,
+                self.timing_cuda_sync,
+                self.timing_log_every,
+            )
 
     def run(self) -> BranchTrainResult:
         started_at = _now_local()
@@ -252,13 +281,32 @@ class Stage1BranchTrainer:
             for batch in self.train_loader:
                 self.micro_step += 1
                 with self.accelerator.accumulate(self.model):
+                    micro_start = self._timing_start()
                     loss, metrics = self.training_step(batch)
+                    metrics["timing_training_step_sec"] = self._timing_elapsed(micro_start)
+
+                    backward_start = self._timing_start()
                     self.accelerator.backward(loss)
+                    metrics["timing_backward_sec"] = self._timing_elapsed(backward_start)
+
                     if self.accelerator.sync_gradients:
+                        clip_start = self._timing_start()
                         self.accelerator.clip_grad_norm_(self.model.parameters(), self.cfg.max_grad_norm)
+                        metrics["timing_clip_grad_sec"] = self._timing_elapsed(clip_start)
+
+                    optimizer_start = self._timing_start()
                     self.optimizer.step()
+                    metrics["timing_optimizer_step_sec"] = self._timing_elapsed(optimizer_start)
+
+                    scheduler_start = self._timing_start()
                     self.scheduler.step()
+                    metrics["timing_scheduler_step_sec"] = self._timing_elapsed(scheduler_start)
+
+                    zero_grad_start = self._timing_start()
                     self.optimizer.zero_grad(set_to_none=True)
+                    metrics["timing_zero_grad_sec"] = self._timing_elapsed(zero_grad_start)
+                    metrics["timing_total_micro_sec"] = self._timing_elapsed(micro_start)
+                    self._log_timing(epoch_index, metrics)
                     if self.accelerator.sync_gradients:
                         self.global_step += 1
                         if self.accelerator.is_main_process:
@@ -350,8 +398,69 @@ class Stage1BranchTrainer:
             micro_step=self.micro_step,
         )
 
+    def _timing_sync(self) -> None:
+        if (
+            self.timing_enabled
+            and self.timing_cuda_sync
+            and self.accelerator.device.type == "cuda"
+            and torch.cuda.is_available()
+        ):
+            torch.cuda.synchronize(self.accelerator.device)
+
+    def _timing_start(self) -> float:
+        self._timing_sync()
+        return time.perf_counter()
+
+    def _timing_elapsed(self, start: float) -> float:
+        self._timing_sync()
+        return max(time.perf_counter() - start, 0.0)
+
+    def _log_timing(self, epoch_index: int, metrics: dict[str, float]) -> None:
+        if not self.timing_enabled or not self.accelerator.is_main_process:
+            return
+        if self.micro_step % self.timing_log_every != 0:
+            return
+
+        keys = (
+            "batch_to_device",
+            "encode_video",
+            "encode_text",
+            "prepare_y",
+            "prepare_control_signal",
+            "noise_target",
+            "student_forward",
+            "loss",
+            "training_step",
+            "backward",
+            "clip_grad",
+            "optimizer_step",
+            "scheduler_step",
+            "zero_grad",
+            "total_micro",
+        )
+        timing_parts = []
+        for key in keys:
+            value = metrics.get(f"timing_{key}_sec")
+            if value is not None:
+                timing_parts.append(f"{key}={float(value):.3f}s")
+        if not timing_parts:
+            return
+        LOGGER.info(
+            "[Stage1][%s][timing] epoch=%s/%s micro_step=%s global_step=%s sync_gradients=%s %s",
+            self.branch,
+            epoch_index,
+            self.cfg.num_epochs,
+            self.micro_step,
+            self.global_step,
+            self.accelerator.sync_gradients,
+            " ".join(timing_parts),
+        )
+
     def training_step(self, batch: dict[str, Any]) -> tuple[torch.Tensor, dict[str, float]]:
+        timings: dict[str, float] = {}
+        batch_to_device_start = self._timing_start()
         video = batch["video"].to(self.accelerator.device)
+        timings["batch_to_device"] = self._timing_elapsed(batch_to_device_start)
         poses = batch["poses"]
         actions = batch.get("actions")
         intrinsics = batch["intrinsics"]
@@ -361,11 +470,21 @@ class Stage1BranchTrainer:
         source_width = int(batch.get("source_width", width))
 
         with torch.no_grad():
+            encode_video_start = self._timing_start()
             video_latent = self.helper.encode_video(video)
+            timings["encode_video"] = self._timing_elapsed(encode_video_start)
+
+            encode_text_start = self._timing_start()
             context = self.helper.encode_text(prompt)
+            timings["encode_text"] = self._timing_elapsed(encode_text_start)
+
+            prepare_y_start = self._timing_start()
             y = self.helper.prepare_y(video, video_latent)
+            timings["prepare_y"] = self._timing_elapsed(prepare_y_start)
+
             lat_f, lat_h, lat_w = video_latent.shape[1], video_latent.shape[2], video_latent.shape[3]
             seq_len = lat_f * lat_h * lat_w // (self.helper.patch_size[1] * self.helper.patch_size[2])
+            prepare_control_start = self._timing_start()
             dit_cond = self.helper.prepare_control_signal(
                 poses,
                 actions,
@@ -379,10 +498,14 @@ class Stage1BranchTrainer:
                 source_height=source_height,
                 source_width=source_width,
             )
+            timings["prepare_control_signal"] = self._timing_elapsed(prepare_control_start)
+
+            noise_target_start = self._timing_start()
             timestep_sample = self.helper.sample_timestep(self.branch)
             noise = torch.randn_like(video_latent)
             noisy_latent = (1.0 - timestep_sample.sigma) * video_latent + timestep_sample.sigma * noise
             target = noise - video_latent
+            timings["noise_target"] = self._timing_elapsed(noise_target_start)
 
         device_type = self.accelerator.device.type
         if os.environ.get("PC_STAGE1_FORCE_FP32", "").strip().lower() in {"1", "true", "yes", "on"}:
@@ -394,6 +517,7 @@ class Stage1BranchTrainer:
                 else torch.autocast(device_type=device_type, enabled=False)
             )
         with autocast_ctx:
+            student_forward_start = self._timing_start()
             pred = self.model(
                 [noisy_latent],
                 t=timestep_sample.timestep,
@@ -402,13 +526,19 @@ class Stage1BranchTrainer:
                 y=[y],
                 dit_cond_dict=dit_cond,
             )[0]
+            timings["student_forward"] = self._timing_elapsed(student_forward_start)
+        loss_start = self._timing_start()
         pred_rest = pred[:, 1:]
         target_rest = target[:, 1:]
         loss_fm = F.mse_loss(pred_rest.float(), target_rest.float()) * timestep_sample.weight
-        return loss_fm, {
+        timings["loss"] = self._timing_elapsed(loss_start)
+        metrics = {
             "loss_fm": float(loss_fm.detach().item()),
             "sample_sigma": float(timestep_sample.sigma),
         }
+        for key, value in timings.items():
+            metrics[f"timing_{key}_sec"] = float(value)
+        return loss_fm, metrics
 
     def _student_checkpoint_use_reentrant(self) -> bool:
         if self.cfg.student_checkpoint_use_reentrant is not None:
