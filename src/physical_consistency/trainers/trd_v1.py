@@ -706,7 +706,11 @@ class TRDTrainingRunner:
         self._last_optimizer_step_time: float | None = None
 
     def _should_trace_training_phase(self) -> bool:
-        return self._micro_step <= 1 or _env_flag("PC_TRAIN_PHASE_TRACE")
+        if _env_flag("PC_TRAIN_PHASE_TRACE"):
+            return True
+        if not getattr(self.args, "student_diagnose_training_graph", True):
+            return False
+        return self._micro_step <= 1
 
     def _phase_trace_rank_allowed(self) -> bool:
         return self.accelerator.is_main_process or _env_flag("PC_TRAIN_PHASE_TRACE_ALL_RANKS")
@@ -2625,15 +2629,19 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         payload[key] = value
 
     path_cfg = resolve_path_config(SimpleNamespace(**payload), env_file=cli_args.env_file or None)
-    payload.setdefault("base_model_dir", path_cfg.base_model_dir)
-    payload.setdefault("stage1_ckpt_dir", path_cfg.stage1_ckpt_dir)
+    def _default_if_empty(key: str, value: str) -> None:
+        if payload.get(key) in ("", None):
+            payload[key] = value
+
+    _default_if_empty("base_model_dir", path_cfg.base_model_dir)
+    _default_if_empty("stage1_ckpt_dir", path_cfg.stage1_ckpt_dir)
     payload.setdefault("eval_companion_ckpt_dir", "")
-    payload.setdefault("dataset_dir", path_cfg.dataset_dir)
-    payload.setdefault("lingbot_code_dir", path_cfg.lingbot_code_dir)
-    payload.setdefault("output_root", path_cfg.output_root)
-    payload.setdefault("wandb_dir", path_cfg.wandb_dir)
-    payload.setdefault("teacher_repo_dir", path_cfg.videorepa_repo_dir)
-    payload.setdefault("teacher_checkpoint_dir", path_cfg.teacher_ckpt_dir)
+    _default_if_empty("dataset_dir", path_cfg.dataset_dir)
+    _default_if_empty("lingbot_code_dir", path_cfg.lingbot_code_dir)
+    _default_if_empty("output_root", path_cfg.output_root)
+    _default_if_empty("wandb_dir", path_cfg.wandb_dir)
+    _default_if_empty("teacher_repo_dir", path_cfg.videorepa_repo_dir)
+    _default_if_empty("teacher_checkpoint_dir", path_cfg.teacher_ckpt_dir)
 
     payload.setdefault("wandb_entity", "")
     payload.setdefault("margin", 0.1)
