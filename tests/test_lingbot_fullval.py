@@ -9,6 +9,7 @@ from physical_consistency.eval.lingbot_fullval import (
     _prepare_single_gpu_worker_env,
     _build_config,
     build_progress_row,
+    ensure_lingbot_resolution_config,
     shard_rows,
     summarize_physics_iq_outputs_from_rows,
 )
@@ -156,3 +157,24 @@ def test_prepare_single_gpu_worker_env_clears_distributed_launch_state():
     assert "MASTER_ADDR" not in prepared
     assert "MASTER_PORT" not in prepared
     assert "ACCELERATE_USE_DEEPSPEED" not in prepared
+
+
+def test_ensure_lingbot_resolution_config_adds_missing_resolution(tmp_path):
+    config_dir = tmp_path / "wan" / "configs"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "__init__.py"
+    config_path.write_text(
+        "SIZE_CONFIGS = {\n"
+        "    '480*832': (480, 832),\n"
+        "}\n"
+        "MAX_AREA_CONFIGS = {\n"
+        "    '480*832': 480 * 832,\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    ensure_lingbot_resolution_config(tmp_path, height=384, width=384)
+
+    patched = config_path.read_text(encoding="utf-8")
+    assert "'384*384': (384, 384)," in patched
+    assert "'384*384': 384 * 384," in patched

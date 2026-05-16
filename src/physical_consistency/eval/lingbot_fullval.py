@@ -554,6 +554,58 @@ def _require_existing_path(label: str, value: str) -> None:
         raise FileNotFoundError(f"{label} does not exist: {path}")
 
 
+def _mapping_contains_key(text: str, *, header: str, key: str) -> bool:
+    start = text.find(header)
+    if start < 0:
+        return False
+    end = text.find("\n}", start)
+    if end < 0:
+        end = len(text)
+    return f"'{key}'" in text[start:end] or f'"{key}"' in text[start:end]
+
+
+def _insert_mapping_entry(text: str, *, header: str, entry: str) -> str:
+    start = text.find(header)
+    if start < 0:
+        raise RuntimeError(f"Could not find LingBot config mapping header: {header}")
+    line_end = text.find("\n", start)
+    if line_end < 0:
+        raise RuntimeError(f"Malformed LingBot config mapping header: {header}")
+    return text[: line_end + 1] + entry + "\n" + text[line_end + 1 :]
+
+
+def ensure_lingbot_resolution_config(
+    lingbot_code_dir: str | Path,
+    *,
+    height: int,
+    width: int,
+) -> Path:
+    """Ensure LingBot's generation config knows the requested resolution."""
+    config_path = Path(lingbot_code_dir) / "wan" / "configs" / "__init__.py"
+    _require_existing_path("lingbot_resolution_config", str(config_path))
+    key = f"{height}*{width}"
+    text = config_path.read_text(encoding="utf-8")
+    changed = False
+    if not _mapping_contains_key(text, header="SIZE_CONFIGS = {", key=key):
+        text = _insert_mapping_entry(
+            text,
+            header="SIZE_CONFIGS = {",
+            entry=f"    '{key}': ({height}, {width}),",
+        )
+        changed = True
+    if not _mapping_contains_key(text, header="MAX_AREA_CONFIGS = {", key=key):
+        text = _insert_mapping_entry(
+            text,
+            header="MAX_AREA_CONFIGS = {",
+            entry=f"    '{key}': {height} * {width},",
+        )
+        changed = True
+    if changed:
+        config_path.write_text(text, encoding="utf-8")
+        print(f"Patched LingBot resolution config for {key}: {config_path}", flush=True)
+    return config_path
+
+
 def _materialize_worker_view(
     *,
     cfg: FullvalConfig,
@@ -1252,6 +1304,7 @@ def main() -> None:
     _require_existing_path("lingbot_code_dir", path_cfg.lingbot_code_dir)
     _require_existing_path("finetune_code_dir", path_cfg.finetune_code_dir)
     _require_existing_path("physics_config", cfg.physics_config)
+    ensure_lingbot_resolution_config(path_cfg.lingbot_code_dir, height=cfg.height, width=cfg.width)
     if cfg.models in {"both", "stage1"}:
         _require_existing_path("stage1_ckpt_dir", cfg.stage1_ckpt_dir)
 
