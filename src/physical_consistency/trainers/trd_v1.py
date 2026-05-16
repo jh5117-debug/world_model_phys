@@ -2690,6 +2690,8 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("validation_metric_mode", "videophy2")
     payload.setdefault("validation_fullval_run_fvd", False)
     payload.setdefault("validation_fullval_stage_label", "LingBot-Stage2")
+    payload.setdefault("manifest_mini_val", "")
+    payload.setdefault("manifest_full_val", "")
     payload.setdefault("validation_sample_steps", payload.get("sample_steps", 70))
     payload.setdefault("control_type", "act")
     payload.setdefault("allow_deepspeed_feature_hook_experimental", False)
@@ -2831,6 +2833,10 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         raise ValueError(f"control_type must be one of act, cam; got {payload['control_type']}")
 
     payload["output_dir"] = str(Path(payload["output_root"]) / "checkpoints" / payload["experiment_name"])
+    if not payload["manifest_mini_val"]:
+        payload["manifest_mini_val"] = str(Path(payload["dataset_dir"]) / "metadata_val.csv")
+    if not payload["manifest_full_val"]:
+        payload["manifest_full_val"] = str(Path(payload["dataset_dir"]) / "metadata_val.csv")
     if payload["eval_companion_ckpt_dir"]:
         payload["eval_companion_ckpt_dir"] = str(Path(payload["eval_companion_ckpt_dir"]).expanduser())
     payload.setdefault("teacher_checkpoint_path", "")
@@ -2948,6 +2954,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation_metric_mode", type=str, default="")
     parser.add_argument("--validation_fullval_run_fvd", type=str, default="")
     parser.add_argument("--validation_fullval_stage_label", type=str, default="")
+    parser.add_argument("--manifest_mini_val", type=str, default="")
+    parser.add_argument("--manifest_full_val", type=str, default="")
     parser.add_argument("--validation_fail_fast", type=str, default="")
     parser.add_argument("--validation_keep_failed_checkpoint", type=str, default="")
     parser.add_argument("--best_checkpoint_name", type=str, default="")
@@ -2973,6 +2981,9 @@ def main() -> None:
             _require_existing_path("teacher_checkpoint_path", args.teacher_checkpoint_path)
         else:
             _require_existing_path("teacher_checkpoint_dir", args.teacher_checkpoint_dir)
+    if args.validation_every_epochs > 0 or args.validation_every_steps > 0:
+        _require_existing_path("manifest_mini_val", args.manifest_mini_val)
+        _require_existing_path("manifest_full_val", args.manifest_full_val)
     configure_logging(Path(args.output_root) / "logs" / f"train_{args.experiment_name}_{args.model_type}.log")
     _configure_cuda_probe_flags()
     set_seed(args.seed)
