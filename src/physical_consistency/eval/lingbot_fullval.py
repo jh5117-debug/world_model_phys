@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
@@ -729,6 +730,8 @@ def _maybe_process_video(
     common_video_path: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     reference_path = _reference_video_path(cfg, row)
+    ensure_dir(common_video_path.parent)
+    shutil.copy2(worker_video_path, common_video_path)
     psnr = compute_video_psnr(
         reference_videopath=reference_path,
         candidate_videopath=worker_video_path,
@@ -758,8 +761,6 @@ def _maybe_process_video(
         resize_divisor=physics_cfg.resize_divisor,
         mask_threshold=physics_cfg.mask_threshold,
     )
-    ensure_dir(common_video_path.parent)
-    shutil.copy2(worker_video_path, common_video_path)
     clip_name = _clip_name(row)
     metrics_row = {
         "clip_name": clip_name,
@@ -797,6 +798,7 @@ def _scan_new_outputs(
 ) -> int:
     new_count = 0
     common_videos_dir = ensure_dir(model_root / "videos")
+    score_errors_path = model_root / "score_errors.log"
     for worker in workers:
         worker_videos_dir = worker.output_dir / "videos"
         for video_path in sorted(worker_videos_dir.glob(f"*{cfg.video_suffix}")):
@@ -816,7 +818,20 @@ def _scan_new_outputs(
                     worker_video_path=video_path,
                     common_video_path=common_video_path,
                 )
-            except Exception:
+            except Exception as exc:
+                with score_errors_path.open("a", encoding="utf-8") as handle:
+                    handle.write(
+                        f"worker_gpu={worker.gpu_id} clip_name={clip_name} "
+                        f"video_path={video_path} error={type(exc).__name__}: {exc}\n"
+                    )
+                    handle.write(traceback.format_exc())
+                    handle.write("\n")
+                print(
+                    f"[LingBot full-val] score failed for {clip_name} on gpu={worker.gpu_id}: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 continue
             metrics_rows.append(metrics_row)
             physics_rows.append(physics_row)
@@ -835,6 +850,9 @@ def run_model_fullval(
 ) -> dict[str, Any]:
     model_root = ensure_dir(Path(cfg.val_inf_root) / model.subdir_name)
     ensure_dir(model_root / "videos")
+    score_errors_path = model_root / "score_errors.log"
+    if score_errors_path.exists():
+        score_errors_path.unlink()
     write_csv_rows(model_root / "run_manifest.csv", manifest_rows, list(manifest_rows[0].keys()))
 
     index_by_clip = {_clip_name(row): idx for idx, row in enumerate(manifest_rows)}
@@ -969,11 +987,17 @@ def run_model_fullval(
 
     if len(processed_clips) < len(manifest_rows):
         missing_count = len(manifest_rows) - len(processed_clips)
+        worker_video_count = sum(
+            1
+            for worker in workers
+            for _ in (worker.output_dir / "videos").glob(f"*{cfg.video_suffix}")
+        )
         log_paths = ", ".join(str(worker.log_path) for worker in workers)
         raise RuntimeError(
             f"LingBot workers finished for {model.model_label}, but only "
             f"{len(processed_clips)}/{len(manifest_rows)} clips produced scoreable videos "
-            f"({missing_count} missing). Check worker logs: {log_paths}"
+            f"({missing_count} missing; worker_videos={worker_video_count}). "
+            f"Check score errors: {score_errors_path}. Check worker logs: {log_paths}"
         )
 
     _run_fvd_eval_if_requested(cfg=cfg, path_cfg=path_cfg, model_root=model_root, model=model)
