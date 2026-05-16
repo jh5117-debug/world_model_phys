@@ -247,10 +247,11 @@ def build_progress_row(
         "Model": model_label,
         "Processed": processed_count,
         "Total": total_count,
-        "Mean Physics-IQ Score": mean_score if mean_score is not None else "",
-        "Mean PSNR": mean_psnr if mean_psnr is not None else "",
-        "Mean SSIM": mean_ssim if mean_ssim is not None else "",
-        "Mean LPIPS": mean_lpips if mean_lpips is not None else "",
+        "PMF ↑": mean_score if mean_score is not None else "",
+        "PSNR ↑": mean_psnr if mean_psnr is not None else "",
+        "SSIM ↑": mean_ssim if mean_ssim is not None else "",
+        "LPIPS ↓": mean_lpips if mean_lpips is not None else "",
+        "FVD ↓": "",
     }
 
 
@@ -966,6 +967,15 @@ def run_model_fullval(
         details = ", ".join(f"gpu={gpu} rc={rc}" for gpu, rc in failed_workers)
         raise RuntimeError(f"LingBot workers failed for {model.model_label}: {details}")
 
+    if len(processed_clips) < len(manifest_rows):
+        missing_count = len(manifest_rows) - len(processed_clips)
+        log_paths = ", ".join(str(worker.log_path) for worker in workers)
+        raise RuntimeError(
+            f"LingBot workers finished for {model.model_label}, but only "
+            f"{len(processed_clips)}/{len(manifest_rows)} clips produced scoreable videos "
+            f"({missing_count} missing). Check worker logs: {log_paths}"
+        )
+
     _run_fvd_eval_if_requested(cfg=cfg, path_cfg=path_cfg, model_root=model_root, model=model)
 
     print(
@@ -1240,13 +1250,10 @@ def main() -> None:
             )
         )
     summary_path = _write_final_summary(cfg=cfg, models=models, manifest_rows=manifest_rows)
-
-    print(
-        format_lingbot_progress_summary(
-            final_rows,
-            title="LingBot Full-Val Final Summary",
-        )
-    )
+    summary_md_path = Path(summary_path).with_name("metrics_summary.md")
+    if summary_md_path.exists():
+        print("LingBot Full-Val Final Summary")
+        print(summary_md_path.read_text(encoding="utf-8").strip())
     print(f"PhysInOne metrics summary: {summary_path}")
 
 

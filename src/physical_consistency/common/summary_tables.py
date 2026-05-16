@@ -179,20 +179,22 @@ def format_lingbot_progress_summary(
         "Model",
         "Processed",
         "Total",
-        "Mean Physics-IQ Score",
-        "Mean PSNR",
-        "Mean SSIM",
-        "Mean LPIPS",
+        "PMF ↑",
+        "PSNR ↑",
+        "SSIM ↑",
+        "LPIPS ↓",
+        "FVD ↓",
     ]
     table_rows = [
         [
             row.get("Model", ""),
             row.get("Processed", ""),
             row.get("Total", ""),
-            row.get("Mean Physics-IQ Score", ""),
-            row.get("Mean PSNR", ""),
-            row.get("Mean SSIM", ""),
-            row.get("Mean LPIPS", ""),
+            row.get("PMF ↑", ""),
+            row.get("PSNR ↑", ""),
+            row.get("SSIM ↑", ""),
+            row.get("LPIPS ↓", ""),
+            row.get("FVD ↓", ""),
         ]
         for row in rows
     ]

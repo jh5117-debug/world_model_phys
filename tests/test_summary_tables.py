@@ -131,22 +131,22 @@ def test_format_lingbot_progress_summary_renders_combined_table():
                 "Model": "LingBot-base",
                 "Processed": 10,
                 "Total": 405,
-                "Mean Physics-IQ Score": 43.65,
-                "Mean PSNR": 9.6551,
+                "PMF ↑": 43.65,
+                "PSNR ↑": 9.6551,
             },
             {
                 "Model": "LingBot-Stage1",
                 "Processed": 10,
                 "Total": 405,
-                "Mean Physics-IQ Score": 59.25,
-                "Mean PSNR": 11.5251,
+                "PMF ↑": 59.25,
+                "PSNR ↑": 11.5251,
             },
         ],
         title="LingBot Full-Val Final Summary",
     )
 
     assert "LingBot Full-Val Final Summary" in rendered
-    assert "| Model | Processed | Total | Mean Physics-IQ Score | Mean PSNR |" in rendered
+    assert "| Model | Processed | Total | PMF ↑ | PSNR ↑ |" in rendered
     assert "| LingBot-base | 10 | 405 | 43.6500 | 9.6551 |" in rendered
     assert "| LingBot-Stage1 | 10 | 405 | 59.2500 | 11.5251 |" in rendered
 

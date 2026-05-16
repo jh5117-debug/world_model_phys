@@ -48,10 +48,11 @@ def test_build_progress_row_uses_mean_physics_iq_and_psnr():
         "Model": "LingBot-base",
         "Processed": 2,
         "Total": 405,
-        "Mean Physics-IQ Score": 50.0,
-        "Mean PSNR": 11.0,
-        "Mean SSIM": "",
-        "Mean LPIPS": "",
+        "PMF ↑": 50.0,
+        "PSNR ↑": 11.0,
+        "SSIM ↑": "",
+        "LPIPS ↓": "",
+        "FVD ↓": "",
     }
 
 
