@@ -52,6 +52,15 @@ def _run_trd(argv: list[str]):
     return resolved
 
 
+def _select_phase_checkpoint(output_dir: Path) -> Path:
+    """Prefer the validated best checkpoint, otherwise use the final checkpoint."""
+    for name in ("best_physinone", "best_videophy2"):
+        candidate = output_dir / name
+        if candidate.exists():
+            return candidate
+    return output_dir / "final"
+
+
 def main() -> None:
     known, passthrough = parse_args()
     path_cfg = resolve_path_config(argparse.Namespace(dataset_dir=""), env_file=known.env_file)
@@ -85,6 +94,7 @@ def main() -> None:
         ]
     )
     low_final_dir = Path(low_args.output_dir) / "final"
+    low_selected_dir = _select_phase_checkpoint(Path(low_args.output_dir))
 
     high_args = _run_trd(
         [
@@ -94,16 +104,17 @@ def main() -> None:
             "--experiment_name",
             f"{base_experiment}_high",
             "--eval_companion_ckpt_dir",
-            str(low_final_dir),
+            str(low_selected_dir),
         ]
     )
     high_final_dir = Path(high_args.output_dir) / "final"
+    high_selected_dir = _select_phase_checkpoint(Path(high_args.output_dir))
 
     final_bundle = materialize_eval_checkpoint_bundle(
-        ft_ckpt_dir=high_final_dir,
+        ft_ckpt_dir=high_selected_dir,
         output_root=stage_root / "final_bundle_cache",
         experiment_name=f"{base_experiment}_stage2_final",
-        companion_ckpt_dir=low_final_dir,
+        companion_ckpt_dir=low_selected_dir,
     )
     final_bundle_link = stage_root / "stage2_final_bundle"
     if _is_main_process():
@@ -123,11 +134,13 @@ def main() -> None:
                     "experiment_name": low_args.experiment_name,
                     "output_dir": low_args.output_dir,
                     "final_checkpoint_dir": str(low_final_dir),
+                    "selected_checkpoint_dir": str(low_selected_dir),
                 },
                 "high_phase": {
                     "experiment_name": high_args.experiment_name,
                     "output_dir": high_args.output_dir,
                     "final_checkpoint_dir": str(high_final_dir),
+                    "selected_checkpoint_dir": str(high_selected_dir),
                 },
                 "final_stage2_bundle_dir": str(final_bundle),
                 "final_stage2_bundle_link": str(final_bundle_link),

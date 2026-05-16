@@ -175,7 +175,15 @@ def format_lingbot_progress_summary(
     title: str = "LingBot Eval Progress",
 ) -> str:
     """Render rolling full-val LingBot progress as a compact terminal table."""
-    headers = ["Model", "Processed", "Total", "Mean Physics-IQ Score", "Mean PSNR"]
+    headers = [
+        "Model",
+        "Processed",
+        "Total",
+        "Mean Physics-IQ Score",
+        "Mean PSNR",
+        "Mean SSIM",
+        "Mean LPIPS",
+    ]
     table_rows = [
         [
             row.get("Model", ""),
@@ -183,6 +191,8 @@ def format_lingbot_progress_summary(
             row.get("Total", ""),
             row.get("Mean Physics-IQ Score", ""),
             row.get("Mean PSNR", ""),
+            row.get("Mean SSIM", ""),
+            row.get("Mean LPIPS", ""),
         ]
         for row in rows
     ]

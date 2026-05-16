@@ -688,7 +688,7 @@ class TRDTrainingRunner:
         self.teacher = None
         self._param_grad_trace_handles: list[Any] = []
         self._param_grad_trace_counts: dict[str, int] = {}
-        self.best_metrics_path = Path(args.output_dir) / "best_videophy2.json"
+        self.best_metrics_path = Path(args.output_dir) / args.best_metrics_name
         self.best_checkpoint_path = Path(args.output_dir) / args.best_checkpoint_name
         self.visible_gpu_list = os.environ.get(
             "CUDA_VISIBLE_DEVICES",
@@ -1764,6 +1764,8 @@ class TRDTrainingRunner:
         if self.args.validation_runtime_mode == "snapshot_only":
             self._run_snapshot_only_validation_cycle(tag)
             return
+        if self.args.validation_runtime_mode == "fullval_external":
+            self.args.validation_metric_mode = "physinone"
         self._run_pause_external_validation_cycle(tag)
 
     def _run_snapshot_only_validation_cycle(self, tag: str) -> None:
@@ -1807,7 +1809,7 @@ class TRDTrainingRunner:
         summary_path = candidate_path / "validation_summary.json"
         if self.accelerator.is_main_process:
             try:
-                summary = self._run_external_videophy2_validation(candidate_path, tag)
+                summary = self._run_external_validation(candidate_path, tag)
                 write_json(summary_path, summary)
             except Exception as exc:  # pragma: no cover - exercised on the real cluster
                 validation_error_path.write_text(traceback.format_exc(), encoding="utf-8")
@@ -1931,6 +1933,88 @@ class TRDTrainingRunner:
         self._initialize_training_runtime(checkpoint_dir=checkpoint_dir, resume_state=resume_state)
         self.global_step = int(resume_state.get("global_step", self.global_step))
         self.current_epoch = int(resume_state.get("epoch", self.current_epoch))
+
+    def _run_external_validation(self, checkpoint_path: Path, tag: str) -> dict[str, Any]:
+        if self.args.validation_metric_mode == "physinone":
+            return self._run_external_physinone_validation(checkpoint_path, tag)
+        return self._run_external_videophy2_validation(checkpoint_path, tag)
+
+    def _run_external_physinone_validation(self, checkpoint_path: Path, tag: str) -> dict[str, Any]:
+        validation_root = ensure_dir(
+            Path(self.args.output_root) / "runs" / "train_validation" / self.args.experiment_name / tag
+        )
+        generation_root = ensure_dir(validation_root / "generated")
+        validation_seed = int(self.args.validation_seed_list[0])
+        generation_checkpoint_path = self._materialize_eval_checkpoint_bundle(
+            checkpoint_path,
+            experiment_name=f"{self.args.experiment_name}_{tag}_physinone_fullval",
+        )
+        physics_config = getattr(self.args, "physics_config", "") or str(CONFIG_DIR / "physics_iq_dataset_eval.yaml")
+        command = [
+            "python",
+            "-m",
+            "physical_consistency.cli.run_lingbot_fullval",
+            "--env_file",
+            self.args.env_file,
+            "--manifest_path",
+            self.args.manifest_mini_val,
+            "--dataset_dir",
+            self.args.dataset_dir,
+            "--output_root",
+            str(validation_root),
+            "--base_model_dir",
+            self.args.base_model_dir,
+            "--stage1_ckpt_dir",
+            str(generation_checkpoint_path),
+            "--val_inf_root",
+            str(generation_root),
+            "--physics_config",
+            physics_config,
+            "--seed",
+            str(validation_seed),
+            "--frame_num",
+            str(self.args.num_frames),
+            "--sample_steps",
+            str(self.args.validation_sample_steps),
+            "--guide_scale",
+            str(self.args.guide_scale),
+            "--height",
+            str(self.args.height),
+            "--width",
+            str(self.args.width),
+            "--control_type",
+            self.args.control_type,
+            "--models",
+            "stage1",
+            "--stage1_label",
+            self.args.validation_fullval_stage_label,
+            "--num_gpus",
+            str(self.args.num_gpus),
+            "--ulysses_size",
+            str(self.args.ulysses_size),
+        ]
+        if self.args.validation_fullval_run_fvd:
+            command.append("--run_fvd")
+        run_command(
+            command,
+            cwd=PROJECT_ROOT,
+            log_path=validation_root / "physinone_fullval.log",
+        )
+        summary_path = generation_root / "summary.json"
+        if not summary_path.exists():
+            raise FileNotFoundError(f"Validation PhysInOne summary missing: {summary_path}")
+        summary = read_json(summary_path)
+        expected_count = len(read_csv_rows(self.args.manifest_mini_val))
+        stage_rows = [row for row in summary.get("rows", []) if row.get("subdir_name") == "lingbotstage1"]
+        if not stage_rows:
+            raise RuntimeError(f"Validation PhysInOne summary has no stage row: {summary_path}")
+        processed = int(stage_rows[0].get("processed", 0) or 0)
+        if processed != expected_count:
+            raise RuntimeError(
+                f"Validation PhysInOne outputs incomplete: {processed}/{expected_count} rows at {summary_path}"
+            )
+        self._emit_physinone_summary(tag, summary)
+        return summary
 
     def _run_external_videophy2_validation(self, checkpoint_path: Path, tag: str) -> dict[str, Any]:
         validation_root = ensure_dir(
@@ -2088,6 +2172,33 @@ class TRDTrainingRunner:
         print(rendered)
         self._log_videophy2_metrics(tag, summary)
 
+    def _emit_physinone_summary(self, tag: str, summary: dict[str, Any]) -> None:
+        metrics = self._extract_physinone_metrics(summary)
+        logged_metrics = {
+            key: value if math.isfinite(value) else 0.0
+            for key, value in metrics.items()
+        }
+        LOGGER.info(
+            "[PhysInOne validation] tag=%s PMF=%.4f PSNR=%.4f SSIM=%.4f LPIPS=%.4f FVD=%.4f",
+            tag,
+            metrics["pmf"],
+            metrics["psnr"],
+            metrics["ssim"],
+            metrics["lpips"],
+            metrics["fvd"],
+        )
+        log_dict(
+            self.global_step,
+            {
+                "physinone/pmf": logged_metrics["pmf"],
+                "physinone/psnr": logged_metrics["psnr"],
+                "physinone/ssim": logged_metrics["ssim"],
+                "physinone/lpips": logged_metrics["lpips"],
+                "physinone/fvd": logged_metrics["fvd"],
+            },
+            accelerator=self.accelerator,
+        )
+
     def _log_videophy2_metrics(self, tag: str, summary: dict[str, Any]) -> None:
         metrics = self._extract_videophy2_metrics(summary)
         log_dict(
@@ -2135,8 +2246,35 @@ class TRDTrainingRunner:
             "joint": _metric("joint"),
         }
 
+    def _extract_physinone_metrics(self, summary: dict[str, Any]) -> dict[str, float]:
+        rows = summary.get("rows", [])
+        row = next((item for item in rows if item.get("subdir_name") == "lingbotstage1"), rows[0] if rows else {})
+
+        def _metric(name: str, default: float) -> float:
+            value = row.get(name, default)
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return default
+            if not math.isfinite(numeric):
+                return default
+            return numeric
+
+        return {
+            "pmf": _metric("pmf", 0.0),
+            "psnr": _metric("psnr", 0.0),
+            "ssim": _metric("ssim", 0.0),
+            "lpips": _metric("lpips", float("inf")),
+            "fvd": _metric("fvd", float("inf")),
+        }
+
+    def _extract_validation_metrics(self, summary: dict[str, Any]) -> dict[str, float]:
+        if summary.get("metrics_mode") == "physinone" or self.args.validation_metric_mode == "physinone":
+            return self._extract_physinone_metrics(summary)
+        return self._extract_videophy2_metrics(summary)
+
     def _retain_candidate_checkpoint(self, candidate_path: Path, tag: str, summary: dict[str, Any]) -> None:
-        metrics = self._extract_videophy2_metrics(summary)
+        metrics = self._extract_validation_metrics(summary)
         record = {
             "tag": tag,
             "global_step": self.global_step,
@@ -2151,7 +2289,7 @@ class TRDTrainingRunner:
         log_dict(
             self.global_step,
             {
-                "videophy2/is_best": 1 if is_best else 0,
+                f"{self.args.validation_metric_mode}/is_best": 1 if is_best else 0,
             },
             accelerator=self.accelerator,
         )
@@ -2179,6 +2317,22 @@ class TRDTrainingRunner:
     ) -> bool:
         if current_best_metrics is None:
             return True
+        if self.args.validation_metric_mode == "physinone":
+            candidate_key = (
+                candidate_metrics.get("pmf", 0.0),
+                -candidate_metrics.get("fvd", float("inf")),
+                candidate_metrics.get("psnr", 0.0),
+                candidate_metrics.get("ssim", 0.0),
+                -candidate_metrics.get("lpips", float("inf")),
+            )
+            best_key = (
+                current_best_metrics.get("pmf", 0.0),
+                -current_best_metrics.get("fvd", float("inf")),
+                current_best_metrics.get("psnr", 0.0),
+                current_best_metrics.get("ssim", 0.0),
+                -current_best_metrics.get("lpips", float("inf")),
+            )
+            return candidate_key > best_key
         candidate_key = (
             candidate_metrics["joint"],
             candidate_metrics["pc_mean"],
@@ -2533,10 +2687,14 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload.setdefault("validation_runtime_mode", "pause_external")
     payload.setdefault("validation_fail_fast", False)
     payload.setdefault("validation_keep_failed_checkpoint", True)
+    payload.setdefault("validation_metric_mode", "videophy2")
+    payload.setdefault("validation_fullval_run_fvd", False)
+    payload.setdefault("validation_fullval_stage_label", "LingBot-Stage2")
     payload.setdefault("validation_sample_steps", payload.get("sample_steps", 70))
     payload.setdefault("control_type", "act")
     payload.setdefault("allow_deepspeed_feature_hook_experimental", False)
     payload.setdefault("best_checkpoint_name", "best_videophy2")
+    payload.setdefault("best_metrics_name", "best_videophy2.json")
     payload["allow_deepspeed_feature_hook_experimental"] = _coerce_bool(
         payload["allow_deepspeed_feature_hook_experimental"]
     )
@@ -2614,6 +2772,14 @@ def build_args(cli_args: argparse.Namespace) -> argparse.Namespace:
     payload["student_param_grad_trace_pattern"] = str(payload["student_param_grad_trace_pattern"])
     payload["validation_fail_fast"] = _coerce_bool(payload["validation_fail_fast"])
     payload["validation_keep_failed_checkpoint"] = _coerce_bool(payload["validation_keep_failed_checkpoint"])
+    payload["validation_metric_mode"] = str(payload["validation_metric_mode"]).strip().lower()
+    if payload["validation_metric_mode"] not in {"videophy2", "physinone"}:
+        raise ValueError(
+            "validation_metric_mode must be one of videophy2, physinone; "
+            f"got {payload['validation_metric_mode']}"
+        )
+    payload["validation_fullval_run_fvd"] = _coerce_bool(payload["validation_fullval_run_fvd"])
+    payload["validation_fullval_stage_label"] = str(payload["validation_fullval_stage_label"])
     if payload["student_ffn_chunk_size"] in ("", None):
         payload["student_ffn_chunk_size"] = 512
     else:
@@ -2779,8 +2945,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_train_micro_steps", type=int, default=None)
     parser.add_argument("--validation_sample_steps", type=int, default=None)
     parser.add_argument("--validation_runtime_mode", type=str, default="")
+    parser.add_argument("--validation_metric_mode", type=str, default="")
+    parser.add_argument("--validation_fullval_run_fvd", type=str, default="")
+    parser.add_argument("--validation_fullval_stage_label", type=str, default="")
     parser.add_argument("--validation_fail_fast", type=str, default="")
     parser.add_argument("--validation_keep_failed_checkpoint", type=str, default="")
+    parser.add_argument("--best_checkpoint_name", type=str, default="")
+    parser.add_argument("--best_metrics_name", type=str, default="")
     parser.add_argument("--allow_deepspeed_feature_hook_experimental", type=str, default="")
     parser.add_argument("--control_type", type=str, default="")
     return parser.parse_args()

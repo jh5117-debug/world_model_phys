@@ -50,6 +50,8 @@ def test_build_progress_row_uses_mean_physics_iq_and_psnr():
         "Total": 405,
         "Mean Physics-IQ Score": 50.0,
         "Mean PSNR": 11.0,
+        "Mean SSIM": "",
+        "Mean LPIPS": "",
     }
 
 
@@ -113,6 +115,10 @@ def test_build_config_allows_missing_physics_config(monkeypatch: pytest.MonkeyPa
             video_suffix="_gen.mp4",
             report_every=10,
             poll_seconds=15,
+            stage1_label="LingBot-Stage1",
+            run_fvd=False,
+            fvd_device="cuda:0",
+            lpips_device="auto",
             num_gpus=2,
             ulysses_size=1,
         )

@@ -108,3 +108,78 @@ def write_side_by_side_video(
         )
     validate_video_readable(out_path, min_frames=1)
     return out_path
+
+
+def _draw_label(frame: np.ndarray, label: str, *, x_offset: int, header_height: int) -> None:
+    cv2.putText(
+        frame,
+        label,
+        (x_offset + 18, max(28, header_height - 14)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.85,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+
+
+def write_labeled_side_by_side_video(
+    *,
+    left_videopath: str | Path,
+    right_videopath: str | Path,
+    output_path: str | Path,
+    left_label: str,
+    right_label: str,
+    max_frames: int,
+    height: int,
+    width: int,
+) -> Path:
+    """Write a labeled left/right preview video."""
+    left_path = Path(left_videopath)
+    right_path = Path(right_videopath)
+    validate_video_readable(left_path, min_frames=1)
+    validate_video_readable(right_path, min_frames=1)
+
+    out_path = Path(output_path)
+    ensure_dir(out_path.parent)
+    left_cap = cv2.VideoCapture(str(left_path))
+    right_cap = cv2.VideoCapture(str(right_path))
+    writer: cv2.VideoWriter | None = None
+    written = 0
+    header_height = 44
+    try:
+        fps = _safe_fps(right_cap, fallback=_safe_fps(left_cap))
+        writer = cv2.VideoWriter(
+            str(out_path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps,
+            (width * 2, height + header_height),
+        )
+        if not writer.isOpened():
+            raise VideoValidationError(f"Could not open VideoWriter for {out_path}")
+
+        while written < max(1, max_frames):
+            ok_left, left_frame = left_cap.read()
+            ok_right, right_frame = right_cap.read()
+            if not ok_left or not ok_right:
+                break
+            left_frame = _resize_frame(left_frame, height=height, width=width)
+            right_frame = _resize_frame(right_frame, height=height, width=width)
+            body = np.concatenate([left_frame, right_frame], axis=1)
+            header = np.full((header_height, width * 2, 3), 24, dtype=np.uint8)
+            _draw_label(header, left_label, x_offset=0, header_height=header_height)
+            _draw_label(header, right_label, x_offset=width, header_height=header_height)
+            writer.write(np.concatenate([header, body], axis=0))
+            written += 1
+    finally:
+        left_cap.release()
+        right_cap.release()
+        if writer is not None:
+            writer.release()
+
+    if written == 0:
+        raise VideoValidationError(
+            f"Could not write labeled side-by-side preview for {left_path} and {right_path}."
+        )
+    validate_video_readable(out_path, min_frames=1)
+    return out_path

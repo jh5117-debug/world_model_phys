@@ -15,6 +15,7 @@ from typing import Any, TextIO
 
 import cv2
 import numpy as np
+import torch
 
 from physical_consistency.common.io import (
     ensure_dir,
@@ -29,6 +30,7 @@ from physical_consistency.common.summary_tables import format_lingbot_progress_s
 from physical_consistency.datasets.manifest_builder import materialize_dataset_view
 from physical_consistency.eval.checkpoint_bundle import materialize_eval_checkpoint_bundle
 from physical_consistency.eval.physics_iq import PhysicsIQConfig, evaluate_video_pair
+from physical_consistency.eval.video_utils import write_labeled_side_by_side_video
 
 
 @dataclass(slots=True)
@@ -55,6 +57,10 @@ class FullvalConfig:
     video_suffix: str = "_gen.mp4"
     report_every: int = 10
     poll_seconds: int = 15
+    stage1_label: str = "LingBot-Stage1"
+    run_fvd: bool = False
+    fvd_device: str = "cuda:0"
+    lpips_device: str = "auto"
 
 
 @dataclass(slots=True)
@@ -104,6 +110,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--video_suffix", type=str, default="_gen.mp4")
     parser.add_argument("--report_every", type=int, default=10)
     parser.add_argument("--poll_seconds", type=int, default=15)
+    parser.add_argument("--stage1_label", type=str, default="LingBot-Stage1")
+    parser.add_argument("--run_fvd", action="store_true")
+    parser.add_argument("--fvd_device", type=str, default="cuda:0")
+    parser.add_argument("--lpips_device", type=str, default="auto")
     parser.add_argument("--num_gpus", type=int, default=0)
     parser.add_argument("--ulysses_size", type=int, default=0)
     return parser.parse_args()
@@ -179,6 +189,10 @@ def _build_config(args: argparse.Namespace) -> FullvalConfig:
         video_suffix=args.video_suffix,
         report_every=max(1, args.report_every),
         poll_seconds=max(1, args.poll_seconds),
+        stage1_label=args.stage1_label,
+        run_fvd=bool(args.run_fvd),
+        fvd_device=args.fvd_device,
+        lpips_device=args.lpips_device,
     )
 
 
@@ -227,12 +241,16 @@ def build_progress_row(
     """Build one rolling summary row for terminal output."""
     mean_score = _compute_mean(physics_rows, "physics_iq_style_score")
     mean_psnr = _compute_mean(metrics_rows, "psnr")
+    mean_ssim = _compute_mean(metrics_rows, "ssim")
+    mean_lpips = _compute_mean(metrics_rows, "lpips")
     return {
         "Model": model_label,
         "Processed": processed_count,
         "Total": total_count,
         "Mean Physics-IQ Score": mean_score if mean_score is not None else "",
         "Mean PSNR": mean_psnr if mean_psnr is not None else "",
+        "Mean SSIM": mean_ssim if mean_ssim is not None else "",
+        "Mean LPIPS": mean_lpips if mean_lpips is not None else "",
     }
 
 
@@ -271,6 +289,78 @@ def compute_video_psnr(
     if mse == 0:
         return float("inf")
     return 10 * math.log10(255.0**2 / mse)
+
+
+def compute_video_ssim(
+    *,
+    reference_videopath: str | Path,
+    candidate_videopath: str | Path,
+    frame_num: int,
+    height: int,
+    width: int,
+) -> float:
+    """Compute mean frame SSIM for a generated/reference pair."""
+    try:
+        from skimage.metrics import structural_similarity as ssim
+    except ImportError:
+        return float("nan")
+    gt_frames = _read_video_frames(reference_videopath, max_frames=frame_num, height=height, width=width)
+    gen_frames = _read_video_frames(candidate_videopath, max_frames=frame_num, height=height, width=width)
+    min_frames = min(len(gt_frames), len(gen_frames))
+    scores = [
+        float(ssim(gen_frames[idx], gt_frames[idx], channel_axis=2, data_range=255))
+        for idx in range(min_frames)
+    ]
+    return float(sum(scores) / len(scores)) if scores else float("nan")
+
+
+class LPIPSMeter:
+    """Lazy LPIPS evaluator shared across generated clips."""
+
+    def __init__(self, device: str = "auto") -> None:
+        if device == "auto":
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.device = device
+        self._model: Any | None = None
+        self._unavailable = False
+
+    def _load(self) -> Any | None:
+        if self._unavailable:
+            return None
+        if self._model is not None:
+            return self._model
+        try:
+            import lpips
+        except ImportError:
+            self._unavailable = True
+            return None
+        self._model = lpips.LPIPS(net="alex").to(self.device).eval()
+        return self._model
+
+    def compute(
+        self,
+        *,
+        reference_videopath: str | Path,
+        candidate_videopath: str | Path,
+        frame_num: int,
+        height: int,
+        width: int,
+    ) -> float:
+        model = self._load()
+        if model is None:
+            return float("nan")
+        gt_frames = _read_video_frames(reference_videopath, max_frames=frame_num, height=height, width=width)
+        gen_frames = _read_video_frames(candidate_videopath, max_frames=frame_num, height=height, width=width)
+        min_frames = min(len(gt_frames), len(gen_frames))
+        scores: list[float] = []
+        with torch.no_grad():
+            for idx in range(min_frames):
+                gen = torch.from_numpy(gen_frames[idx]).permute(2, 0, 1).float() / 127.5 - 1.0
+                ref = torch.from_numpy(gt_frames[idx]).permute(2, 0, 1).float() / 127.5 - 1.0
+                gen = gen.unsqueeze(0).to(self.device)
+                ref = ref.unsqueeze(0).to(self.device)
+                scores.append(float(model(gen, ref).item()))
+        return float(sum(scores) / len(scores)) if scores else float("nan")
 
 
 def summarize_physics_iq_outputs_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -328,16 +418,17 @@ def _build_eval_report(
         "aggregate_metrics": {},
         "per_clip": rows,
     }
-    values = [_safe_float(row.get("psnr")) for row in valid]
-    filtered = [value for value in values if value is not None]
-    if filtered:
-        mean_value = sum(filtered) / len(filtered)
-        report["aggregate_metrics"]["psnr"] = {
-            "mean": round(mean_value, 4),
-            "std": round((sum((value - mean_value) ** 2 for value in filtered) / len(filtered)) ** 0.5, 4),
-            "min": round(min(filtered), 4),
-            "max": round(max(filtered), 4),
-        }
+    for key in ["psnr", "ssim", "lpips"]:
+        values = [_safe_float(row.get(key)) for row in valid]
+        filtered = [value for value in values if value is not None]
+        if filtered:
+            mean_value = sum(filtered) / len(filtered)
+            report["aggregate_metrics"][key] = {
+                "mean": round(mean_value, 4),
+                "std": round((sum((value - mean_value) ** 2 for value in filtered) / len(filtered)) ** 0.5, 4),
+                "min": round(min(filtered), 4),
+                "max": round(max(filtered), 4),
+            }
     return report
 
 
@@ -377,6 +468,8 @@ def _write_model_rollups(
                 "reference_videopath",
                 "candidate_videopath",
                 "psnr",
+                "ssim",
+                "lpips",
             ],
         )
     write_json(
@@ -444,7 +537,7 @@ def _build_models(cfg: FullvalConfig) -> list[ModelSpec]:
     if cfg.models in {"both", "stage1"}:
         model_specs.append(
             ModelSpec(
-                model_label="LingBot-Stage1",
+                model_label=cfg.stage1_label,
                 subdir_name="lingbotstage1",
                 base_model_dir=cfg.base_model_dir,
                 ft_ckpt_dir=cfg.stage1_ckpt_dir,
@@ -629,12 +722,27 @@ def _maybe_process_video(
     *,
     cfg: FullvalConfig,
     physics_cfg: PhysicsIQConfig,
+    lpips_meter: LPIPSMeter,
     row: dict[str, str],
     worker_video_path: Path,
     common_video_path: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     reference_path = _reference_video_path(cfg, row)
     psnr = compute_video_psnr(
+        reference_videopath=reference_path,
+        candidate_videopath=worker_video_path,
+        frame_num=cfg.frame_num,
+        height=cfg.height,
+        width=cfg.width,
+    )
+    ssim = compute_video_ssim(
+        reference_videopath=reference_path,
+        candidate_videopath=worker_video_path,
+        frame_num=cfg.frame_num,
+        height=cfg.height,
+        width=cfg.width,
+    )
+    lpips_value = lpips_meter.compute(
         reference_videopath=reference_path,
         candidate_videopath=worker_video_path,
         frame_num=cfg.frame_num,
@@ -659,6 +767,8 @@ def _maybe_process_video(
         "reference_videopath": str(reference_path),
         "candidate_videopath": str(common_video_path),
         "psnr": round(psnr, 4),
+        "ssim": round(ssim, 4) if math.isfinite(ssim) else "",
+        "lpips": round(lpips_value, 4) if math.isfinite(lpips_value) else "",
     }
     physics_row = {
         "clip_name": clip_name,
@@ -676,6 +786,7 @@ def _scan_new_outputs(
     *,
     cfg: FullvalConfig,
     physics_cfg: PhysicsIQConfig,
+    lpips_meter: LPIPSMeter,
     model_root: Path,
     workers: list[WorkerProc],
     row_by_clip: dict[str, dict[str, str]],
@@ -699,6 +810,7 @@ def _scan_new_outputs(
                 metrics_row, physics_row = _maybe_process_video(
                     cfg=cfg,
                     physics_cfg=physics_cfg,
+                    lpips_meter=lpips_meter,
                     row=row,
                     worker_video_path=video_path,
                     common_video_path=common_video_path,
@@ -754,6 +866,7 @@ def run_model_fullval(
 
     remaining_rows = [row for row in manifest_rows if _clip_name(row) not in processed_clips]
     if not remaining_rows:
+        _run_fvd_eval_if_requested(cfg=cfg, path_cfg=path_cfg, model_root=model_root, model=model)
         return build_progress_row(
             model_label=model.model_label,
             processed_count=len(processed_clips),
@@ -769,6 +882,7 @@ def run_model_fullval(
         path_cfg=path_cfg,
         shard_payloads=shard_payloads,
     )
+    lpips_meter = LPIPSMeter(cfg.lpips_device)
     next_report_threshold = ((len(processed_clips) // cfg.report_every) + 1) * cfg.report_every
     failed_workers: list[tuple[str, int]] = []
 
@@ -777,6 +891,7 @@ def run_model_fullval(
             _scan_new_outputs(
                 cfg=cfg,
                 physics_cfg=physics_cfg,
+                lpips_meter=lpips_meter,
                 model_root=model_root,
                 workers=workers,
                 row_by_clip=row_by_clip,
@@ -826,6 +941,7 @@ def run_model_fullval(
         _scan_new_outputs(
             cfg=cfg,
             physics_cfg=physics_cfg,
+            lpips_meter=lpips_meter,
             model_root=model_root,
             workers=workers,
             row_by_clip=row_by_clip,
@@ -850,6 +966,8 @@ def run_model_fullval(
         details = ", ".join(f"gpu={gpu} rc={rc}" for gpu, rc in failed_workers)
         raise RuntimeError(f"LingBot workers failed for {model.model_label}: {details}")
 
+    _run_fvd_eval_if_requested(cfg=cfg, path_cfg=path_cfg, model_root=model_root, model=model)
+
     print(
         format_lingbot_progress_summary(
             [
@@ -873,6 +991,222 @@ def run_model_fullval(
     )
 
 
+def _run_fvd_eval_if_requested(
+    *,
+    cfg: FullvalConfig,
+    path_cfg: Any,
+    model_root: Path,
+    model: ModelSpec,
+) -> dict[str, Any]:
+    """Run the external FID/FVD script when available."""
+    report_path = model_root / "fid_fvd" / "eval_fid_fvd_report.json"
+    if not cfg.run_fvd:
+        return read_json(report_path) if report_path.exists() else {}
+    if report_path.exists():
+        return read_json(report_path)
+
+    script_path = Path(path_cfg.finetune_code_dir) / "eval_fid_fvd.py"
+    if not script_path.exists():
+        error = {
+            "error": f"eval_fid_fvd.py not found under finetune_code_dir: {script_path}",
+            "model_label": model.model_label,
+        }
+        write_json(model_root / "fid_fvd" / "eval_fid_fvd_error.json", error)
+        return error
+
+    view_dir = Path(cfg.output_root) / "cache" / "fullval_fvd_views" / model.subdir_name
+    if view_dir.exists():
+        shutil.rmtree(view_dir)
+    materialize_dataset_view(cfg.dataset_dir, cfg.manifest_path, view_dir)
+    real_dir = view_dir / "val" / "clips"
+    output_dir = ensure_dir(model_root / "fid_fvd")
+    log_path = Path(cfg.output_root) / "logs" / "fullval" / f"{model.subdir_name}_fid_fvd.log"
+    ensure_dir(log_path.parent)
+    command = [
+        sys.executable,
+        "eval_fid_fvd.py",
+        "--gen_dir",
+        str(model_root / "videos"),
+        "--real_dir",
+        str(real_dir),
+        "--output_dir",
+        str(output_dir),
+        "--device",
+        cfg.fvd_device,
+    ]
+    with log_path.open("a", encoding="utf-8") as log_handle:
+        subprocess.run(
+            command,
+            cwd=path_cfg.finetune_code_dir,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=True,
+        )
+    return read_json(report_path) if report_path.exists() else {}
+
+
+def _metric_mean_from_eval_report(model_root: Path, key: str) -> float | None:
+    report_path = model_root / "eval_report.json"
+    if not report_path.exists():
+        return None
+    report = read_json(report_path)
+    return _safe_float(report.get("aggregate_metrics", {}).get(key, {}).get("mean"))
+
+
+def _pmf_from_physics_summary(model_root: Path) -> float | None:
+    summary_path = model_root / "physics_iq_summary.json"
+    if not summary_path.exists():
+        return None
+    summary = read_json(summary_path)
+    return _safe_float(summary.get("means", {}).get("physics_iq_style_score", {}).get("mean"))
+
+
+def _fvd_from_report(model_root: Path) -> float | None:
+    report_path = model_root / "fid_fvd" / "eval_fid_fvd_report.json"
+    if not report_path.exists():
+        return None
+    report = read_json(report_path)
+    for key_path in [
+        ("fvd",),
+        ("aggregate_metrics", "fvd", "mean"),
+        ("metrics", "fvd"),
+    ]:
+        payload: Any = report
+        for key in key_path:
+            if not isinstance(payload, dict) or key not in payload:
+                payload = None
+                break
+            payload = payload[key]
+        value = _safe_float(payload)
+        if value is not None:
+            return value
+    return None
+
+
+def _round_or_blank(value: float | None, digits: int = 4) -> float | str:
+    if value is None or not math.isfinite(value):
+        return ""
+    return round(value, digits)
+
+
+def _model_metrics_row(cfg: FullvalConfig, model: ModelSpec) -> dict[str, Any]:
+    model_root = Path(cfg.val_inf_root) / model.subdir_name
+    metrics_path = model_root / "metrics.csv"
+    processed = len(read_csv_rows(metrics_path)) if metrics_path.exists() else 0
+    return {
+        "model_label": model.model_label,
+        "subdir_name": model.subdir_name,
+        "processed": processed,
+        "pmf": _pmf_from_physics_summary(model_root),
+        "psnr": _metric_mean_from_eval_report(model_root, "psnr"),
+        "ssim": _metric_mean_from_eval_report(model_root, "ssim"),
+        "lpips": _metric_mean_from_eval_report(model_root, "lpips"),
+        "fvd": _fvd_from_report(model_root),
+    }
+
+
+def _write_markdown_table(path: Path, rows: list[dict[str, Any]]) -> None:
+    headers = ["Method", "PMF ↑", "PSNR ↑", "SSIM ↑", "LPIPS ↓", "FVD ↓"]
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    for row in rows:
+        values = [
+            str(row["Method"]),
+            str(row["PMF ↑"]),
+            str(row["PSNR ↑"]),
+            str(row["SSIM ↑"]),
+            str(row["LPIPS ↓"]),
+            str(row["FVD ↓"]),
+        ]
+        lines.append("| " + " | ".join(values) + " |")
+    ensure_dir(path.parent)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _comparison_dir_name(label: str) -> str:
+    return "base_vs_stage2" if "stage2" in label.lower() else "base_vs_stage1"
+
+
+def _write_base_vs_stage_videos(cfg: FullvalConfig, manifest_rows: list[dict[str, str]]) -> Path | None:
+    if cfg.models != "both":
+        return None
+    base_dir = Path(cfg.val_inf_root) / "lingbotbase" / "videos"
+    stage_dir = Path(cfg.val_inf_root) / "lingbotstage1" / "videos"
+    if not base_dir.exists() or not stage_dir.exists():
+        return None
+    comparison_name = _comparison_dir_name(cfg.stage1_label)
+    out_dir = ensure_dir(Path(cfg.val_inf_root) / "qualitative" / comparison_name)
+    for row in manifest_rows:
+        clip_name = _clip_name(row)
+        video_name = _candidate_video_name(cfg, clip_name)
+        left = base_dir / video_name
+        right = stage_dir / video_name
+        if not left.exists() or not right.exists():
+            continue
+        write_labeled_side_by_side_video(
+            left_videopath=left,
+            right_videopath=right,
+            output_path=out_dir / f"{clip_name}_{comparison_name}.mp4",
+            left_label="LingBot-base",
+            right_label=cfg.stage1_label,
+            max_frames=cfg.frame_num,
+            height=cfg.height,
+            width=cfg.width,
+        )
+    return out_dir
+
+
+def _write_final_summary(
+    *,
+    cfg: FullvalConfig,
+    models: list[ModelSpec],
+    manifest_rows: list[dict[str, str]],
+) -> Path:
+    quantitative_dir = ensure_dir(Path(cfg.val_inf_root) / "quantitative")
+    qualitative_dir = _write_base_vs_stage_videos(cfg, manifest_rows)
+    metric_rows = [_model_metrics_row(cfg, model) for model in models]
+    table_rows = [
+        {
+            "Method": row["model_label"],
+            "PMF ↑": _round_or_blank(row["pmf"]),
+            "PSNR ↑": _round_or_blank(row["psnr"]),
+            "SSIM ↑": _round_or_blank(row["ssim"]),
+            "LPIPS ↓": _round_or_blank(row["lpips"]),
+            "FVD ↓": _round_or_blank(row["fvd"]),
+        }
+        for row in metric_rows
+    ]
+    write_csv_rows(
+        quantitative_dir / "metrics_summary.csv",
+        table_rows,
+        ["Method", "PMF ↑", "PSNR ↑", "SSIM ↑", "LPIPS ↓", "FVD ↓"],
+    )
+    _write_markdown_table(quantitative_dir / "metrics_summary.md", table_rows)
+    summary = {
+        "metrics_mode": "physinone",
+        "directions": {
+            "pmf": "higher",
+            "psnr": "higher",
+            "ssim": "higher",
+            "lpips": "lower",
+            "fvd": "lower",
+        },
+        "manifest_path": cfg.manifest_path,
+        "dataset_dir": cfg.dataset_dir,
+        "val_inf_root": cfg.val_inf_root,
+        "qualitative_dir": str(qualitative_dir) if qualitative_dir is not None else "",
+        "quantitative_dir": str(quantitative_dir),
+        "rows": metric_rows,
+    }
+    summary_path = quantitative_dir / "metrics_summary.json"
+    write_json(summary_path, summary)
+    write_json(Path(cfg.val_inf_root) / "summary.json", summary)
+    return summary_path
+
+
 def main() -> None:
     args = parse_args()
     cfg = _build_config(args)
@@ -894,7 +1228,8 @@ def main() -> None:
 
     physics_cfg = PhysicsIQConfig.from_yaml(cfg.physics_config)
     final_rows: list[dict[str, Any]] = []
-    for model in _build_models(cfg):
+    models = _build_models(cfg)
+    for model in models:
         final_rows.append(
             run_model_fullval(
                 cfg=cfg,
@@ -904,6 +1239,7 @@ def main() -> None:
                 manifest_rows=manifest_rows,
             )
         )
+    summary_path = _write_final_summary(cfg=cfg, models=models, manifest_rows=manifest_rows)
 
     print(
         format_lingbot_progress_summary(
@@ -911,6 +1247,7 @@ def main() -> None:
             title="LingBot Full-Val Final Summary",
         )
     )
+    print(f"PhysInOne metrics summary: {summary_path}")
 
 
 if __name__ == "__main__":
